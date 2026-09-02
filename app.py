@@ -390,7 +390,6 @@ else:
     user_name = st.session_state["username"]
     user_role = st.session_state["user_role"]
 
-    # Query unread notifications
     unread_query = """
         SELECT COUNT(*) FROM notifications 
         WHERE is_read = 0 AND (target_user = ? OR target_role = ?)
@@ -441,20 +440,21 @@ else:
 
     # Dynamic Tabs Setup
     if user_role == "Materials Supervisor":
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📋 Current Inventory", 
+            "📊 Analytics",
             "+ Stock In", 
             "- Stock Out",
             "📜 My Log & Request Edits",
             "📅 Daily Report (Excel)"
         ])
     else:  # Head Office Admin
-        # Count pending approval requests
         pending_requests_count = cursor.execute("SELECT COUNT(*) FROM edit_requests WHERE status = 'PENDING'").fetchone()[0]
         edit_tab_title = f"✏️ Edit Requests ({pending_requests_count})" if pending_requests_count > 0 else "✏️ Edit Requests"
 
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "📋 Current Inventory", 
+            "📊 Analytics",
             "+ Stock In", 
             "- Stock Out", 
             edit_tab_title,
@@ -476,8 +476,101 @@ else:
         else:
             st.info("No items found in Master Inventory.")
 
-    # --- TAB 2: STOCK IN ---
+    # --- TAB 2: ANALYTICS DASHBOARD ---
     with tab2:
+        st.subheader("📊 Inventory Analytics & Operational Insights")
+
+        # Load inventory & transaction data
+        df_inv = pd.read_sql_query("SELECT item_name, category, unit, current_stock, min_threshold FROM master_items", conn)
+        df_tx_all = pd.read_sql_query("SELECT timestamp, item_name, type, quantity, user_role, driver_details, project_name FROM transactions", conn)
+
+        if df_inv.empty:
+            st.warning("No inventory data available for analytics.")
+        else:
+            # 1. Top Level Metrics Cards
+            total_skus = len(df_inv)
+            low_stock_items = df_inv[df_inv['current_stock'] <= df_inv['min_threshold']]
+            low_stock_count = len(low_stock_items)
+
+            total_received_qty = df_tx_all[df_tx_all['type'] == 'IN']['quantity'].sum() if not df_tx_all.empty else 0
+            total_issued_qty = df_tx_all[df_tx_all['type'] == 'OUT']['quantity'].sum() if not df_tx_all.empty else 0
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Active SKUs", total_skus)
+            m2.metric("Low Stock Alerts", low_stock_count, delta=f"{low_stock_count} Critical", delta_color="inverse" if low_stock_count > 0 else "off")
+            m3.metric("Total Received (IN)", f"{total_received_qty:,.1f}")
+            m4.metric("Total Issued (OUT)", f"{total_issued_qty:,.1f}")
+
+            st.markdown("---")
+
+            # 2. Low Stock & Critical Reorder Warning Section
+            if low_stock_count > 0:
+                st.error(f"⚠️ **Attention Required:** {low_stock_count} item(s) are at or below safety threshold!")
+                st.dataframe(low_stock_items[['item_name', 'category', 'current_stock', 'min_threshold', 'unit']], use_container_width=True)
+            else:
+                st.success("✅ Stock levels across all items are healthy.")
+
+            st.markdown("---")
+
+            # 3. Visual Charts Grid
+            c1, c2 = st.columns(2)
+
+            with c1:
+                st.markdown("##### 📦 Current Stock vs. Minimum Alert Threshold")
+                # Filter top 15 items for clear bar visualization
+                df_chart_inv = df_inv.sort_values(by='current_stock', ascending=False).head(15)
+                st.bar_chart(df_chart_inv, x="item_name", y=["current_stock", "min_threshold"], use_container_width=True)
+
+            with c2:
+                st.markdown("##### 🏷️ Inventory Items by Category")
+                cat_summary = df_inv.groupby("category")["item_name"].count().reset_index()
+                cat_summary.columns = ["Category", "Total Items"]
+                st.bar_chart(cat_summary, x="Category", y="Total Items", use_container_width=True)
+
+            st.markdown("---")
+
+            # 4. Movement Trends Over Time (Daily Volumes)
+            st.markdown("##### 📈 Daily Stock Activity Trends (IN vs OUT)")
+            if not df_tx_all.empty:
+                # Format date string YYYY-MM-DD
+                df_tx_all['Date'] = df_tx_all['timestamp'].str.slice(0, 10)
+                daily_trend = df_tx_all.groupby(['Date', 'type'])['quantity'].sum().unstack(fill_value=0).reset_index()
+
+                # Ensure both IN and OUT columns exist
+                for col in ['IN', 'OUT']:
+                    if col not in daily_trend.columns:
+                        daily_trend[col] = 0.0
+
+                st.line_chart(daily_trend, x="Date", y=["IN", "OUT"], use_container_width=True)
+            else:
+                st.info("No transaction movement recorded yet to display trend analysis.")
+
+            st.markdown("---")
+
+            # 5. Usage Analysis: Top Issued Items & Frequent Deliveries
+            col_a, col_b = st.columns(2)
+
+            with col_a:
+                st.markdown("##### 🔥 Most Frequently Issued Materials (Top OUT)")
+                if not df_tx_all.empty and not df_tx_all[df_tx_all['type'] == 'OUT'].empty:
+                    df_out_top = df_tx_all[df_tx_all['type'] == 'OUT'].groupby('item_name')['quantity'].sum().reset_index()
+                    df_out_top = df_out_top.sort_values(by='quantity', ascending=False).head(10)
+                    st.dataframe(df_out_top, use_container_width=True)
+                else:
+                    st.caption("No Stock OUT transactions logged.")
+
+            with col_b:
+                st.markdown("##### 🚚 Active Drivers & Transport Logins")
+                if not df_tx_all.empty and df_tx_all['driver_details'].notnull().any():
+                    df_drivers = df_tx_all[df_tx_all['driver_details'] != ''].groupby('driver_details')['timestamp'].count().reset_index()
+                    df_drivers.columns = ['Driver / Vehicle Details', 'Trips Logged']
+                    df_drivers = df_drivers.sort_values(by='Trips Logged', ascending=False).head(10)
+                    st.dataframe(df_drivers, use_container_width=True)
+                else:
+                    st.caption("No transport driver records logged.")
+
+    # --- TAB 3: STOCK IN ---
+    with tab3:
         st.subheader("Log Stock Delivery (Receiving)")
         items = [row[0] for row in cursor.execute("SELECT item_name FROM master_items").fetchall()]
         if items:
@@ -522,8 +615,8 @@ else:
         else:
             st.warning("Please add items to Master Inventory first.")
 
-    # --- TAB 3: STOCK OUT ---
-    with tab3:
+    # --- TAB 4: STOCK OUT ---
+    with tab4:
         st.subheader("Log Stock Issuance (Stock OUT)")
         items = [row[0] for row in cursor.execute("SELECT item_name FROM master_items").fetchall()]
         if items:
@@ -552,9 +645,10 @@ else:
                     st.success(f"Successfully issued {qty_out} of {item_selected}")
                     st.rerun()
 
-    # --- SUPERVISOR TAB 4: MY LOG & REQUEST EDITS ---
+    # --- SUPERVISOR SPECIFIC TABS ---
     if user_role == "Materials Supervisor":
-        with tab4:
+        # SUPERVISOR TAB 5: MY LOG & REQUEST EDITS
+        with tab5:
             st.subheader("My Recent Activity & Edit Requests")
             st.caption("If you made a typing error in a log, click 'Request Edit' to submit a correction request to Head Office.")
 
@@ -622,7 +716,6 @@ else:
                                         cursor.execute("UPDATE transactions SET edit_status = 'PENDING_EDIT' WHERE id = ?", (tx_id,))
                                         conn.commit()
 
-                                        # Notify Head Office
                                         create_notification(
                                             f"⚠️ New Edit Request from `{user_name}` for Log #{tx_id} ({row['item_name']}).",
                                             target_role="Head Office"
@@ -633,8 +726,8 @@ else:
             else:
                 st.info("You have not submitted any stock entries yet.")
 
-        # SUPERVISOR TAB 5: DAILY REPORT
-        with tab5:
+        # SUPERVISOR TAB 6: DAILY REPORT
+        with tab6:
             st.subheader("📅 Multi-Sheet Excel Report Generator")
 
             selected_date = st.date_input("Select Report Date", datetime.now().date())
@@ -664,10 +757,10 @@ else:
                 use_container_width=True
             )
 
-    # --- HEAD OFFICE TABS ---
+    # --- HEAD OFFICE SPECIFIC TABS ---
     if user_role == "Head Office":
-        # HEAD OFFICE TAB 4: EDIT APPROVAL QUEUE
-        with tab4:
+        # HEAD OFFICE TAB 5: EDIT APPROVAL QUEUE
+        with tab5:
             st.subheader("✏️ Supervisor Log Edit Requests")
             st.caption("Review correction requests submitted by supervisors due to typing mistakes.")
 
@@ -702,25 +795,21 @@ else:
                     col_acc, col_rej = st.columns(2)
                     with col_acc:
                         if st.button(f"✅ Accept & Update Log #{tx_id}", key=f"acc_{r_id}", use_container_width=True):
-                            # Adjust master stock inventory based on net difference
                             qty_diff = float(prop['quantity']) - float(orig['quantity'])
                             if req['tx_type'] == 'IN':
                                 cursor.execute("UPDATE master_items SET current_stock = current_stock + ? WHERE item_name = ?", (qty_diff, req['item_name']))
                             else:
                                 cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (qty_diff, req['item_name']))
 
-                            # Update transaction log
                             cursor.execute("""
                                 UPDATE transactions 
                                 SET quantity = ?, issued_to = ?, driver_details = ?, project_name = ?, purpose = ?, edit_status = 'EDITED'
                                 WHERE id = ?
                             """, (prop['quantity'], prop['issued_to'], prop['driver_details'], prop['project_name'], prop['purpose'], tx_id))
 
-                            # Update request status
                             cursor.execute("UPDATE edit_requests SET status = 'APPROVED' WHERE id = ?", (r_id,))
                             conn.commit()
 
-                            # Notify Supervisor
                             create_notification(
                                 f"✅ Your edit request for Log #{tx_id} ({req['item_name']}) was APPROVED by Head Office.",
                                 target_user=req['requested_by']
@@ -737,7 +826,6 @@ else:
                                 cursor.execute("UPDATE transactions SET edit_status = 'NORMAL' WHERE id = ?", (tx_id,))
                                 conn.commit()
 
-                                # Notify Supervisor
                                 create_notification(
                                     f"❌ Your edit request for Log #{tx_id} was REJECTED. Remarks: {rej_remarks or 'None'}",
                                     target_user=req['requested_by']
@@ -749,8 +837,8 @@ else:
             else:
                 st.info("No pending edit requests from supervisors.")
 
-        # HEAD OFFICE TAB 5: ADD MASTER ITEM
-        with tab5:
+        # HEAD OFFICE TAB 6: ADD MASTER ITEM
+        with tab6:
             st.subheader("Add New Master Item")
             new_name = st.text_input("Item Name")
             new_cat = st.selectbox("Category", ["1. Fuel & Oils", "2. Construction Materials", "3. Steel / Rebar", "4A. Nails & Fasteners", "4B. Cutting & Grinding Consumables", "4C. Welding Supplies & PPE", "4D. General Site Supplies"])
@@ -771,8 +859,8 @@ else:
                 else:
                     st.error("Item name cannot be empty.")
 
-        # HEAD OFFICE TAB 6: MASTER AUDIT LOG
-        with tab6:
+        # HEAD OFFICE TAB 7: MASTER AUDIT LOG
+        with tab7:
             st.subheader("Master Transaction Audit Log")
             df_tx = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
             st.dataframe(df_tx, use_container_width=True)
@@ -787,8 +875,8 @@ else:
                         with cols[idx % 3]:
                             st.image(row['photo_path'], caption=f"{row['item_name']} | {row['driver_details']} ({row['timestamp']})", use_container_width=True)
 
-        # HEAD OFFICE TAB 7: MANAGE USERS
-        with tab7:
+        # HEAD OFFICE TAB 8: MANAGE USERS
+        with tab8:
             st.subheader("Create New System User")
             
             with st.form("create_user_form"):
