@@ -3,9 +3,13 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 import io
+import os
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+# Ensure photo directory exists
+os.makedirs("uploads", exist_ok=True)
 
 # Initialize Database Connection
 conn = sqlite3.connect("inventory.db", check_same_thread=False)
@@ -31,9 +35,22 @@ CREATE TABLE IF NOT EXISTS transactions (
     type TEXT,
     quantity REAL,
     user_role TEXT,
-    remarks TEXT
+    driver_details TEXT,
+    remarks TEXT,
+    photo_path TEXT
 )
 """)
+
+# Safe Schema Update (for existing DBs missing new columns)
+try:
+    cursor.execute("ALTER TABLE transactions ADD COLUMN driver_details TEXT")
+except sqlite3.OperationalError:
+    pass  # Column already exists
+
+try:
+    cursor.execute("ALTER TABLE transactions ADD COLUMN photo_path TEXT")
+except sqlite3.OperationalError:
+    pass  # Column already exists
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
@@ -54,35 +71,26 @@ if cursor.fetchone()[0] == 0:
 cursor.execute("SELECT COUNT(*) FROM master_items")
 if cursor.fetchone()[0] == 0:
     sample_items = [
-        # Fuel & Oils
         ("Diesel Fuel", "1. Fuel & Oils", "Liters", 1200, 500),
         ("Gasoline", "1. Fuel & Oils", "Liters", 200, 50),
         ("Engine Oil #10", "1. Fuel & Oils", "Liters", 40, 20),
         ("Engine Oil #40", "1. Fuel & Oils", "Liters", 40, 20),
         ("Hydraulic Oil #68", "1. Fuel & Oils", "Pails (20L)", 8, 3),
         ("Chassis Grease", "1. Fuel & Oils", "Cans (1kg)", 15, 5),
-        
-        # Construction Materials
         ("Tonner Cement", "2. Construction Materials", "Bags (1-Ton)", 15, 5),
         ("Portland Cement", "2. Construction Materials", "Bags (40kg)", 250, 100),
         ("Plywood 1/2 (4x8)", "2. Construction Materials", "Sheets", 80, 25),
         ("Plywood 3/4 (4x8)", "2. Construction Materials", "Sheets", 50, 15),
         ("Coco Lumber 2x2x12", "2. Construction Materials", "Board Feet", 300, 100),
-        
-        # Steel & Rebar
         ("Rebar 10mm x 6m", "3. Steel / Rebar", "Pcs", 350, 100),
         ("Rebar 12mm x 6m", "3. Steel / Rebar", "Pcs", 250, 80),
         ("Rebar 16mm x 6m", "3. Steel / Rebar", "Pcs", 150, 50),
         ("G.I. Tie Wire #16", "3. Steel / Rebar", "Kilos", 50, 15),
-        
-        # Fasteners & Nails
         ("CWN #1-1/2 (Common Nails)", "4A. Nails & Fasteners", "Kilos", 30, 10),
         ("CWN #2 (2 Common Nails)", "4A. Nails & Fasteners", "Kilos", 45, 20),
         ("CWN #3 (3 Common Nails)", "4A. Nails & Fasteners", "Kilos", 40, 15),
         ("CWN #4 (4 Common Nails)", "4A. Nails & Fasteners", "Kilos", 35, 10),
         ("Concrete Nails 3", "4A. Nails & Fasteners", "Kilos", 20, 5),
-        
-        # Consumables & PPE
         ("Cutting Disc 4", "4B. Cutting & Grinding Consumables", "Pcs", 120, 50),
         ("Grinding Disc 4", "4B. Cutting & Grinding Consumables", "Pcs", 60, 20),
         ("Diamond Cutter Blade 14", "4B. Cutting & Grinding Consumables", "Pcs", 4, 2),
@@ -111,7 +119,7 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
     ws_tx.views.sheetView[0].showGridLines = True
 
     # Title Block
-    ws_tx.merge_cells("A1:F1")
+    ws_tx.merge_cells("A1:G1")
     title_cell = ws_tx["A1"]
     title_cell.value = "CONSTRUCTION SITE INVENTORY - DAILY ACTIVITY REPORT"
     title_cell.font = Font(name="Calibri", size=14, bold=True, color="FFFFFF")
@@ -128,7 +136,7 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
     ws_tx["A5"].font = Font(italic=True, color="595959")
 
     # Table Headers
-    headers = ["Time", "Item Name", "Transaction Type", "Quantity", "Logged By", "Remarks / DR / Issued To"]
+    headers = ["Time", "Item Name", "Type", "Quantity", "Driver / Supplier Details", "Logged By", "Remarks"]
     start_row = 7
     for col_num, header_title in enumerate(headers, 1):
         cell = ws_tx.cell(row=start_row, column=col_num, value=header_title)
@@ -147,23 +155,24 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
     current_row = start_row + 1
     if not df_daily_tx.empty:
         for _, row in df_daily_tx.iterrows():
-            ws_tx.cell(row=current_row, column=1, value=str(row['timestamp']))
-            ws_tx.cell(row=current_row, column=2, value=str(row['item_name']))
+            ws_tx.cell(row=current_row, column=1, value=str(row.get('timestamp', '')))
+            ws_tx.cell(row=current_row, column=2, value=str(row.get('item_name', '')))
             
-            type_cell = ws_tx.cell(row=current_row, column=3, value=str(row['type']))
+            type_cell = ws_tx.cell(row=current_row, column=3, value=str(row.get('type', '')))
             type_cell.alignment = Alignment(horizontal="center")
-            if row['type'] == 'IN':
+            if row.get('type') == 'IN':
                 type_cell.font = Font(bold=True, color="006100")
             else:
                 type_cell.font = Font(bold=True, color="9C0006")
 
-            qty_cell = ws_tx.cell(row=current_row, column=4, value=float(row['quantity']))
+            qty_cell = ws_tx.cell(row=current_row, column=4, value=float(row.get('quantity', 0)))
             qty_cell.number_format = "#,##0.00"
             
-            ws_tx.cell(row=current_row, column=5, value=str(row['user_role']))
-            ws_tx.cell(row=current_row, column=6, value=str(row['remarks']))
+            ws_tx.cell(row=current_row, column=5, value=str(row.get('driver_details', '-')))
+            ws_tx.cell(row=current_row, column=6, value=str(row.get('user_role', '')))
+            ws_tx.cell(row=current_row, column=7, value=str(row.get('remarks', '-')))
 
-            for col_num in range(1, 7):
+            for col_num in range(1, 8):
                 ws_tx.cell(row=current_row, column=col_num).border = thin_border
 
             current_row += 1
@@ -307,16 +316,43 @@ else:
         st.subheader("Log Stock Delivery (Receiving)")
         items = [row[0] for row in cursor.execute("SELECT item_name FROM master_items").fetchall()]
         if items:
-            item_selected = st.selectbox("Select Item to Receive", items, key="in_item")
-            qty_in = st.number_input("Quantity Received", min_value=0.1, step=1.0, key="in_qty")
-            remarks_in = st.text_input("Delivery Receipt / Remarks", key="in_rem")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                item_selected = st.selectbox("Select Item to Receive", items, key="in_item")
+                qty_in = st.number_input("Quantity Received", min_value=0.1, step=1.0, key="in_qty")
+            with col_b:
+                driver_info = st.text_input("Driver / Delivery Details / DR #", placeholder="e.g. John Doe (Plate: ABC-123, DR #9876)", key="in_driver")
+                remarks_in = st.text_input("General Remarks", placeholder="e.g. Verified good condition, unloaded at Bay 2", key="in_rem")
 
-            if st.button("Submit Stock In"):
+            st.markdown("### 📷 Delivery Photo / Receipt Proof")
+            photo_mode = st.radio("Choose Photo Upload Method:", ["Camera Capture", "Upload File"], horizontal=True, key="in_photo_mode")
+            
+            image_bytes = None
+            if photo_mode == "Camera Capture":
+                camera_photo = st.camera_input("Take a picture of the delivery / receipt", key="in_camera")
+                if camera_photo:
+                    image_bytes = camera_photo.getvalue()
+            else:
+                uploaded_file = st.file_uploader("Upload Delivery Receipt / Photo", type=["jpg", "jpeg", "png"], key="in_upload")
+                if uploaded_file:
+                    image_bytes = uploaded_file.getvalue()
+
+            if st.button("Submit Stock In", use_container_width=True):
+                saved_photo_path = None
+                if image_bytes:
+                    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    file_filename = f"uploads/delivery_{timestamp_str}.jpg"
+                    with open(file_filename, "wb") as f:
+                        f.write(image_bytes)
+                    saved_photo_path = file_filename
+
                 cursor.execute("UPDATE master_items SET current_stock = current_stock + ? WHERE item_name = ?", (qty_in, item_selected))
-                cursor.execute("INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, remarks) VALUES (?, ?, ?, ?, ?, ?)",
-                               (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "IN", qty_in, st.session_state["username"], remarks_in))
+                cursor.execute("""
+                    INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, driver_details, remarks, photo_path) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "IN", qty_in, st.session_state["username"], driver_info, remarks_in, saved_photo_path))
                 conn.commit()
-                st.success(f"Added {qty_in} to {item_selected}")
+                st.success(f"Successfully recorded receiving {qty_in} of {item_selected}!")
                 st.rerun()
         else:
             st.warning("Please add items to Master Inventory first.")
@@ -328,16 +364,18 @@ else:
         if items:
             item_selected = st.selectbox("Select Item to Issue", items, key="out_item")
             qty_out = st.number_input("Quantity Issued", min_value=0.1, step=1.0, key="out_qty")
-            remarks_out = st.text_input("Issued To / Equipment ID", key="out_rem")
+            remarks_out = st.text_input("Issued To / Equipment ID / Purpose", key="out_rem")
 
-            if st.button("Submit Stock Out"):
+            if st.button("Submit Stock Out", use_container_width=True):
                 curr_stock = cursor.execute("SELECT current_stock FROM master_items WHERE item_name = ?", (item_selected,)).fetchone()[0]
                 if qty_out > curr_stock:
                     st.error("Insufficient stock!")
                 else:
                     cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (qty_out, item_selected))
-                    cursor.execute("INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, remarks) VALUES (?, ?, ?, ?, ?, ?)",
-                                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "OUT", qty_out, st.session_state["username"], remarks_out))
+                    cursor.execute("""
+                        INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, remarks) 
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "OUT", qty_out, st.session_state["username"], remarks_out))
                     conn.commit()
                     st.success(f"Issued {qty_out} of {item_selected}")
                     st.rerun()
@@ -346,15 +384,25 @@ else:
     if st.session_state["user_role"] == "Materials Supervisor":
         with tab4:
             st.subheader("My Recent Activity & Submitted Logs")
-            st.caption("Review your recently submitted transactions below.")
+            st.caption("Review your recently submitted transactions and attached photos below.")
             
             df_my_tx = pd.read_sql_query(
-                "SELECT timestamp, item_name, type, quantity, remarks FROM transactions WHERE user_role = ? ORDER BY id DESC", 
+                "SELECT timestamp, item_name, type, quantity, driver_details, remarks, photo_path FROM transactions WHERE user_role = ? ORDER BY id DESC", 
                 conn, params=(st.session_state["username"],)
             )
             
             if not df_my_tx.empty:
-                st.dataframe(df_my_tx, use_container_width=True)
+                st.dataframe(df_my_tx.drop(columns=["photo_path"]), use_container_width=True)
+                
+                # Preview images in log
+                photos = df_my_tx[df_my_tx['photo_path'].notnull()]
+                if not photos.empty:
+                    st.markdown("#### 📸 Attached Delivery Photos")
+                    cols = st.columns(3)
+                    for idx, (_, row) in enumerate(photos.iterrows()):
+                        if os.path.exists(row['photo_path']):
+                            with cols[idx % 3]:
+                                st.image(row['photo_path'], caption=f"{row['item_name']} - {row['timestamp']}", use_container_width=True)
             else:
                 st.info("You have not submitted any stock entries yet.")
 
@@ -367,7 +415,7 @@ else:
             date_str = selected_date.strftime("%Y-%m-%d")
 
             query_daily = """
-                SELECT timestamp, item_name, type, quantity, user_role, remarks 
+                SELECT timestamp, item_name, type, quantity, driver_details, user_role, remarks 
                 FROM transactions 
                 WHERE timestamp LIKE ? 
                 ORDER BY id ASC
@@ -432,6 +480,17 @@ else:
             st.subheader("Master Transaction Audit Log")
             df_tx = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
             st.dataframe(df_tx, use_container_width=True)
+            
+            # Head Office Photo Audit Gallery
+            photos = df_tx[df_tx['photo_path'].notnull()]
+            if not photos.empty:
+                st.markdown("---")
+                st.markdown("### 📷 Delivery Receipt & Photo Audit Trail")
+                cols = st.columns(3)
+                for idx, (_, row) in enumerate(photos.iterrows()):
+                    if os.path.exists(row['photo_path']):
+                        with cols[idx % 3]:
+                            st.image(row['photo_path'], caption=f"{row['item_name']} | {row['driver_details']} ({row['timestamp']})", use_container_width=True)
 
         with tab6:
             st.subheader("Create New System User")
