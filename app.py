@@ -2,126 +2,168 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from datetime import datetime
-from io import BytesIO
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
 
-# ---------------------------------------------------------
-# DATABASE SETUP
-# ---------------------------------------------------------
-conn = sqlite3.connect("site_inventory.db", check_same_thread=False)
-c = conn.cursor()
+# Initialize Database
+conn = sqlite3.connect("inventory.db", check_same_thread=False)
+cursor = conn.cursor()
 
-c.execute("""
-CREATE TABLE IF NOT EXISTS items (
-    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+# Create Tables if they don't exist
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS master_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_name TEXT UNIQUE,
     category TEXT,
     unit TEXT,
     current_stock REAL,
-    min_alert REAL
+    min_threshold REAL
 )
 """)
 
-c.execute("""
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS transactions (
-    trans_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT,
     item_name TEXT,
-    trans_type TEXT,
+    type TEXT,
     quantity REAL,
-    issued_to_location TEXT,
     user_role TEXT,
-    remarks TEXT,
-    status TEXT DEFAULT 'ACTIVE'
+    remarks TEXT
 )
 """)
 conn.commit()
 
-# Seed database with standard categories/items if empty
-c.execute("SELECT COUNT(*) FROM items")
-if c.fetchone()[0] == 0:
-    sample_items = [
-        ("Diesel", "1. Fuel & Oils", "Liters", 1200, 500),
-        ("Oil #10", "1. Fuel & Oils", "Liters", 40, 20),
-        ("Tonner Cement", "2. Construction Materials", "Bags (1-Ton)", 15, 5),
-        ("Small Bag Cement", "2. Construction Materials", "Bags (40kg)", 250, 100),
-        ("Rebar 10mm", "3. Steel / Rebar", "Pcs", 350, 100),
-        ("CWN #2 (2' Common Nails)", "4A. Nails & Fasteners", "Kilos", 45, 20),
-        ("Cutting Disc 4'", "4B. Cutting & Grinding Consumables", "Pcs", 120, 50),
-        ("Concrete Cutter Blade", "4B. Cutting & Grinding Consumables", "Pcs", 4, 2),
-        ("Welding Rod 6011", "4C. Welding Supplies & PPE", "Kilos", 30, 15),
-        ("Chalk Stone", "4D. General Site Supplies", "Boxes", 12, 5)
-    ]
-    c.executemany("INSERT INTO items (item_name, category, unit, current_stock, min_alert) VALUES (?, ?, ?, ?, ?)", sample_items)
-    conn.commit()
+# --- PREDEFINED USER CREDENTIALS ---
+USER_CREDENTIALS = {
+    "Materials Supervisor": "sup123",  # Change this password as needed
+    "Head Office": "head456"             # Change this password as needed
+}
 
-# ---------------------------------------------------------
-# STREAMLIT UI
-# ---------------------------------------------------------
-st.set_page_config(page_title="Construction Site Inventory", layout="wide")
+# --- SESSION STATE INITIALIZATION ---
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+if "user_role" not in st.session_state:
+    st.session_state["user_role"] = None
 
-st.sidebar.title("Construction Inventory App")
-role = st.sidebar.selectbox("Select User Role", ["Materials Supervisor", "Head Office", "Admin"])
+# --- LOGIN SCREEN ---
+if not st.session_state["logged_in"]:
+    st.title("🏗️ Construction Site Inventory")
+    st.subheader("Please Log In")
 
-if role == "Materials Supervisor":
-    st.title("📦 Materials Supervisor Interface")
-    tab1, tab2 = st.tabs(["+ Stock In (Receiving)", "- Stock Out (Issuance)"])
-    
+    selected_role = st.selectbox("Select Your Role", ["Materials Supervisor", "Head Office"])
+    entered_password = st.text_input("Enter Passcode", type="password")
+
+    if st.button("Log In"):
+        if entered_password == USER_CREDENTIALS.get(selected_role):
+            st.session_state["logged_in"] = True
+            st.session_state["user_role"] = selected_role
+            st.success(f"Logged in successfully as {selected_role}!")
+            st.rerun()
+        else:
+            st.error("Incorrect passcode. Please try again.")
+
+# --- MAIN APPLICATION (Logged In) ---
+else:
+    # Sidebar Profile & Logout
+    st.sidebar.markdown(f"**Logged in as:** `{st.session_state['user_role']}`")
+    if st.sidebar.button("Log Out"):
+        st.session_state["logged_in"] = False
+        st.session_state["user_role"] = None
+        st.rerun()
+
+    st.title("🏗️ Construction Site Inventory System")
+
+    # Define Tabs based on User Role
+    if st.session_state["user_role"] == "Materials Supervisor":
+        tab1, tab2, tab3 = st.tabs(["📋 Current Inventory", "+ Stock In", "- Stock Out"])
+    else:  # Head Office
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📋 Current Inventory", 
+            "+ Stock In", 
+            "- Stock Out", 
+            "➕ Add Master Item", 
+            "📜 Audit Log"
+        ])
+
+    # Tab 1: Current Inventory
     with tab1:
-        st.subheader("Log Incoming Delivery")
-        item_list = [r[0] for r in c.execute("SELECT item_name FROM items").fetchall()]
-        selected_item = st.selectbox("Select Item", item_list)
-        qty = st.number_input("Quantity Received", min_value=0.1, step=1.0)
-        remarks = st.text_input("Delivery Receipt # / Remarks")
-        if st.button("Submit Stock In"):
-            c.execute("UPDATE items SET current_stock = current_stock + ? WHERE item_name = ?", (qty, selected_item))
-            c.execute("INSERT INTO transactions (timestamp, item_name, trans_type, quantity, user_role, remarks) VALUES (?, ?, 'STOCK IN', ?, ?, ?)",
-                      (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), selected_item, qty, role, remarks))
-            conn.commit()
-            st.success(f"Successfully added {qty} to {selected_item}!")
-
-    with tab2:
-        st.subheader("Log Material Issuance")
-        selected_item_out = st.selectbox("Select Item to Issue", item_list, key="out_item")
-        current_stk = c.execute("SELECT current_stock FROM items WHERE item_name = ?", (selected_item_out,)).fetchone()[0]
-        st.info(f"Available Stock: {current_stk}")
-        qty_out = st.number_input("Quantity Issued", min_value=0.1, max_value=float(current_stk), step=1.0)
-        location = st.text_input("Issued To / Equipment ID / Location")
-        if st.button("Submit Stock Out"):
-            c.execute("UPDATE items SET current_stock = current_stock - ? WHERE item_name = ?", (qty_out, selected_item_out))
-            c.execute("INSERT INTO transactions (timestamp, item_name, trans_type, quantity, issued_to_location, user_role) VALUES (?, ?, 'STOCK OUT', ?, ?, ?)",
-                      (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), selected_item_out, qty_out, location, role))
-            conn.commit()
-            st.success(f"Successfully issued {qty_out} of {selected_item_out}!")
-
-elif role in ["Head Office", "Admin"]:
-    st.title("📊 Head Office Oversight & Management")
-    tab1, tab2, tab3 = st.tabs(["Stock Overview & Low Stock Alerts", "Transaction History & Audit", "+ Add Master Item"])
-    
-    with tab1:
-        st.subheader("Current Inventory Status")
-        df_items = pd.read_sql_query("SELECT item_name AS Item, category AS Category, unit AS Unit, current_stock AS Stock, min_alert AS Min_Threshold FROM items", conn)
-        df_items["Status"] = df_items.apply(lambda r: "⚠️ REORDER ALERT" if r["Stock"] <= r["Min_Threshold"] else "OK", axis=1)
-        st.dataframe(df_items, use_container_width=True)
+        st.subheader("Inventory Status")
+        df_items = pd.read_sql_query("SELECT item_name, category, unit, current_stock, min_threshold FROM master_items", conn)
         
+        if not df_items.empty:
+            # Highlight Low Stock
+            def highlight_low_stock(row):
+                return ['background-color: #ffcccc' if row['current_stock'] <= row['min_threshold'] else '' for _ in row]
+
+            st.dataframe(df_items.style.apply(highlight_low_stock, axis=1), use_container_width=True)
+        else:
+            st.info("No items found in Master Inventory.")
+
+    # Tab 2: Stock In
     with tab2:
-        st.subheader("Master Transaction Audit Log")
-        df_trans = pd.read_sql_query("SELECT * FROM transactions ORDER BY trans_id DESC", conn)
-        st.dataframe(df_trans, use_container_width=True)
-        
-    with tab3:
-        st.subheader("Add New Item to Master List")
-        new_name = st.text_input("Item Name")
-        new_cat = st.selectbox("Category", ["1. Fuel & Oils", "2. Construction Materials", "3. Steel / Rebar", "4A. Nails & Fasteners", "4B. Cutting & Grinding Consumables", "4C. Welding Supplies & PPE", "4D. General Site Supplies"])
-        new_unit = st.text_input("Unit of Measure (e.g., Liters, Kilos, Pcs)")
-        new_min = st.number_input("Minimum Alert Threshold", min_value=0.0, step=1.0)
-        if st.button("Add Item"):
-            try:
-                c.execute("INSERT INTO items (item_name, category, unit, current_stock, min_alert) VALUES (?, ?, ?, 0, ?)", (new_name, new_cat, new_unit, new_min))
+        st.subheader("Log Stock Delivery (Receiving)")
+        items = [row[0] for row in cursor.execute("SELECT item_name FROM master_items").fetchall()]
+        if items:
+            item_selected = st.selectbox("Select Item to Receive", items, key="in_item")
+            qty_in = st.number_input("Quantity Received", min_value=0.1, step=1.0, key="in_qty")
+            remarks_in = st.text_input("Delivery Receipt / Remarks", key="in_rem")
+
+            if st.button("Submit Stock In"):
+                cursor.execute("UPDATE master_items SET current_stock = current_stock + ? WHERE item_name = ?", (qty_in, item_selected))
+                cursor.execute("INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, remarks) VALUES (?, ?, ?, ?, ?, ?)",
+                               (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "IN", qty_in, st.session_state["user_role"], remarks_in))
                 conn.commit()
-                st.success(f"Successfully added {new_name} to Master Inventory!")
-            except sqlite3.IntegrityError:
-                st.error("Item already exists!")
+                st.success(f"Added {qty_in} to {item_selected}")
+                st.rerun()
+        else:
+            st.warning("Please add items to Master Inventory first.")
+
+    # Tab 3: Stock Out
+    with tab3:
+        st.subheader("Log Stock Issuance")
+        items = [row[0] for row in cursor.execute("SELECT item_name FROM master_items").fetchall()]
+        if items:
+            item_selected = st.selectbox("Select Item to Issue", items, key="out_item")
+            qty_out = st.number_input("Quantity Issued", min_value=0.1, step=1.0, key="out_qty")
+            remarks_out = st.text_input("Issued To / Equipment ID", key="out_rem")
+
+            if st.button("Submit Stock Out"):
+                curr_stock = cursor.execute("SELECT current_stock FROM master_items WHERE item_name = ?", (item_selected,)).fetchone()[0]
+                if qty_out > curr_stock:
+                    st.error("Insufficient stock!")
+                else:
+                    cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (qty_out, item_selected))
+                    cursor.execute("INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, remarks) VALUES (?, ?, ?, ?, ?, ?)",
+                                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "OUT", qty_out, st.session_state["user_role"], remarks_out))
+                    conn.commit()
+                    st.success(f"Issued {qty_out} of {item_selected}")
+                    st.rerun()
+
+    # Head Office Only Tabs
+    if st.session_state["user_role"] == "Head Office":
+        # Tab 4: Add Master Item
+        with tab4:
+            st.subheader("Add New Master Item")
+            new_name = st.text_input("Item Name")
+            new_cat = st.selectbox("Category", ["1. Fuel & Oils", "2. Construction Materials", "3. Steel / Rebar", "4. Consumables"])
+            new_unit = st.text_input("Unit of Measure (e.g., Liters, Bags, Pcs)")
+            init_stock = st.number_input("Initial Stock", min_value=0.0, step=1.0)
+            min_thresh = st.number_input("Minimum Alert Threshold", min_value=0.0, step=1.0)
+
+            if st.button("Save New Item"):
+                if new_name:
+                    try:
+                        cursor.execute("INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold) VALUES (?, ?, ?, ?, ?)",
+                                       (new_name, new_cat, new_unit, init_stock, min_thresh))
+                        conn.commit()
+                        st.success(f"Added '{new_name}' to inventory master!")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Item name already exists.")
+                else:
+                    st.error("Item name cannot be empty.")
+
+        # Tab 5: Audit Log
+        with tab5:
+            st.subheader("Transaction Audit Log")
+            df_tx = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
+            st.dataframe(df_tx, use_container_width=True)
