@@ -402,7 +402,7 @@ else:
     with header_col1:
         st.title("🏗️ Construction Site Inventory System")
     with header_col2:
-        st.markdown("<br>", unsafe_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
         with st.popover(bell_label, use_container_width=True):
             st.markdown(f"### Notifications for `{user_name}`")
             
