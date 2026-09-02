@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import io
 import os
 import json
@@ -78,6 +78,34 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT UNIQUE,
     password TEXT,
     role TEXT
+)
+""")
+
+# NEW TABLE: REMINDERS
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_name TEXT,
+    title TEXT,
+    due_date TEXT,
+    priority TEXT,
+    status TEXT DEFAULT 'PENDING',
+    timestamp TEXT
+)
+""")
+
+# NEW TABLE: SCHEDULES
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_name TEXT,
+    title TEXT,
+    event_date TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    location_details TEXT,
+    notes TEXT,
+    timestamp TEXT
 )
 """)
 
@@ -162,7 +190,6 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
         top=Side(style='thin', color='D9D9D9'), bottom=Side(style='thin', color='D9D9D9')
     )
 
-    # SHEET 1: MASTER LOG
     ws_master = wb.active
     ws_master.title = "Master Activity Log"
     ws_master.views.sheetView[0].showGridLines = True
@@ -215,7 +242,6 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
     else:
         ws_master.cell(row=7, column=1, value="No activity recorded for this date.")
 
-    # SHEET 2: STOCK IN RECORD
     ws_in = wb.create_sheet(title="Stock IN Entries")
     ws_in.views.sheetView[0].showGridLines = True
     ws_in.merge_cells("A1:F1")
@@ -253,7 +279,6 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
     else:
         ws_in.cell(row=5, column=1, value="No Stock IN entries for this date.")
 
-    # SHEET 3: STOCK OUT RECORD
     ws_out = wb.create_sheet(title="Stock OUT Entries")
     ws_out.views.sheetView[0].showGridLines = True
     ws_out.merge_cells("A1:H1")
@@ -293,7 +318,6 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
     else:
         ws_out.cell(row=5, column=1, value="No Stock OUT entries for this date.")
 
-    # SHEET 4: CATEGORIZED STOCK BALANCE
     ws_cat = wb.create_sheet(title="Categorized Stock Balance")
     ws_cat.views.sheetView[0].showGridLines = True
     ws_cat.merge_cells("A1:D1")
@@ -434,7 +458,7 @@ else:
     st.sidebar.markdown(f"**Role:** `{user_role}`")
     st.sidebar.markdown("---")
 
-    # Define Navigation Options based on Role
+    # Navigation options updated with Reminders & Schedule
     if user_role == "Materials Supervisor":
         nav_options = [
             "📋 Current Inventory", 
@@ -442,7 +466,9 @@ else:
             "+ Stock In", 
             "- Stock Out",
             "📜 My Log & Request Edits",
-            "📅 Daily Report (Excel)"
+            "📅 Daily Report (Excel)",
+            "⏰ Reminders",
+            "📅 Schedule"
         ]
     else:  # Head Office Admin
         pending_requests_count = cursor.execute("SELECT COUNT(*) FROM edit_requests WHERE status = 'PENDING'").fetchone()[0]
@@ -456,7 +482,9 @@ else:
             edit_option_title,
             "➕ Manage Master Items", 
             "📜 Master Audit Log",
-            "👤 Manage Users"
+            "👤 Manage Users",
+            "⏰ Reminders",
+            "📅 Schedule"
         ]
 
     st.sidebar.markdown("### 📌 Navigation")
@@ -905,7 +933,6 @@ else:
             "4D. General Site Supplies"
         ]
 
-        # Section A: Edit Existing Inventory Item Name & Category
         st.subheader("✏️ Edit Item Name or Category")
         existing_items_df = pd.read_sql_query("SELECT id, item_name, category, unit, min_threshold FROM master_items ORDER BY item_name ASC", conn)
 
@@ -952,7 +979,6 @@ else:
 
         st.markdown("---")
 
-        # Section B: Add New Item
         st.subheader("➕ Add New Master Item")
         with st.form("add_new_master_item_form"):
             col_n1, col_n2 = st.columns(2)
@@ -1022,3 +1048,100 @@ else:
         st.subheader("Existing Accounts")
         df_users = pd.read_sql_query("SELECT id, username, role FROM users", conn)
         st.dataframe(df_users, use_container_width=True)
+
+    # --- MENU 5: REMINDERS ---
+    elif selected_menu == "⏰ Reminders":
+        st.subheader("⏰ Reminders & Action Tasks")
+
+        with st.form("add_reminder_form"):
+            r_col1, r_col2 = st.columns([0.6, 0.4])
+            with r_col1:
+                rem_title = st.text_input("Reminder Description", placeholder="e.g. Reorder Diesel Fuel, Follow up DR receipt")
+            with r_col2:
+                rem_due = st.date_input("Due Date", datetime.now().date())
+                rem_prio = st.selectbox("Priority Level", ["Normal", "High", "Critical"])
+
+            btn_add_rem = st.form_submit_button("Add Reminder", use_container_width=True)
+
+        if btn_add_rem:
+            if rem_title.strip():
+                cursor.execute("""
+                    INSERT INTO reminders (user_name, title, due_date, priority, status, timestamp)
+                    VALUES (?, ?, ?, ?, 'PENDING', ?)
+                """, (user_name, rem_title.strip(), str(rem_due), rem_prio, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                conn.commit()
+                st.success("Reminder added successfully!")
+                st.rerun()
+            else:
+                st.error("Please enter a reminder description.")
+
+        st.markdown("---")
+        st.markdown("### 📋 Active Reminders")
+        df_reminders = pd.read_sql_query(
+            "SELECT id, title, due_date, priority, status FROM reminders WHERE user_name = ? AND status = 'PENDING' ORDER BY due_date ASC",
+            conn, params=(user_name,)
+        )
+
+        if not df_reminders.empty:
+            for _, r in df_reminders.iterrows():
+                p_badge = "🔴" if r['priority'] == "Critical" else ("🟡" if r['priority'] == "High" else "🔵")
+                
+                col_t, col_b = st.columns([0.8, 0.2])
+                with col_t:
+                    st.markdown(f"{p_badge} **{r['title']}** — *Due: {r['due_date']}* (`{r['priority']}` priority)")
+                with col_b:
+                    if st.button("Mark Complete", key=f"done_rem_{r['id']}"):
+                        cursor.execute("UPDATE reminders SET status = 'COMPLETED' WHERE id = ?", (r['id'],))
+                        conn.commit()
+                        st.rerun()
+                st.divider()
+        else:
+            st.info("No active reminders for your account.")
+
+    # --- MENU 6: SCHEDULE ---
+    elif selected_menu == "📅 Schedule":
+        st.subheader("📅 Site Events & Delivery Schedule")
+
+        with st.form("add_schedule_form"):
+            s_col1, s_col2 = st.columns(2)
+            with s_col1:
+                sched_title = st.text_input("Event Title", placeholder="e.g. Cement Delivery Bay 3, Equipment Maintenance")
+                sched_date = st.date_input("Event Date", datetime.now().date())
+                sched_loc = st.text_input("Location / Site Bay", placeholder="e.g. Tower B North Wing")
+            with s_col2:
+                sched_start = st.time_input("Start Time", time(8, 0))
+                sched_end = st.time_input("End Time", time(10, 0))
+                sched_notes = st.text_input("Notes / Contact Person", placeholder="e.g. Supplier Contact: 0917-XXX-XXXX")
+
+            btn_add_sched = st.form_submit_button("Add Scheduled Event", use_container_width=True)
+
+        if btn_add_sched:
+            if sched_title.strip():
+                cursor.execute("""
+                    INSERT INTO schedules (user_name, title, event_date, start_time, end_time, location_details, notes, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (user_name, sched_title.strip(), str(sched_date), str(sched_start), str(sched_end), sched_loc, sched_notes, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                conn.commit()
+                st.success("Scheduled event saved!")
+                st.rerun()
+            else:
+                st.error("Please enter an event title.")
+
+        st.markdown("---")
+        st.markdown("### 🗓️ Upcoming Schedule Timeline")
+        df_sched = pd.read_sql_query(
+            "SELECT id, title, event_date, start_time, end_time, location_details, notes FROM schedules ORDER BY event_date ASC, start_time ASC",
+            conn
+        )
+
+        if not df_sched.empty:
+            for _, s in df_sched.iterrows():
+                with st.expander(f"📅 {s['event_date']} | {s['start_time']} - {s['end_time']} : {s['title']}"):
+                    st.write(f"**Location:** {s['location_details'] or 'N/A'}")
+                    st.write(f"**Notes:** {s['notes'] or 'N/A'}")
+                    if st.button("Remove Event", key=f"del_sched_{s['id']}"):
+                        cursor.execute("DELETE FROM schedules WHERE id = ?", (s['id'],))
+                        conn.commit()
+                        st.rerun()
+        else:
+            st.info("No events scheduled yet.")
