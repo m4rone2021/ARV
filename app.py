@@ -49,6 +49,55 @@ cursor.execute("SELECT COUNT(*) FROM users")
 if cursor.fetchone()[0] == 0:
     cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", 
                    ("admin", "admin123", "Head Office"))
+
+# --- SEED EXPANDED INVENTORY LIST ---
+cursor.execute("SELECT COUNT(*) FROM master_items")
+if cursor.fetchone()[0] == 0:
+    sample_items = [
+        # Fuel & Oils
+        ("Diesel Fuel", "1. Fuel & Oils", "Liters", 1200, 500),
+        ("Gasoline", "1. Fuel & Oils", "Liters", 200, 50),
+        ("Engine Oil #10", "1. Fuel & Oils", "Liters", 40, 20),
+        ("Engine Oil #40", "1. Fuel & Oils", "Liters", 40, 20),
+        ("Hydraulic Oil #68", "1. Fuel & Oils", "Pails (20L)", 8, 3),
+        ("Chassis Grease", "1. Fuel & Oils", "Cans (1kg)", 15, 5),
+        
+        # Construction Materials
+        ("Tonner Cement", "2. Construction Materials", "Bags (1-Ton)", 15, 5),
+        ("Portland Cement", "2. Construction Materials", "Bags (40kg)", 250, 100),
+        ("Plywood 1/2 (4x8)", "2. Construction Materials", "Sheets", 80, 25),
+        ("Plywood 3/4 (4x8)", "2. Construction Materials", "Sheets", 50, 15),
+        ("Coco Lumber 2x2x12", "2. Construction Materials", "Board Feet", 300, 100),
+        
+        # Steel & Rebar
+        ("Rebar 10mm x 6m", "3. Steel / Rebar", "Pcs", 350, 100),
+        ("Rebar 12mm x 6m", "3. Steel / Rebar", "Pcs", 250, 80),
+        ("Rebar 16mm x 6m", "3. Steel / Rebar", "Pcs", 150, 50),
+        ("G.I. Tie Wire #16", "3. Steel / Rebar", "Kilos", 50, 15),
+        
+        # Fasteners & Nails
+        ("CWN #1-1/2 (Common Nails)", "4A. Nails & Fasteners", "Kilos", 30, 10),
+        ("CWN #2 (2 Common Nails)", "4A. Nails & Fasteners", "Kilos", 45, 20),
+        ("CWN #3 (3 Common Nails)", "4A. Nails & Fasteners", "Kilos", 40, 15),
+        ("CWN #4 (4 Common Nails)", "4A. Nails & Fasteners", "Kilos", 35, 10),
+        ("Concrete Nails 3", "4A. Nails & Fasteners", "Kilos", 20, 5),
+        
+        # Consumables & PPE
+        ("Cutting Disc 4", "4B. Cutting & Grinding Consumables", "Pcs", 120, 50),
+        ("Grinding Disc 4", "4B. Cutting & Grinding Consumables", "Pcs", 60, 20),
+        ("Diamond Cutter Blade 14", "4B. Cutting & Grinding Consumables", "Pcs", 4, 2),
+        ("Welding Rod 6011", "4C. Welding Supplies & PPE", "Kilos", 30, 15),
+        ("Welding Rod 6013", "4C. Welding Supplies & PPE", "Kilos", 50, 20),
+        ("Safety Helmets (Hard Hats)", "4C. Welding Supplies & PPE", "Pcs", 25, 10),
+        ("Cotton Gloves (Pair)", "4C. Welding Supplies & PPE", "Pairs", 100, 30),
+        ("Chalk Stone (Marking)", "4D. General Site Supplies", "Boxes", 12, 5),
+        ("Nylon Rope 1/2", "4D. General Site Supplies", "Meters", 100, 30)
+    ]
+    cursor.executemany("""
+    INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold)
+    VALUES (?, ?, ?, ?, ?)
+    """, sample_items)
+
 conn.commit()
 
 
@@ -154,7 +203,6 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
             thresh_cell = ws_stock.cell(row=s_row, column=5, value=float(row['min_threshold']))
             thresh_cell.number_format = "#,##0.00"
 
-            # Low stock highlight
             if float(row['current_stock']) <= float(row['min_threshold']):
                 stk_cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
                 stk_cell.font = Font(color="9C0006", bold=True)
@@ -164,19 +212,17 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
 
             s_row += 1
 
-    # Auto-fit Column Widths for both sheets
     for sheet in [ws_tx, ws_stock]:
         for col in sheet.columns:
             max_len = 0
             col_letter = get_column_letter(col[0].column)
             for cell in col:
-                if cell.row in [1]:  # Skip title row length calculation
+                if cell.row in [1]:
                     continue
                 if cell.value:
                     max_len = max(max_len, len(str(cell.value)))
             sheet.column_dimensions[col_letter].width = max(max_len + 4, 12)
 
-    # Save to memory buffer
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
@@ -214,7 +260,6 @@ if not st.session_state["logged_in"]:
 
 # --- MAIN APPLICATION (LOGGED IN) ---
 else:
-    # Sidebar Profile & Logout
     st.sidebar.markdown(f"**Logged in as:** `{st.session_state['username']}`")
     st.sidebar.markdown(f"**Role:** `{st.session_state['user_role']}`")
     
@@ -226,7 +271,6 @@ else:
 
     st.title("🏗️ Construction Site Inventory System")
 
-    # Dynamic Tabs Based on Role
     if st.session_state["user_role"] == "Materials Supervisor":
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📋 Current Inventory", 
@@ -245,7 +289,7 @@ else:
             "👤 Manage Users"
         ])
 
-    # Tab 1: Current Inventory (Accessible to ALL)
+    # Tab 1: Current Inventory
     with tab1:
         st.subheader("Current Available Stocks")
         df_items = pd.read_sql_query("SELECT item_name, category, unit, current_stock, min_threshold FROM master_items", conn)
@@ -258,7 +302,7 @@ else:
         else:
             st.info("No items found in Master Inventory.")
 
-    # Tab 2: Stock In (Receiving)
+    # Tab 2: Stock In
     with tab2:
         st.subheader("Log Stock Delivery (Receiving)")
         items = [row[0] for row in cursor.execute("SELECT item_name FROM master_items").fetchall()]
@@ -277,7 +321,7 @@ else:
         else:
             st.warning("Please add items to Master Inventory first.")
 
-    # Tab 3: Stock Out (Issuance)
+    # Tab 3: Stock Out
     with tab3:
         st.subheader("Log Stock Issuance")
         items = [row[0] for row in cursor.execute("SELECT item_name FROM master_items").fetchall()]
@@ -298,11 +342,11 @@ else:
                     st.success(f"Issued {qty_out} of {item_selected}")
                     st.rerun()
 
-    # Supervisor Tab 4: Personal Activity Verification Log
+    # Supervisor Tab 4: Activity Log
     if st.session_state["user_role"] == "Materials Supervisor":
         with tab4:
             st.subheader("My Recent Activity & Submitted Logs")
-            st.caption("Review your recently submitted transactions below to verify if your entries are correct.")
+            st.caption("Review your recently submitted transactions below.")
             
             df_my_tx = pd.read_sql_query(
                 "SELECT timestamp, item_name, type, quantity, remarks FROM transactions WHERE user_role = ? ORDER BY id DESC", 
@@ -314,7 +358,7 @@ else:
             else:
                 st.info("You have not submitted any stock entries yet.")
 
-        # Supervisor Tab 5: Daily Activity & Excel Report Generator
+        # Supervisor Tab 5: Daily Report
         with tab5:
             st.subheader("📅 Daily Activity Report Generator")
             st.caption("Select a date to preview transactions and download an official Excel (.xlsx) summary report.")
@@ -322,7 +366,6 @@ else:
             selected_date = st.date_input("Select Report Date", datetime.now().date())
             date_str = selected_date.strftime("%Y-%m-%d")
 
-            # Fetch transactions for selected date
             query_daily = """
                 SELECT timestamp, item_name, type, quantity, user_role, remarks 
                 FROM transactions 
@@ -332,7 +375,6 @@ else:
             df_daily_tx = pd.read_sql_query(query_daily, conn, params=(f"{date_str}%",))
             df_current_stock = pd.read_sql_query("SELECT item_name, category, unit, current_stock, min_threshold FROM master_items", conn)
 
-            # Metrics
             col1, col2, col3 = st.columns(3)
             in_count = len(df_daily_tx[df_daily_tx['type'] == 'IN']) if not df_daily_tx.empty else 0
             out_count = len(df_daily_tx[df_daily_tx['type'] == 'OUT']) if not df_daily_tx.empty else 0
@@ -349,7 +391,6 @@ else:
             else:
                 st.info(f"No transactions logged on {date_str}.")
 
-            # Generate Excel Buffer
             excel_data = generate_excel_report(
                 user_name=st.session_state["username"],
                 selected_date=date_str,
@@ -357,7 +398,6 @@ else:
                 df_current_stock=df_current_stock
             )
 
-            # Excel Download Button
             st.download_button(
                 label="📥 Download Daily Excel Report (.xlsx)",
                 data=excel_data,
@@ -365,13 +405,12 @@ else:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-    # Head Office Only Tabs
+    # Head Office Tabs
     if st.session_state["user_role"] == "Head Office":
-        # Tab 4: Add Master Item
         with tab4:
             st.subheader("Add New Master Item")
             new_name = st.text_input("Item Name")
-            new_cat = st.selectbox("Category", ["1. Fuel & Oils", "2. Construction Materials", "3. Steel / Rebar", "4. Consumables"])
+            new_cat = st.selectbox("Category", ["1. Fuel & Oils", "2. Construction Materials", "3. Steel / Rebar", "4A. Nails & Fasteners", "4B. Cutting & Grinding Consumables", "4C. Welding Supplies & PPE", "4D. General Site Supplies"])
             new_unit = st.text_input("Unit of Measure (e.g., Liters, Bags, Pcs)")
             init_stock = st.number_input("Initial Stock", min_value=0.0, step=1.0)
             min_thresh = st.number_input("Minimum Alert Threshold", min_value=0.0, step=1.0)
@@ -389,13 +428,11 @@ else:
                 else:
                     st.error("Item name cannot be empty.")
 
-        # Tab 5: Complete Master Audit Log across all users
         with tab5:
             st.subheader("Master Transaction Audit Log")
             df_tx = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
             st.dataframe(df_tx, use_container_width=True)
 
-        # Tab 6: User Management
         with tab6:
             st.subheader("Create New System User")
             
