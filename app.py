@@ -402,7 +402,7 @@ else:
     with header_col1:
         st.title("🏗️ Construction Site Inventory System")
     with header_col2:
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_html=True)
         with st.popover(bell_label, use_container_width=True):
             st.markdown(f"### Notifications for `{user_name}`")
             
@@ -468,7 +468,7 @@ else:
         st.subheader("📋 Current Available Stocks")
 
         df_items = pd.read_sql_query(
-            "SELECT item_name, current_stock, min_threshold, unit FROM master_items ORDER BY item_name ASC", 
+            "SELECT category, item_name, current_stock, min_threshold, unit FROM master_items ORDER BY category ASC, item_name ASC", 
             conn
         )
         
@@ -476,29 +476,35 @@ else:
             def highlight_low_stock(row):
                 return ['background-color: #ffcccc' if row['current_stock'] <= row['min_threshold'] else '' for _ in row]
 
-            st.dataframe(
-                df_items.style.apply(highlight_low_stock, axis=1),
-                column_config={
-                    "item_name": st.column_config.Column(
-                        "Item Name",
-                        pinned=True,
-                        width="medium"
-                    ),
-                    "current_stock": st.column_config.NumberColumn(
-                        "Current Stock",
-                        format="%.2f"
-                    ),
-                    "min_threshold": st.column_config.NumberColumn(
-                        "Min. Threshold",
-                        format="%.2f"
-                    ),
-                    "unit": st.column_config.Column(
-                        "Unit"
-                    )
-                },
-                hide_index=True,
-                use_container_width=True
-            )
+            categories = df_items['category'].unique()
+            for cat in categories:
+                st.markdown(f"### 📂 **{cat.upper()}**")
+                
+                df_cat = df_items[df_items['category'] == cat][['item_name', 'current_stock', 'min_threshold', 'unit']]
+
+                st.dataframe(
+                    df_cat.style.apply(highlight_low_stock, axis=1),
+                    column_config={
+                        "item_name": st.column_config.Column(
+                            "Item Name",
+                            pinned=True,
+                            width="medium"
+                        ),
+                        "current_stock": st.column_config.NumberColumn(
+                            "Current Stock",
+                            format="%.2f"
+                        ),
+                        "min_threshold": st.column_config.NumberColumn(
+                            "Min. Threshold",
+                            format="%.2f"
+                        ),
+                        "unit": st.column_config.Column(
+                            "Unit"
+                        )
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
         else:
             st.info("No items found in Master Inventory.")
 
