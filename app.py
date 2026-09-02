@@ -94,20 +94,25 @@ else:
 
     # Dynamic Tabs Based on Role
     if st.session_state["user_role"] == "Materials Supervisor":
-        tab1, tab2, tab3 = st.tabs(["📋 Current Inventory", "+ Stock In", "- Stock Out"])
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📋 Current Inventory", 
+            "+ Stock In", 
+            "- Stock Out",
+            "📜 My Log & History"
+        ])
     else:  # Head Office Admin
         tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📋 Current Inventory", 
             "+ Stock In", 
             "- Stock Out", 
             "➕ Add Master Item", 
-            "📜 Audit Log",
+            "📜 Master Audit Log",
             "👤 Manage Users"
         ])
 
-    # Tab 1: Current Inventory
+    # Tab 1: Current Inventory (Accessible to ALL)
     with tab1:
-        st.subheader("Inventory Status")
+        st.subheader("Current Available Stocks")
         df_items = pd.read_sql_query("SELECT item_name, category, unit, current_stock, min_threshold FROM master_items", conn)
         
         if not df_items.empty:
@@ -118,7 +123,7 @@ else:
         else:
             st.info("No items found in Master Inventory.")
 
-    # Tab 2: Stock In
+    # Tab 2: Stock In (Receiving)
     with tab2:
         st.subheader("Log Stock Delivery (Receiving)")
         items = [row[0] for row in cursor.execute("SELECT item_name FROM master_items").fetchall()]
@@ -137,7 +142,7 @@ else:
         else:
             st.warning("Please add items to Master Inventory first.")
 
-    # Tab 3: Stock Out
+    # Tab 3: Stock Out (Issuance)
     with tab3:
         st.subheader("Log Stock Issuance")
         items = [row[0] for row in cursor.execute("SELECT item_name FROM master_items").fetchall()]
@@ -157,6 +162,22 @@ else:
                     conn.commit()
                     st.success(f"Issued {qty_out} of {item_selected}")
                     st.rerun()
+
+    # Tab 4 for Supervisor: Personal Activity Verification Log
+    if st.session_state["user_role"] == "Materials Supervisor":
+        with tab4:
+            st.subheader("My Recent Activity & Submitted Logs")
+            st.caption("Review your recently submitted transactions below to verify if your entries are correct.")
+            
+            df_my_tx = pd.read_sql_query(
+                "SELECT timestamp, item_name, type, quantity, remarks FROM transactions WHERE user_role = ? ORDER BY id DESC", 
+                conn, params=(st.session_state["username"],)
+            )
+            
+            if not df_my_tx.empty:
+                st.dataframe(df_my_tx, use_container_width=True)
+            else:
+                st.info("You have not submitted any stock entries yet.")
 
     # Head Office Only Tabs
     if st.session_state["user_role"] == "Head Office":
@@ -182,13 +203,13 @@ else:
                 else:
                     st.error("Item name cannot be empty.")
 
-        # Tab 5: Audit Log
+        # Tab 5: Complete Master Audit Log across all users
         with tab5:
-            st.subheader("Transaction Audit Log")
+            st.subheader("Master Transaction Audit Log")
             df_tx = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
             st.dataframe(df_tx, use_container_width=True)
 
-        # Tab 6: User Management (Create New Users)
+        # Tab 6: User Management
         with tab6:
             st.subheader("Create New System User")
             
