@@ -95,11 +95,13 @@ for col, col_type in [
     except sqlite3.OperationalError:
         pass
 
-# Seed Default Admin Account
+# Seed Default Accounts
 cursor.execute("SELECT COUNT(*) FROM users")
 if cursor.fetchone()[0] == 0:
     cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", 
                    ("admin", "admin123", "Head Office"))
+    cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", 
+                   ("supervisor", "super123", "Materials Supervisor"))
 
 # Seed Expanded Inventory List
 cursor.execute("SELECT COUNT(*) FROM master_items")
@@ -591,7 +593,7 @@ else:
                                 edit_driver = st.text_input("Corrected Driver / Delivery", value=str(row['driver_details'] or ''), key=f"edrv_{tx_id}")
                                 edit_proj = st.text_input("Corrected Project Name", value=str(row['project_name'] or ''), key=f"eprj_{tx_id}")
                                 edit_purpose = st.text_input("Corrected Purpose / Remarks", value=str(row['purpose'] or row['remarks'] or ''), key=f"eprp_{tx_id}")
-                                edit_reason = st.text_area("Reason for Correction Error (Mandatory)", placeholder="e.g. Typo in quantity, entered 100 instead of 10", key="ersn_{tx_id}")
+                                edit_reason = st.text_area("Reason for Correction Error (Mandatory)", placeholder="e.g. Typo in quantity, entered 100 instead of 10", key=f"ersn_{tx_id}")
 
                                 if st.button("Submit Request to Head Office", key=f"btn_sub_{tx_id}"):
                                     if not edit_reason.strip():
