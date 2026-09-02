@@ -3,11 +3,11 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 
-# Initialize Database
+# Initialize Database Connection
 conn = sqlite3.connect("inventory.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# Create Tables if they don't exist
+# --- DATABASE SETUP ---
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS master_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,58 +30,79 @@ CREATE TABLE IF NOT EXISTS transactions (
     remarks TEXT
 )
 """)
+
+# User Management Table
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password TEXT,
+    role TEXT
+)
+""")
+
+# Seed Default Admin Account if no users exist
+cursor.execute("SELECT COUNT(*) FROM users")
+if cursor.fetchone()[0] == 0:
+    cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", 
+                   ("admin", "admin123", "Head Office"))
 conn.commit()
 
-# --- PREDEFINED USER CREDENTIALS ---
-USER_CREDENTIALS = {
-    "Materials Supervisor": "sup123",  # Change this password as needed
-    "Head Office": "head456"             # Change this password as needed
-}
 
 # --- SESSION STATE INITIALIZATION ---
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
+if "username" not in st.session_state:
+    st.session_state["username"] = None
 if "user_role" not in st.session_state:
     st.session_state["user_role"] = None
+
 
 # --- LOGIN SCREEN ---
 if not st.session_state["logged_in"]:
     st.title("🏗️ Construction Site Inventory")
-    st.subheader("Please Log In")
+    st.subheader("Sign In")
 
-    selected_role = st.selectbox("Select Your Role", ["Materials Supervisor", "Head Office"])
-    entered_password = st.text_input("Enter Passcode", type="password")
+    input_username = st.text_input("Username")
+    input_password = st.text_input("Password", type="password")
 
     if st.button("Log In"):
-        if entered_password == USER_CREDENTIALS.get(selected_role):
+        user = cursor.execute("SELECT username, role FROM users WHERE username = ? AND password = ?", 
+                              (input_username.strip(), input_password.strip())).fetchone()
+        if user:
             st.session_state["logged_in"] = True
-            st.session_state["user_role"] = selected_role
-            st.success(f"Logged in successfully as {selected_role}!")
+            st.session_state["username"] = user[0]
+            st.session_state["user_role"] = user[1]
+            st.success(f"Welcome back, {user[0]}!")
             st.rerun()
         else:
-            st.error("Incorrect passcode. Please try again.")
+            st.error("Invalid username or password.")
 
-# --- MAIN APPLICATION (Logged In) ---
+# --- MAIN APPLICATION (LOGGED IN) ---
 else:
     # Sidebar Profile & Logout
-    st.sidebar.markdown(f"**Logged in as:** `{st.session_state['user_role']}`")
+    st.sidebar.markdown(f"**Logged in as:** `{st.session_state['username']}`")
+    st.sidebar.markdown(f"**Role:** `{st.session_state['user_role']}`")
+    
     if st.sidebar.button("Log Out"):
         st.session_state["logged_in"] = False
+        st.session_state["username"] = None
         st.session_state["user_role"] = None
         st.rerun()
 
     st.title("🏗️ Construction Site Inventory System")
 
-    # Define Tabs based on User Role
+    # Dynamic Tabs Based on Role
     if st.session_state["user_role"] == "Materials Supervisor":
         tab1, tab2, tab3 = st.tabs(["📋 Current Inventory", "+ Stock In", "- Stock Out"])
-    else:  # Head Office
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    else:  # Head Office Admin
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📋 Current Inventory", 
             "+ Stock In", 
             "- Stock Out", 
             "➕ Add Master Item", 
-            "📜 Audit Log"
+            "📜 Audit Log",
+            "👤 Manage Users"
         ])
 
     # Tab 1: Current Inventory
@@ -90,7 +111,6 @@ else:
         df_items = pd.read_sql_query("SELECT item_name, category, unit, current_stock, min_threshold FROM master_items", conn)
         
         if not df_items.empty:
-            # Highlight Low Stock
             def highlight_low_stock(row):
                 return ['background-color: #ffcccc' if row['current_stock'] <= row['min_threshold'] else '' for _ in row]
 
@@ -110,7 +130,7 @@ else:
             if st.button("Submit Stock In"):
                 cursor.execute("UPDATE master_items SET current_stock = current_stock + ? WHERE item_name = ?", (qty_in, item_selected))
                 cursor.execute("INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, remarks) VALUES (?, ?, ?, ?, ?, ?)",
-                               (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "IN", qty_in, st.session_state["user_role"], remarks_in))
+                               (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "IN", qty_in, st.session_state["username"], remarks_in))
                 conn.commit()
                 st.success(f"Added {qty_in} to {item_selected}")
                 st.rerun()
@@ -133,7 +153,7 @@ else:
                 else:
                     cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (qty_out, item_selected))
                     cursor.execute("INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, remarks) VALUES (?, ?, ?, ?, ?, ?)",
-                                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "OUT", qty_out, st.session_state["user_role"], remarks_out))
+                                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "OUT", qty_out, st.session_state["username"], remarks_out))
                     conn.commit()
                     st.success(f"Issued {qty_out} of {item_selected}")
                     st.rerun()
@@ -167,3 +187,31 @@ else:
             st.subheader("Transaction Audit Log")
             df_tx = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
             st.dataframe(df_tx, use_container_width=True)
+
+        # Tab 6: User Management (Create New Users)
+        with tab6:
+            st.subheader("Create New System User")
+            
+            with st.form("create_user_form"):
+                new_username = st.text_input("New Username")
+                new_password = st.text_input("Assign Password", type="password")
+                assigned_role = st.selectbox("Assign User Role", ["Materials Supervisor", "Head Office"])
+                submit_user = st.form_submit_button("Create Account")
+
+            if submit_user:
+                if new_username.strip() and new_password.strip():
+                    try:
+                        cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                                       (new_username.strip(), new_password.strip(), assigned_role))
+                        conn.commit()
+                        st.success(f"Successfully created account for '{new_username}' as {assigned_role}!")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Username already exists. Please choose a different one.")
+                else:
+                    st.error("Username and password fields cannot be blank.")
+
+            st.markdown("---")
+            st.subheader("Existing Accounts")
+            df_users = pd.read_sql_query("SELECT id, username, role FROM users", conn)
+            st.dataframe(df_users, use_container_width=True)
