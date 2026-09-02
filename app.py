@@ -314,7 +314,7 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
             cat_cell.alignment = Alignment(horizontal="left", vertical="center")
             c_row += 1
 
-            sub_headers = ["Item Name", "Unit", "Current Stock", "Min Alert Threshold"]
+            sub_headers = ["Item Name", "Current Stock", "Min Alert Threshold", "Unit"]
             for col_num, h_title in enumerate(sub_headers, 1):
                 cell = ws_cat.cell(row=c_row, column=col_num, value=h_title)
                 cell.font = Font(bold=True, color="333333")
@@ -323,13 +323,14 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
             c_row += 1
             for _, r in df_current_stock[df_current_stock['category'] == cat].iterrows():
                 ws_cat.cell(row=c_row, column=1, value=str(r['item_name']))
-                ws_cat.cell(row=c_row, column=2, value=str(r['unit']))
                 
-                stk_cell = ws_cat.cell(row=c_row, column=3, value=float(r['current_stock']))
+                stk_cell = ws_cat.cell(row=c_row, column=2, value=float(r['current_stock']))
                 stk_cell.number_format = "#,##0.00"
 
-                thresh_cell = ws_cat.cell(row=c_row, column=4, value=float(r['min_threshold']))
+                thresh_cell = ws_cat.cell(row=c_row, column=3, value=float(r['min_threshold']))
                 thresh_cell.number_format = "#,##0.00"
+
+                ws_cat.cell(row=c_row, column=4, value=str(r['unit']))
 
                 if float(r['current_stock']) <= float(r['min_threshold']):
                     stk_cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
@@ -464,14 +465,40 @@ else:
 
     # --- TAB 1: CURRENT INVENTORY ---
     with tab1:
-        st.subheader("Current Available Stocks")
-        df_items = pd.read_sql_query("SELECT item_name, category, unit, current_stock, min_threshold FROM master_items", conn)
+        st.subheader("📋 Current Available Stocks")
+
+        df_items = pd.read_sql_query(
+            "SELECT item_name, current_stock, min_threshold, unit FROM master_items ORDER BY item_name ASC", 
+            conn
+        )
         
         if not df_items.empty:
             def highlight_low_stock(row):
                 return ['background-color: #ffcccc' if row['current_stock'] <= row['min_threshold'] else '' for _ in row]
 
-            st.dataframe(df_items.style.apply(highlight_low_stock, axis=1), use_container_width=True)
+            st.dataframe(
+                df_items.style.apply(highlight_low_stock, axis=1),
+                column_config={
+                    "item_name": st.column_config.Column(
+                        "Item Name",
+                        pinned=True,
+                        width="medium"
+                    ),
+                    "current_stock": st.column_config.NumberColumn(
+                        "Current Stock",
+                        format="%.2f"
+                    ),
+                    "min_threshold": st.column_config.NumberColumn(
+                        "Min. Threshold",
+                        format="%.2f"
+                    ),
+                    "unit": st.column_config.Column(
+                        "Unit"
+                    )
+                },
+                hide_index=True,
+                use_container_width=True
+            )
         else:
             st.info("No items found in Master Inventory.")
 
@@ -877,8 +904,6 @@ else:
                     col_e1, col_e2 = st.columns(2)
                     with col_e1:
                         updated_item_name = st.text_input("Item Name", value=item_details['item_name'])
-                        
-                        # Set default index for category dropdown
                         cat_index = categories_list.index(item_details['category']) if item_details['category'] in categories_list else 0
                         updated_category = st.selectbox("Category", categories_list, index=cat_index)
 
@@ -893,14 +918,12 @@ else:
                         try:
                             old_item_name = item_details['item_name']
                             
-                            # 1. Update Master Items Database
                             cursor.execute("""
                                 UPDATE master_items 
                                 SET item_name = ?, category = ?, unit = ?, min_threshold = ?
                                 WHERE id = ?
                             """, (updated_item_name.strip(), updated_category, updated_unit.strip(), updated_min_thresh, int(item_details['id'])))
                             
-                            # 2. Update Historical Transactions to keep audit trail aligned
                             if old_item_name != updated_item_name.strip():
                                 cursor.execute("UPDATE transactions SET item_name = ? WHERE item_name = ?", (updated_item_name.strip(), old_item_name))
 
