@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
 import os
 import json
@@ -476,9 +476,37 @@ else:
         else:
             st.info("No items found in Master Inventory.")
 
-    # --- TAB 2: ANALYTICS DASHBOARD ---
+    # --- TAB 2: TIME-BASED ANALYTICS DASHBOARD ---
     with tab2:
         st.subheader("📊 Inventory Analytics & Operational Insights")
+
+        # Dynamic Time Window Controls
+        filter_col1, filter_col2 = st.columns([0.4, 0.6])
+        with filter_col1:
+            time_view = st.selectbox(
+                "🗓️ Select Time View:", 
+                ["Daily (Last 14 Days)", "Weekly (Last 8 Weeks)", "Monthly (Last 12 Months)", "All Time / Year-To-Date"]
+            )
+        
+        today = datetime.now()
+        
+        # Determine Date Filters and Resampling Rules
+        if time_view == "Daily (Last 14 Days)":
+            start_date = today - timedelta(days=14)
+            freq_rule = "D"
+            date_format = "%Y-%m-%d"
+        elif time_view == "Weekly (Last 8 Weeks)":
+            start_date = today - timedelta(weeks=8)
+            freq_rule = "W-MON"
+            date_format = "Week %U, %Y"
+        elif time_view == "Monthly (Last 12 Months)":
+            start_date = today - timedelta(days=365)
+            freq_rule = "ME"
+            date_format = "%b %Y"
+        else:
+            start_date = datetime(today.year, 1, 1)
+            freq_rule = "ME"
+            date_format = "%b %Y"
 
         # Load inventory & transaction data
         df_inv = pd.read_sql_query("SELECT item_name, category, unit, current_stock, min_threshold FROM master_items", conn)
@@ -487,23 +515,30 @@ else:
         if df_inv.empty:
             st.warning("No inventory data available for analytics.")
         else:
-            # 1. Top Level Metrics Cards
+            # Filter Transactions based on time window
+            if not df_tx_all.empty:
+                df_tx_all['dt_timestamp'] = pd.to_datetime(df_tx_all['timestamp'])
+                df_filtered_tx = df_tx_all[df_tx_all['dt_timestamp'] >= start_date].copy()
+            else:
+                df_filtered_tx = pd.DataFrame()
+
+            # 1. Top Level Metrics Cards (Filtered)
             total_skus = len(df_inv)
             low_stock_items = df_inv[df_inv['current_stock'] <= df_inv['min_threshold']]
             low_stock_count = len(low_stock_items)
 
-            total_received_qty = df_tx_all[df_tx_all['type'] == 'IN']['quantity'].sum() if not df_tx_all.empty else 0
-            total_issued_qty = df_tx_all[df_tx_all['type'] == 'OUT']['quantity'].sum() if not df_tx_all.empty else 0
+            total_received_qty = df_filtered_tx[df_filtered_tx['type'] == 'IN']['quantity'].sum() if not df_filtered_tx.empty else 0
+            total_issued_qty = df_filtered_tx[df_filtered_tx['type'] == 'OUT']['quantity'].sum() if not df_filtered_tx.empty else 0
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total Active SKUs", total_skus)
             m2.metric("Low Stock Alerts", low_stock_count, delta=f"{low_stock_count} Critical", delta_color="inverse" if low_stock_count > 0 else "off")
-            m3.metric("Total Received (IN)", f"{total_received_qty:,.1f}")
-            m4.metric("Total Issued (OUT)", f"{total_issued_qty:,.1f}")
+            m3.metric(f"Received (IN) [{time_view.split()[0]}]", f"{total_received_qty:,.1f}")
+            m4.metric(f"Issued (OUT) [{time_view.split()[0]}]", f"{total_issued_qty:,.1f}")
 
             st.markdown("---")
 
-            # 2. Low Stock & Critical Reorder Warning Section
+            # 2. Critical Reorder Warning Section
             if low_stock_count > 0:
                 st.error(f"⚠️ **Attention Required:** {low_stock_count} item(s) are at or below safety threshold!")
                 st.dataframe(low_stock_items[['item_name', 'category', 'current_stock', 'min_threshold', 'unit']], use_container_width=True)
@@ -512,62 +547,63 @@ else:
 
             st.markdown("---")
 
-            # 3. Visual Charts Grid
+            # 3. Dynamic Movement Trends Over Time (Daily / Weekly / Monthly Line Chart)
+            st.markdown(f"##### 📈 Stock Movement Trends ({time_view})")
+            if not df_filtered_tx.empty:
+                # Group transactions dynamically by date range aggregation
+                df_filtered_tx_grouped = df_filtered_tx.set_index('dt_timestamp')
+                
+                # Resample by IN and OUT types
+                trend_in = df_filtered_tx_grouped[df_filtered_tx_grouped['type'] == 'IN'].resample(freq_rule)['quantity'].sum()
+                trend_out = df_filtered_tx_grouped[df_filtered_tx_grouped['type'] == 'OUT'].resample(freq_rule)['quantity'].sum()
+
+                # Combine into single dataframe
+                df_trend = pd.DataFrame({'Stock IN': trend_in, 'Stock OUT': trend_out}).fillna(0)
+                df_trend.index = df_trend.index.strftime(date_format)
+
+                st.line_chart(df_trend, use_container_width=True)
+            else:
+                st.info(f"No transactions recorded for the selected time window ({time_view}).")
+
+            st.markdown("---")
+
+            # 4. Inventory Stock Visual Breakdown
             c1, c2 = st.columns(2)
 
             with c1:
-                st.markdown("##### 📦 Current Stock vs. Minimum Alert Threshold")
-                # Filter top 15 items for clear bar visualization
+                st.markdown("##### 📦 Current Stock vs. Threshold (Top 15)")
                 df_chart_inv = df_inv.sort_values(by='current_stock', ascending=False).head(15)
                 st.bar_chart(df_chart_inv, x="item_name", y=["current_stock", "min_threshold"], use_container_width=True)
 
             with c2:
-                st.markdown("##### 🏷️ Inventory Items by Category")
+                st.markdown("##### 🏷️ Category-wise SKU Count")
                 cat_summary = df_inv.groupby("category")["item_name"].count().reset_index()
                 cat_summary.columns = ["Category", "Total Items"]
                 st.bar_chart(cat_summary, x="Category", y="Total Items", use_container_width=True)
 
             st.markdown("---")
 
-            # 4. Movement Trends Over Time (Daily Volumes)
-            st.markdown("##### 📈 Daily Stock Activity Trends (IN vs OUT)")
-            if not df_tx_all.empty:
-                # Format date string YYYY-MM-DD
-                df_tx_all['Date'] = df_tx_all['timestamp'].str.slice(0, 10)
-                daily_trend = df_tx_all.groupby(['Date', 'type'])['quantity'].sum().unstack(fill_value=0).reset_index()
-
-                # Ensure both IN and OUT columns exist
-                for col in ['IN', 'OUT']:
-                    if col not in daily_trend.columns:
-                        daily_trend[col] = 0.0
-
-                st.line_chart(daily_trend, x="Date", y=["IN", "OUT"], use_container_width=True)
-            else:
-                st.info("No transaction movement recorded yet to display trend analysis.")
-
-            st.markdown("---")
-
-            # 5. Usage Analysis: Top Issued Items & Frequent Deliveries
+            # 5. Period Usage Analysis: Top Issued Items & Driver Activity
             col_a, col_b = st.columns(2)
 
             with col_a:
-                st.markdown("##### 🔥 Most Frequently Issued Materials (Top OUT)")
-                if not df_tx_all.empty and not df_tx_all[df_tx_all['type'] == 'OUT'].empty:
-                    df_out_top = df_tx_all[df_tx_all['type'] == 'OUT'].groupby('item_name')['quantity'].sum().reset_index()
+                st.markdown(f"##### 🔥 Top Issued Items ({time_view.split()[0]})")
+                if not df_filtered_tx.empty and not df_filtered_tx[df_filtered_tx['type'] == 'OUT'].empty:
+                    df_out_top = df_filtered_tx[df_filtered_tx['type'] == 'OUT'].groupby('item_name')['quantity'].sum().reset_index()
                     df_out_top = df_out_top.sort_values(by='quantity', ascending=False).head(10)
                     st.dataframe(df_out_top, use_container_width=True)
                 else:
-                    st.caption("No Stock OUT transactions logged.")
+                    st.caption("No Stock OUT transactions logged in this period.")
 
             with col_b:
-                st.markdown("##### 🚚 Active Drivers & Transport Logins")
-                if not df_tx_all.empty and df_tx_all['driver_details'].notnull().any():
-                    df_drivers = df_tx_all[df_tx_all['driver_details'] != ''].groupby('driver_details')['timestamp'].count().reset_index()
+                st.markdown(f"##### 🚚 Active Drivers & Transport Logins ({time_view.split()[0]})")
+                if not df_filtered_tx.empty and df_filtered_tx['driver_details'].notnull().any():
+                    df_drivers = df_filtered_tx[df_filtered_tx['driver_details'] != ''].groupby('driver_details')['timestamp'].count().reset_index()
                     df_drivers.columns = ['Driver / Vehicle Details', 'Trips Logged']
                     df_drivers = df_drivers.sort_values(by='Trips Logged', ascending=False).head(10)
                     st.dataframe(df_drivers, use_container_width=True)
                 else:
-                    st.caption("No transport driver records logged.")
+                    st.caption("No driver entries logged in this period.")
 
     # --- TAB 3: STOCK IN ---
     with tab3:
