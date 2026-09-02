@@ -36,21 +36,26 @@ CREATE TABLE IF NOT EXISTS transactions (
     quantity REAL,
     user_role TEXT,
     driver_details TEXT,
+    issued_to TEXT,
+    project_name TEXT,
+    purpose TEXT,
     remarks TEXT,
     photo_path TEXT
 )
 """)
 
-# Safe Schema Update (for existing DBs missing new columns)
-try:
-    cursor.execute("ALTER TABLE transactions ADD COLUMN driver_details TEXT")
-except sqlite3.OperationalError:
-    pass  # Column already exists
-
-try:
-    cursor.execute("ALTER TABLE transactions ADD COLUMN photo_path TEXT")
-except sqlite3.OperationalError:
-    pass  # Column already exists
+# Safe Schema Update Migrations
+for col, col_type in [
+    ("driver_details", "TEXT"),
+    ("issued_to", "TEXT"),
+    ("project_name", "TEXT"),
+    ("purpose", "TEXT"),
+    ("photo_path", "TEXT")
+]:
+    try:
+        cursor.execute(f"ALTER TABLE transactions ADD COLUMN {col} {col_type}")
+    except sqlite3.OperationalError:
+        pass
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
@@ -109,41 +114,9 @@ if cursor.fetchone()[0] == 0:
 conn.commit()
 
 
-# --- HELPER FUNCTION: EXCEL REPORT GENERATOR ---
+# --- ENHANCED MULTI-SHEET EXCEL REPORT GENERATOR ---
 def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stock):
     wb = openpyxl.Workbook()
-    
-    # Sheet 1: Daily Transactions Log
-    ws_tx = wb.active
-    ws_tx.title = "Daily Activity Log"
-    ws_tx.views.sheetView[0].showGridLines = True
-
-    # Title Block
-    ws_tx.merge_cells("A1:G1")
-    title_cell = ws_tx["A1"]
-    title_cell.value = "CONSTRUCTION SITE INVENTORY - DAILY ACTIVITY REPORT"
-    title_cell.font = Font(name="Calibri", size=14, bold=True, color="FFFFFF")
-    title_cell.fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    title_cell.alignment = Alignment(horizontal="center", vertical="center")
-    ws_tx.row_dimensions[1].height = 30
-
-    # Meta Info
-    ws_tx["A3"] = f"Report Date: {selected_date}"
-    ws_tx["A3"].font = Font(bold=True)
-    ws_tx["A4"] = f"Supervisor: {user_name}"
-    ws_tx["A4"].font = Font(bold=True)
-    ws_tx["A5"] = f"Generated On: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    ws_tx["A5"].font = Font(italic=True, color="595959")
-
-    # Table Headers
-    headers = ["Time", "Item Name", "Type", "Quantity", "Driver / Supplier Details", "Logged By", "Remarks"]
-    start_row = 7
-    for col_num, header_title in enumerate(headers, 1):
-        cell = ws_tx.cell(row=start_row, column=col_num, value=header_title)
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-
     thin_border = Border(
         left=Side(style='thin', color='D9D9D9'),
         right=Side(style='thin', color='D9D9D9'),
@@ -151,77 +124,203 @@ def generate_excel_report(user_name, selected_date, df_daily_tx, df_current_stoc
         bottom=Side(style='thin', color='D9D9D9')
     )
 
-    # Data Rows
-    current_row = start_row + 1
-    if not df_daily_tx.empty:
-        for _, row in df_daily_tx.iterrows():
-            ws_tx.cell(row=current_row, column=1, value=str(row.get('timestamp', '')))
-            ws_tx.cell(row=current_row, column=2, value=str(row.get('item_name', '')))
-            
-            type_cell = ws_tx.cell(row=current_row, column=3, value=str(row.get('type', '')))
-            type_cell.alignment = Alignment(horizontal="center")
-            if row.get('type') == 'IN':
-                type_cell.font = Font(bold=True, color="006100")
-            else:
-                type_cell.font = Font(bold=True, color="9C0006")
+    # ----------------------------------------------------
+    # SHEET 1: MASTER LOG (ALL TRANSACTIONS)
+    # ----------------------------------------------------
+    ws_master = wb.active
+    ws_master.title = "Master Activity Log"
+    ws_master.views.sheetView[0].showGridLines = True
 
-            qty_cell = ws_tx.cell(row=current_row, column=4, value=float(row.get('quantity', 0)))
-            qty_cell.number_format = "#,##0.00"
-            
-            ws_tx.cell(row=current_row, column=5, value=str(row.get('driver_details', '-')))
-            ws_tx.cell(row=current_row, column=6, value=str(row.get('user_role', '')))
-            ws_tx.cell(row=current_row, column=7, value=str(row.get('remarks', '-')))
+    ws_master.merge_cells("A1:I1")
+    title1 = ws_master["A1"]
+    title1.value = "MASTER SITE INVENTORY ACTIVITY LOG"
+    title1.font = Font(name="Calibri", size=14, bold=True, color="FFFFFF")
+    title1.fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    title1.alignment = Alignment(horizontal="center", vertical="center")
+    ws_master.row_dimensions[1].height = 30
 
-            for col_num in range(1, 8):
-                ws_tx.cell(row=current_row, column=col_num).border = thin_border
+    ws_master["A3"] = f"Report Date: {selected_date}"
+    ws_master["A3"].font = Font(bold=True)
+    ws_master["A4"] = f"Supervisor: {user_name}"
+    ws_master["A4"].font = Font(bold=True)
 
-            current_row += 1
-    else:
-        ws_tx.cell(row=current_row, column=1, value="No transactions recorded for this date.")
-        current_row += 1
-
-    # Sheet 2: Stock Snapshot
-    ws_stock = wb.create_sheet(title="Current Stock Snapshot")
-    ws_stock.views.sheetView[0].showGridLines = True
-
-    ws_stock.merge_cells("A1:E1")
-    s_title = ws_stock["A1"]
-    s_title.value = "SITE INVENTORY BALANCE SNAPSHOT"
-    s_title.font = Font(name="Calibri", size=14, bold=True, color="FFFFFF")
-    s_title.fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    s_title.alignment = Alignment(horizontal="center", vertical="center")
-    ws_stock.row_dimensions[1].height = 30
-
-    stock_headers = ["Item Name", "Category", "Unit", "Current Stock", "Min Threshold"]
-    for col_num, header_title in enumerate(stock_headers, 1):
-        cell = ws_stock.cell(row=3, column=col_num, value=header_title)
+    headers_master = [
+        "Time", "Item Name", "Type", "Quantity", "Issued To / Recipient", 
+        "Driver / Delivery", "Project Name", "Purpose / Equipment", "Logged By"
+    ]
+    for col_num, h_title in enumerate(headers_master, 1):
+        cell = ws_master.cell(row=6, column=col_num, value=h_title)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    s_row = 4
-    if not df_current_stock.empty:
-        for _, row in df_current_stock.iterrows():
-            ws_stock.cell(row=s_row, column=1, value=str(row['item_name']))
-            ws_stock.cell(row=s_row, column=2, value=str(row['category']))
-            ws_stock.cell(row=s_row, column=3, value=str(row['unit']))
+    row_idx = 7
+    if not df_daily_tx.empty:
+        for _, r in df_daily_tx.iterrows():
+            ws_master.cell(row=row_idx, column=1, value=str(r.get('timestamp', '')))
+            ws_master.cell(row=row_idx, column=2, value=str(r.get('item_name', '')))
             
-            stk_cell = ws_stock.cell(row=s_row, column=4, value=float(row['current_stock']))
-            stk_cell.number_format = "#,##0.00"
+            t_cell = ws_master.cell(row=row_idx, column=3, value=str(r.get('type', '')))
+            t_cell.alignment = Alignment(horizontal="center")
+            if r.get('type') == 'IN':
+                t_cell.font = Font(bold=True, color="006100")
+            else:
+                t_cell.font = Font(bold=True, color="9C0006")
 
-            thresh_cell = ws_stock.cell(row=s_row, column=5, value=float(row['min_threshold']))
-            thresh_cell.number_format = "#,##0.00"
+            q_cell = ws_master.cell(row=row_idx, column=4, value=float(r.get('quantity', 0)))
+            q_cell.number_format = "#,##0.00"
+            
+            ws_master.cell(row=row_idx, column=5, value=str(r.get('issued_to', '-')))
+            ws_master.cell(row=row_idx, column=6, value=str(r.get('driver_details', '-')))
+            ws_master.cell(row=row_idx, column=7, value=str(r.get('project_name', '-')))
+            ws_master.cell(row=row_idx, column=8, value=str(r.get('purpose', r.get('remarks', '-'))))
+            ws_master.cell(row=row_idx, column=9, value=str(r.get('user_role', '')))
 
-            if float(row['current_stock']) <= float(row['min_threshold']):
-                stk_cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-                stk_cell.font = Font(color="9C0006", bold=True)
+            for c in range(1, 10):
+                ws_master.cell(row=row_idx, column=c).border = thin_border
+            row_idx += 1
+    else:
+        ws_master.cell(row=7, column=1, value="No activity recorded for this date.")
 
-            for col_num in range(1, 6):
-                ws_stock.cell(row=s_row, column=col_num).border = thin_border
+    # ----------------------------------------------------
+    # SHEET 2: STOCK IN RECORD
+    # ----------------------------------------------------
+    ws_in = wb.create_sheet(title="Stock IN Entries")
+    ws_in.views.sheetView[0].showGridLines = True
 
-            s_row += 1
+    ws_in.merge_cells("A1:F1")
+    title2 = ws_in["A1"]
+    title2.value = "DAILY STOCK IN / RECEIVING REPORT"
+    title2.font = Font(name="Calibri", size=14, bold=True, color="FFFFFF")
+    title2.fill = PatternFill(start_color="2E75B6", end_color="2E75B6", fill_type="solid")
+    title2.alignment = Alignment(horizontal="center", vertical="center")
+    ws_in.row_dimensions[1].height = 30
 
-    for sheet in [ws_tx, ws_stock]:
+    headers_in = ["Time", "Item Name", "Qty Received", "Driver / Delivery Details", "Logged By", "General Remarks"]
+    for col_num, h_title in enumerate(headers_in, 1):
+        cell = ws_in.cell(row=4, column=col_num, value=h_title)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    df_in = df_daily_tx[df_daily_tx['type'] == 'IN'] if not df_daily_tx.empty else pd.DataFrame()
+    row_idx = 5
+    if not df_in.empty:
+        for _, r in df_in.iterrows():
+            ws_in.cell(row=row_idx, column=1, value=str(r.get('timestamp', '')))
+            ws_in.cell(row=row_idx, column=2, value=str(r.get('item_name', '')))
+            q_cell = ws_in.cell(row=row_idx, column=3, value=float(r.get('quantity', 0)))
+            q_cell.number_format = "#,##0.00"
+            q_cell.font = Font(bold=True, color="006100")
+            
+            ws_in.cell(row=row_idx, column=4, value=str(r.get('driver_details', '-')))
+            ws_in.cell(row=row_idx, column=5, value=str(r.get('user_role', '')))
+            ws_in.cell(row=row_idx, column=6, value=str(r.get('remarks', '-')))
+
+            for c in range(1, 7):
+                ws_in.cell(row=row_idx, column=c).border = thin_border
+            row_idx += 1
+    else:
+        ws_in.cell(row=5, column=1, value="No Stock IN entries for this date.")
+
+    # ----------------------------------------------------
+    # SHEET 3: STOCK OUT RECORD (SEPARATED FIELDS)
+    # ----------------------------------------------------
+    ws_out = wb.create_sheet(title="Stock OUT Entries")
+    ws_out.views.sheetView[0].showGridLines = True
+
+    ws_out.merge_cells("A1:H1")
+    title3 = ws_out["A1"]
+    title3.value = "DAILY STOCK OUT / ISSUANCE REPORT"
+    title3.font = Font(name="Calibri", size=14, bold=True, color="FFFFFF")
+    title3.fill = PatternFill(start_color="C65911", end_color="C65911", fill_type="solid")
+    title3.alignment = Alignment(horizontal="center", vertical="center")
+    ws_out.row_dimensions[1].height = 30
+
+    headers_out = ["Time", "Item Name", "Qty Issued", "Issued To", "Driver / Transport", "Project Name", "Purpose / Usage", "Logged By"]
+    for col_num, h_title in enumerate(headers_out, 1):
+        cell = ws_out.cell(row=4, column=col_num, value=h_title)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(start_color="833C0C", end_color="833C0C", fill_type="solid")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    df_out = df_daily_tx[df_daily_tx['type'] == 'OUT'] if not df_daily_tx.empty else pd.DataFrame()
+    row_idx = 5
+    if not df_out.empty:
+        for _, r in df_out.iterrows():
+            ws_out.cell(row=row_idx, column=1, value=str(r.get('timestamp', '')))
+            ws_out.cell(row=row_idx, column=2, value=str(r.get('item_name', '')))
+            q_cell = ws_out.cell(row=row_idx, column=3, value=float(r.get('quantity', 0)))
+            q_cell.number_format = "#,##0.00"
+            q_cell.font = Font(bold=True, color="9C0006")
+            
+            ws_out.cell(row=row_idx, column=4, value=str(r.get('issued_to', '-')))
+            ws_out.cell(row=row_idx, column=5, value=str(r.get('driver_details', '-')))
+            ws_out.cell(row=row_idx, column=6, value=str(r.get('project_name', '-')))
+            ws_out.cell(row=row_idx, column=7, value=str(r.get('purpose', r.get('remarks', '-'))))
+            ws_out.cell(row=row_idx, column=8, value=str(r.get('user_role', '')))
+
+            for c in range(1, 9):
+                ws_out.cell(row=row_idx, column=c).border = thin_border
+            row_idx += 1
+    else:
+        ws_out.cell(row=5, column=1, value="No Stock OUT entries for this date.")
+
+    # ----------------------------------------------------
+    # SHEET 4: CATEGORIZED STOCK BALANCE
+    # ----------------------------------------------------
+    ws_cat = wb.create_sheet(title="Categorized Stock Balance")
+    ws_cat.views.sheetView[0].showGridLines = True
+
+    ws_cat.merge_cells("A1:D1")
+    title4 = ws_cat["A1"]
+    title4.value = "SITE INVENTORY BALANCE (BY CATEGORY)"
+    title4.font = Font(name="Calibri", size=14, bold=True, color="FFFFFF")
+    title4.fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    title4.alignment = Alignment(horizontal="center", vertical="center")
+    ws_cat.row_dimensions[1].height = 30
+
+    c_row = 3
+    if not df_current_stock.empty:
+        categories = df_current_stock['category'].unique()
+        for cat in sorted(categories):
+            ws_cat.merge_cells(start_row=c_row, start_column=1, end_row=c_row, end_column=4)
+            cat_cell = ws_cat.cell(row=c_row, column=1, value=str(cat).upper())
+            cat_cell.font = Font(bold=True, color="FFFFFF")
+            cat_cell.fill = PatternFill(start_color="595959", end_color="595959", fill_type="solid")
+            cat_cell.alignment = Alignment(horizontal="left", vertical="center")
+            c_row += 1
+
+            sub_headers = ["Item Name", "Unit", "Current Stock", "Min Alert Threshold"]
+            for col_num, h_title in enumerate(sub_headers, 1):
+                cell = ws_cat.cell(row=c_row, column=col_num, value=h_title)
+                cell.font = Font(bold=True, color="333333")
+                cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+
+            c_row += 1
+            cat_items = df_current_stock[df_current_stock['category'] == cat]
+            for _, r in cat_items.iterrows():
+                ws_cat.cell(row=c_row, column=1, value=str(r['item_name']))
+                ws_cat.cell(row=c_row, column=2, value=str(r['unit']))
+                
+                stk_cell = ws_cat.cell(row=c_row, column=3, value=float(r['current_stock']))
+                stk_cell.number_format = "#,##0.00"
+
+                thresh_cell = ws_cat.cell(row=c_row, column=4, value=float(r['min_threshold']))
+                thresh_cell.number_format = "#,##0.00"
+
+                if float(r['current_stock']) <= float(r['min_threshold']):
+                    stk_cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+                    stk_cell.font = Font(color="9C0006", bold=True)
+
+                for col_num in range(1, 5):
+                    ws_cat.cell(row=c_row, column=col_num).border = thin_border
+                c_row += 1
+            
+            c_row += 1
+
+    # Auto-Fit Columns
+    for sheet in [ws_master, ws_in, ws_out, ws_cat]:
         for col in sheet.columns:
             max_len = 0
             col_letter = get_column_letter(col[0].column)
@@ -357,44 +456,50 @@ else:
         else:
             st.warning("Please add items to Master Inventory first.")
 
-    # Tab 3: Stock Out
+    # Tab 3: Stock Out (SEPARATED FIELDS)
     with tab3:
-        st.subheader("Log Stock Issuance")
+        st.subheader("Log Stock Issuance (Stock OUT)")
         items = [row[0] for row in cursor.execute("SELECT item_name FROM master_items").fetchall()]
         if items:
-            item_selected = st.selectbox("Select Item to Issue", items, key="out_item")
-            qty_out = st.number_input("Quantity Issued", min_value=0.1, step=1.0, key="out_qty")
-            remarks_out = st.text_input("Issued To / Equipment ID / Purpose", key="out_rem")
+            col_x, col_y = st.columns(2)
+            with col_x:
+                item_selected = st.selectbox("Select Item to Issue", items, key="out_item")
+                qty_out = st.number_input("Quantity Issued", min_value=0.1, step=1.0, key="out_qty")
+                issued_to = st.text_input("Issued To (Person / Subcontractor)", placeholder="e.g. Foreman Mike / Subcon ABC", key="out_issued_to")
+            
+            with col_y:
+                driver_out = st.text_input("Driver / Transport Vehicle", placeholder="e.g. Driver Bob (Dump Truck #02)", key="out_driver")
+                proj_name = st.text_input("Project / Site Name", placeholder="e.g. Tower B - 12th Floor", key="out_proj")
+                purpose = st.text_input("Purpose / Equipment ID", placeholder="e.g. Excavator #04 Refueling / Slab Pouring", key="out_purpose")
 
             if st.button("Submit Stock Out", use_container_width=True):
                 curr_stock = cursor.execute("SELECT current_stock FROM master_items WHERE item_name = ?", (item_selected,)).fetchone()[0]
                 if qty_out > curr_stock:
-                    st.error("Insufficient stock!")
+                    st.error(f"Insufficient stock! Current stock: {curr_stock}")
                 else:
                     cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (qty_out, item_selected))
                     cursor.execute("""
-                        INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, remarks) 
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "OUT", qty_out, st.session_state["username"], remarks_out))
+                        INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, issued_to, driver_details, project_name, purpose) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "OUT", qty_out, st.session_state["username"], issued_to, driver_out, proj_name, purpose))
                     conn.commit()
-                    st.success(f"Issued {qty_out} of {item_selected}")
+                    st.success(f"Successfully issued {qty_out} of {item_selected}")
                     st.rerun()
 
     # Supervisor Tab 4: Activity Log
     if st.session_state["user_role"] == "Materials Supervisor":
         with tab4:
             st.subheader("My Recent Activity & Submitted Logs")
-            st.caption("Review your recently submitted transactions and attached photos below.")
             
             df_my_tx = pd.read_sql_query(
-                "SELECT timestamp, item_name, type, quantity, driver_details, remarks, photo_path FROM transactions WHERE user_role = ? ORDER BY id DESC", 
+                """SELECT timestamp, item_name, type, quantity, issued_to, driver_details, project_name, purpose, remarks, photo_path 
+                   FROM transactions WHERE user_role = ? ORDER BY id DESC""", 
                 conn, params=(st.session_state["username"],)
             )
             
             if not df_my_tx.empty:
                 st.dataframe(df_my_tx.drop(columns=["photo_path"]), use_container_width=True)
                 
-                # Preview images in log
                 photos = df_my_tx[df_my_tx['photo_path'].notnull()]
                 if not photos.empty:
                     st.markdown("#### 📸 Attached Delivery Photos")
@@ -406,30 +511,29 @@ else:
             else:
                 st.info("You have not submitted any stock entries yet.")
 
-        # Supervisor Tab 5: Daily Report
+        # Supervisor Tab 5: Multi-Sheet Daily Report Generator
         with tab5:
-            st.subheader("📅 Daily Activity Report Generator")
-            st.caption("Select a date to preview transactions and download an official Excel (.xlsx) summary report.")
+            st.subheader("📅 Multi-Sheet Excel Report Generator")
 
             selected_date = st.date_input("Select Report Date", datetime.now().date())
             date_str = selected_date.strftime("%Y-%m-%d")
 
             query_daily = """
-                SELECT timestamp, item_name, type, quantity, driver_details, user_role, remarks 
+                SELECT timestamp, item_name, type, quantity, issued_to, driver_details, project_name, purpose, user_role, remarks 
                 FROM transactions 
                 WHERE timestamp LIKE ? 
                 ORDER BY id ASC
             """
             df_daily_tx = pd.read_sql_query(query_daily, conn, params=(f"{date_str}%",))
-            df_current_stock = pd.read_sql_query("SELECT item_name, category, unit, current_stock, min_threshold FROM master_items", conn)
+            df_current_stock = pd.read_sql_query("SELECT item_name, category, unit, current_stock, min_threshold FROM master_items ORDER BY category, item_name", conn)
 
             col1, col2, col3 = st.columns(3)
             in_count = len(df_daily_tx[df_daily_tx['type'] == 'IN']) if not df_daily_tx.empty else 0
             out_count = len(df_daily_tx[df_daily_tx['type'] == 'OUT']) if not df_daily_tx.empty else 0
             
-            col1.metric("Stock In Logs", f"{in_count} Entries")
-            col2.metric("Stock Out Logs", f"{out_count} Entries")
-            col3.metric("Total Activity", f"{len(df_daily_tx)} Records")
+            col1.metric("Stock IN Logs", f"{in_count} Entries")
+            col2.metric("Stock OUT Logs", f"{out_count} Entries")
+            col3.metric("Total Master Activity", f"{len(df_daily_tx)} Records")
 
             st.markdown("---")
             st.write(f"### Activity Preview for `{date_str}`")
@@ -447,10 +551,11 @@ else:
             )
 
             st.download_button(
-                label="📥 Download Daily Excel Report (.xlsx)",
+                label="📥 Download Structured Excel Report (.xlsx)",
                 data=excel_data,
-                file_name=f"Site_Inventory_Daily_Report_{date_str}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                file_name=f"Site_Inventory_Report_{date_str}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
             )
 
     # Head Office Tabs
@@ -481,7 +586,6 @@ else:
             df_tx = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
             st.dataframe(df_tx, use_container_width=True)
             
-            # Head Office Photo Audit Gallery
             photos = df_tx[df_tx['photo_path'].notnull()]
             if not photos.empty:
                 st.markdown("---")
