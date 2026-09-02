@@ -386,7 +386,6 @@ if not st.session_state["logged_in"]:
 
 # --- MAIN APPLICATION (LOGGED IN) ---
 else:
-    # --- HEADER WITH NOTIFICATION BELL ICON ---
     user_name = st.session_state["username"]
     user_role = st.session_state["user_role"]
 
@@ -458,7 +457,7 @@ else:
             "+ Stock In", 
             "- Stock Out", 
             edit_tab_title,
-            "➕ Add Master Item", 
+            "➕ Manage Master Items", 
             "📜 Master Audit Log",
             "👤 Manage Users"
         ])
@@ -480,7 +479,6 @@ else:
     with tab2:
         st.subheader("📊 Inventory Analytics & Operational Insights")
 
-        # Dynamic Time Window Controls
         filter_col1, filter_col2 = st.columns([0.4, 0.6])
         with filter_col1:
             time_view = st.selectbox(
@@ -490,7 +488,6 @@ else:
         
         today = datetime.now()
         
-        # Determine Date Filters and Resampling Rules
         if time_view == "Daily (Last 14 Days)":
             start_date = today - timedelta(days=14)
             freq_rule = "D"
@@ -508,21 +505,18 @@ else:
             freq_rule = "ME"
             date_format = "%b %Y"
 
-        # Load inventory & transaction data
         df_inv = pd.read_sql_query("SELECT item_name, category, unit, current_stock, min_threshold FROM master_items", conn)
         df_tx_all = pd.read_sql_query("SELECT timestamp, item_name, type, quantity, user_role, driver_details, project_name FROM transactions", conn)
 
         if df_inv.empty:
             st.warning("No inventory data available for analytics.")
         else:
-            # Filter Transactions based on time window
             if not df_tx_all.empty:
                 df_tx_all['dt_timestamp'] = pd.to_datetime(df_tx_all['timestamp'])
                 df_filtered_tx = df_tx_all[df_tx_all['dt_timestamp'] >= start_date].copy()
             else:
                 df_filtered_tx = pd.DataFrame()
 
-            # 1. Top Level Metrics Cards (Filtered)
             total_skus = len(df_inv)
             low_stock_items = df_inv[df_inv['current_stock'] <= df_inv['min_threshold']]
             low_stock_count = len(low_stock_items)
@@ -538,7 +532,6 @@ else:
 
             st.markdown("---")
 
-            # 2. Critical Reorder Warning Section
             if low_stock_count > 0:
                 st.error(f"⚠️ **Attention Required:** {low_stock_count} item(s) are at or below safety threshold!")
                 st.dataframe(low_stock_items[['item_name', 'category', 'current_stock', 'min_threshold', 'unit']], use_container_width=True)
@@ -547,17 +540,12 @@ else:
 
             st.markdown("---")
 
-            # 3. Dynamic Movement Trends Over Time (Daily / Weekly / Monthly Line Chart)
             st.markdown(f"##### 📈 Stock Movement Trends ({time_view})")
             if not df_filtered_tx.empty:
-                # Group transactions dynamically by date range aggregation
                 df_filtered_tx_grouped = df_filtered_tx.set_index('dt_timestamp')
-                
-                # Resample by IN and OUT types
                 trend_in = df_filtered_tx_grouped[df_filtered_tx_grouped['type'] == 'IN'].resample(freq_rule)['quantity'].sum()
                 trend_out = df_filtered_tx_grouped[df_filtered_tx_grouped['type'] == 'OUT'].resample(freq_rule)['quantity'].sum()
 
-                # Combine into single dataframe
                 df_trend = pd.DataFrame({'Stock IN': trend_in, 'Stock OUT': trend_out}).fillna(0)
                 df_trend.index = df_trend.index.strftime(date_format)
 
@@ -567,9 +555,7 @@ else:
 
             st.markdown("---")
 
-            # 4. Inventory Stock Visual Breakdown
             c1, c2 = st.columns(2)
-
             with c1:
                 st.markdown("##### 📦 Current Stock vs. Threshold (Top 15)")
                 df_chart_inv = df_inv.sort_values(by='current_stock', ascending=False).head(15)
@@ -583,9 +569,7 @@ else:
 
             st.markdown("---")
 
-            # 5. Period Usage Analysis: Top Issued Items & Driver Activity
             col_a, col_b = st.columns(2)
-
             with col_a:
                 st.markdown(f"##### 🔥 Top Issued Items ({time_view.split()[0]})")
                 if not df_filtered_tx.empty and not df_filtered_tx[df_filtered_tx['type'] == 'OUT'].empty:
@@ -683,7 +667,6 @@ else:
 
     # --- SUPERVISOR SPECIFIC TABS ---
     if user_role == "Materials Supervisor":
-        # SUPERVISOR TAB 5: MY LOG & REQUEST EDITS
         with tab5:
             st.subheader("My Recent Activity & Edit Requests")
             st.caption("If you made a typing error in a log, click 'Request Edit' to submit a correction request to Head Office.")
@@ -762,7 +745,6 @@ else:
             else:
                 st.info("You have not submitted any stock entries yet.")
 
-        # SUPERVISOR TAB 6: DAILY REPORT
         with tab6:
             st.subheader("📅 Multi-Sheet Excel Report Generator")
 
@@ -795,7 +777,6 @@ else:
 
     # --- HEAD OFFICE SPECIFIC TABS ---
     if user_role == "Head Office":
-        # HEAD OFFICE TAB 5: EDIT APPROVAL QUEUE
         with tab5:
             st.subheader("✏️ Supervisor Log Edit Requests")
             st.caption("Review correction requests submitted by supervisors due to typing mistakes.")
@@ -820,7 +801,6 @@ else:
                     st.caption(f"Requested by **{req['requested_by']}** on {req['req_time']}")
                     st.info(f"**Reason for Error:** {req['reason']}")
 
-                    # Diff Table
                     diff_data = {
                         "Field": ["Quantity", "Issued To", "Driver / Vehicle", "Project Name", "Purpose / Remarks"],
                         "Original Value": [orig.get('quantity'), orig.get('issued_to'), orig.get('driver_details'), orig.get('project_name'), orig.get('purpose')],
@@ -873,25 +853,93 @@ else:
             else:
                 st.info("No pending edit requests from supervisors.")
 
-        # HEAD OFFICE TAB 6: ADD MASTER ITEM
+        # HEAD OFFICE TAB 6: MANAGE MASTER ITEMS
         with tab6:
-            st.subheader("Add New Master Item")
-            new_name = st.text_input("Item Name")
-            new_cat = st.selectbox("Category", ["1. Fuel & Oils", "2. Construction Materials", "3. Steel / Rebar", "4A. Nails & Fasteners", "4B. Cutting & Grinding Consumables", "4C. Welding Supplies & PPE", "4D. General Site Supplies"])
-            new_unit = st.text_input("Unit of Measure (e.g., Liters, Bags, Pcs)")
-            init_stock = st.number_input("Initial Stock", min_value=0.0, step=1.0)
-            min_thresh = st.number_input("Minimum Alert Threshold", min_value=0.0, step=1.0)
+            categories_list = [
+                "1. Fuel & Oils", 
+                "2. Construction Materials", 
+                "3. Steel / Rebar", 
+                "4A. Nails & Fasteners", 
+                "4B. Cutting & Grinding Consumables", 
+                "4C. Welding Supplies & PPE", 
+                "4D. General Site Supplies"
+            ]
 
-            if st.button("Save New Item"):
-                if new_name:
+            # Section A: Edit Existing Inventory Item Name & Category
+            st.subheader("✏️ Edit Item Name or Category")
+            existing_items_df = pd.read_sql_query("SELECT id, item_name, category, unit, min_threshold FROM master_items ORDER BY item_name ASC", conn)
+
+            if not existing_items_df.empty:
+                selected_item_name = st.selectbox("Select Master Item to Modify", existing_items_df['item_name'].tolist(), key="select_edit_item")
+                item_details = existing_items_df[existing_items_df['item_name'] == selected_item_name].iloc[0]
+
+                with st.form("edit_master_item_form"):
+                    col_e1, col_e2 = st.columns(2)
+                    with col_e1:
+                        updated_item_name = st.text_input("Item Name", value=item_details['item_name'])
+                        
+                        # Set default index for category dropdown
+                        cat_index = categories_list.index(item_details['category']) if item_details['category'] in categories_list else 0
+                        updated_category = st.selectbox("Category", categories_list, index=cat_index)
+
+                    with col_e2:
+                        updated_unit = st.text_input("Unit of Measure", value=item_details['unit'])
+                        updated_min_thresh = st.number_input("Minimum Alert Threshold", min_value=0.0, value=float(item_details['min_threshold']), step=1.0)
+
+                    btn_update_item = st.form_submit_button("Update Item Details", use_container_width=True)
+
+                if btn_update_item:
+                    if updated_item_name.strip():
+                        try:
+                            old_item_name = item_details['item_name']
+                            
+                            # 1. Update Master Items Database
+                            cursor.execute("""
+                                UPDATE master_items 
+                                SET item_name = ?, category = ?, unit = ?, min_threshold = ?
+                                WHERE id = ?
+                            """, (updated_item_name.strip(), updated_category, updated_unit.strip(), updated_min_thresh, int(item_details['id'])))
+                            
+                            # 2. Update Historical Transactions to keep audit trail aligned
+                            if old_item_name != updated_item_name.strip():
+                                cursor.execute("UPDATE transactions SET item_name = ? WHERE item_name = ?", (updated_item_name.strip(), old_item_name))
+
+                            conn.commit()
+                            st.success(f"Successfully updated '{old_item_name}' details!")
+                            st.rerun()
+                        except sqlite3.IntegrityError:
+                            st.error("An item with that name already exists.")
+                    else:
+                        st.error("Item name cannot be empty.")
+            else:
+                st.info("No items in inventory to edit.")
+
+            st.markdown("---")
+
+            # Section B: Add New Item
+            st.subheader("➕ Add New Master Item")
+            with st.form("add_new_master_item_form"):
+                col_n1, col_n2 = st.columns(2)
+                with col_n1:
+                    new_name = st.text_input("New Item Name")
+                    new_cat = st.selectbox("Category", categories_list, key="add_cat_select")
+                with col_n2:
+                    new_unit = st.text_input("Unit of Measure (e.g., Liters, Bags, Pcs)")
+                    init_stock = st.number_input("Initial Stock Quantity", min_value=0.0, step=1.0)
+                    min_thresh = st.number_input("Minimum Alert Threshold", min_value=0.0, step=1.0)
+
+                btn_save_new = st.form_submit_button("Save New Item", use_container_width=True)
+
+            if btn_save_new:
+                if new_name.strip():
                     try:
                         cursor.execute("INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold) VALUES (?, ?, ?, ?, ?)",
-                                       (new_name, new_cat, new_unit, init_stock, min_thresh))
+                                       (new_name.strip(), new_cat, new_unit.strip(), init_stock, min_thresh))
                         conn.commit()
                         st.success(f"Added '{new_name}' to inventory master!")
                         st.rerun()
                     except sqlite3.IntegrityError:
-                        st.error("Item name already exists.")
+                        st.error("An item with that name already exists.")
                 else:
                     st.error("Item name cannot be empty.")
 
