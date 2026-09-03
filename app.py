@@ -146,6 +146,22 @@ def render_app():
         from views.physical_inventory import render_physical_inventory
         render_physical_inventory(st.session_state.user_name, st.session_state.user_role)
 
+# In app.py inside render_app()
+
+pending_count = 0
+if st.session_state.user_role == "Admin":
+    try:
+        with get_db() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM discrepancies WHERE status = 'PENDING'")
+            pending_count = cur.fetchone()[0]
+    except Exception:
+        pending_count = 0
+
+# Sidebar Notification Badge
+if pending_count > 0 and st.session_state.user_role == "Admin":
+    st.sidebar.warning(f"🔔 **{pending_count} Pending Discrepancies** require Admin resolution.")
+
 
 # 6. Main Entry Point
 if not st.session_state.authenticated:
