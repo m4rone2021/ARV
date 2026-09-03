@@ -30,12 +30,12 @@ if "categories" not in st.session_state:
         "General Site Supplies"
     ]
 
-# Ensure DB & Tables exist on load
+# Ensure DB & Tables exist on startup
 init_db()
 
 
 # -----------------------------------------------------------------------------
-# LOGIN PAGE
+# LOGIN VIEW
 # -----------------------------------------------------------------------------
 def render_login():
     st.markdown("<h1 style='text-align: center;'>🏗️ ARV Construction Site Inventory</h1>", unsafe_allow_html=True)
@@ -53,7 +53,7 @@ def render_login():
 
             if submit:
                 if not username.strip() or not password.strip():
-                    st.error("⚠️ Please fill in both Username and Password.")
+                    st.error("⚠️ Please enter both Username and Password.")
                 else:
                     user_data = login_user(username.strip(), password.strip())
                     if user_data:
@@ -69,12 +69,12 @@ def render_login():
 
 
 # -----------------------------------------------------------------------------
-# MAIN APPLICATION
+# MAIN APPLICATION & FIXED NAVIGATION
 # -----------------------------------------------------------------------------
 def render_app():
-    # Lazy Imports for Views
+    # Views imports
     from views.dashboard import render_dashboard
-    from views.manage_items import render_manage_items
+    from views.master_items import render_master_items
     from views.stock_in import render_stock_in
     from views.stock_out import render_stock_out
     from views.low_stock import render_low_stock
@@ -82,23 +82,24 @@ def render_app():
     from views.reminders import render_reminders
     from views.audit_log import render_audit_log
 
-    # Sidebar Navigation
-    st.sidebar.markdown(f"### 👤 Logged in as: **{st.session_state.user_name}**")
+    # Sidebar Header
+    st.sidebar.markdown(f"### 👤 Logged in: **{st.session_state.user_name}**")
     st.sidebar.caption(f"Role: **{st.session_state.user_role}**")
     st.sidebar.divider()
 
+    # PERMANENT MENU NAVIGATION
     menu_options = [
-        "📊 Executive Dashboard",
-        "📦 Manage Master Items",
-        "📥 Stock IN Receive",
-        "📤 Stock OUT Dispatch",
-        "⚠️ Low Stock Alerts",
-        "📅 Schedules & Deliveries",
-        "📝 Reminders & Tasks",
-        "📜 Transaction Ledger & Audit"
+        "Dashboard",
+        "Master Catalog",
+        "Stock IN",
+        "Stock OUT",
+        "Low Stock Alerts",
+        "Schedules & Deliveries",
+        "Reminders & Tasks",
+        "Transaction Ledger"
     ]
 
-    choice = st.sidebar.radio("Navigation", menu_options)
+    choice = st.sidebar.radio("Main Menu", menu_options)
 
     st.sidebar.divider()
     if st.sidebar.button("🚪 Logout", use_container_width=True):
@@ -107,28 +108,26 @@ def render_app():
         st.session_state.user_role = "User"
         st.rerun()
 
-    # View Router
-    if choice == "📊 Executive Dashboard":
+    # Router logic matching menu options strictly
+    if choice == "Dashboard":
         render_dashboard(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📦 Manage Master Items":
-        render_manage_items(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📥 Stock IN Receive":
+    elif choice == "Master Catalog":
+        render_master_items(st.session_state.user_name, st.session_state.user_role)
+    elif choice == "Stock IN":
         render_stock_in(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📤 Stock OUT Dispatch":
+    elif choice == "Stock OUT":
         render_stock_out(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "⚠️ Low Stock Alerts":
+    elif choice == "Low Stock Alerts":
         render_low_stock(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📅 Schedules & Deliveries":
+    elif choice == "Schedules & Deliveries":
         render_schedules(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📝 Reminders & Tasks":
+    elif choice == "Reminders & Tasks":
         render_reminders(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📜 Transaction Ledger & Audit":
+    elif choice == "Transaction Ledger":
         render_audit_log(st.session_state.user_name, st.session_state.user_role)
 
 
-# -----------------------------------------------------------------------------
-# APP ENTRY POINT
-# -----------------------------------------------------------------------------
+# Entry Point
 if __name__ == "__main__":
     if not st.session_state.logged_in:
         render_login()
