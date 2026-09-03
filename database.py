@@ -102,12 +102,19 @@ def init_db():
             )
         """)
 
-        # Seed Default Admin Account if missing (Username: admin | Password: admin123)
+        # Seed/Ensure Default Admin Credentials (admin / admin123)
         cursor.execute("SELECT id FROM users WHERE username = 'admin'")
-        if not cursor.fetchone():
+        admin_row = cursor.fetchone()
+        if not admin_row:
             cursor.execute("""
                 INSERT INTO users (username, password, role)
                 VALUES ('admin', 'admin123', 'Admin')
+            """)
+        else:
+            # Force reset admin password to 'admin123'
+            cursor.execute("""
+                UPDATE users SET password = 'admin123', role = 'Admin'
+                WHERE username = 'admin'
             """)
 
         conn.commit()
