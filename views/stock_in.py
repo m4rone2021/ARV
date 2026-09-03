@@ -5,7 +5,32 @@ import streamlit as st
 from datetime import datetime
 from database import get_db
 
+def ensure_transactions_schema():
+    """Checks and automatically adds any missing columns to the transactions table."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(transactions)")
+        existing_cols = [row[1] for row in cursor.fetchall()]
+
+        required_cols = {
+            "driver_details": "TEXT",
+            "issued_to": "TEXT",
+            "project_name": "TEXT",
+            "purpose": "TEXT",
+            "remarks": "TEXT",
+            "photo_path": "TEXT",
+            "edit_status": "TEXT DEFAULT 'ACTIVE'"
+        }
+
+        for col_name, col_type in required_cols.items():
+            if col_name not in existing_cols:
+                cursor.execute(f"ALTER TABLE transactions ADD COLUMN {col_name} {col_type}")
+        conn.commit()
+
 def render_stock_in(user_name, user_role):
+    # Ensure database schema is migrated before rendering anything
+    ensure_transactions_schema()
+
     st.title("📥 Stock IN - Receive Inventory")
     st.caption("Record incoming materials, stock deliveries, and supplier receipts.")
 
