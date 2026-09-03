@@ -376,19 +376,28 @@ elif selected_menu == "📥 Stock Receipt (IN)":
     st.subheader("📑 Recent Incoming Material Deliveries Log")
     with get_db() as conn:
         df_recent_in = pd.read_sql_query("""
-            SELECT timestamp AS "Date & Time", 
-                   item_name AS "Item Name", 
-                   quantity AS "Qty Received", 
-                   user_name AS "Logged By", 
-                   driver_details AS "Driver / Plate #", 
-                   project_name AS "Destination Site", 
-                   remarks AS "DR / Supplier / Remarks" 
+            SELECT timestamp, 
+                   item_name, 
+                   quantity, 
+                   user_name, 
+                   driver_details, 
+                   project_name, 
+                   remarks 
             FROM transactions 
             WHERE type = 'IN' 
             ORDER BY id DESC LIMIT 10
         """, conn)
     
     if not df_recent_in.empty:
+        df_recent_in = df_recent_in.rename(columns={
+            "timestamp": "Date & Time",
+            "item_name": "Item Name",
+            "quantity": "Qty Received",
+            "user_name": "Logged By",
+            "driver_details": "Driver / Plate #",
+            "project_name": "Destination Site",
+            "remarks": "DR / Supplier / Remarks"
+        })
         st.dataframe(df_recent_in, use_container_width=True, hide_index=True)
     else:
         st.info("No incoming deliveries recorded yet.")
@@ -497,19 +506,28 @@ elif selected_menu == "📤 Material Issue (OUT)":
     st.subheader("📑 Recent Material Issuances Log")
     with get_db() as conn:
         df_recent_out = pd.read_sql_query("""
-            SELECT timestamp AS "Date & Time", 
-                   item_name AS "Item Name", 
-                   quantity AS "Qty Issued", 
-                   issued_to AS "Issued To", 
-                   project_name AS "Destination Site", 
-                   purpose AS "Purpose / Activity",
-                   user_name AS "Logged By" 
+            SELECT timestamp, 
+                   item_name, 
+                   quantity, 
+                   issued_to, 
+                   project_name, 
+                   purpose,
+                   user_name 
             FROM transactions 
             WHERE type = 'OUT' 
             ORDER BY id DESC LIMIT 10
         """, conn)
     
     if not df_recent_out.empty:
+        df_recent_out = df_recent_out.rename(columns={
+            "timestamp": "Date & Time",
+            "item_name": "Item Name",
+            "quantity": "Qty Issued",
+            "issued_to": "Issued To",
+            "project_name": "Destination Site",
+            "purpose": "Purpose / Activity",
+            "user_name": "Logged By"
+        })
         st.dataframe(df_recent_out, use_container_width=True, hide_index=True)
     else:
         st.info("No material issuances recorded yet.")
