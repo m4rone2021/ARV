@@ -44,21 +44,18 @@ def verify_password(plain_password: str, stored_password: str) -> bool:
     if not stored_password:
         return False
         
-    # Check if stored string has standard bcrypt prefix ($2a$, $2b$, or $2y$)
     if stored_password.startswith(("$2a$", "$2b$", "$2y$")):
         try:
             return bcrypt.checkpw(plain_password.encode('utf-8'), stored_password.encode('utf-8'))
         except (ValueError, TypeError):
             return False
             
-    # Fallback for old plain-text entries in database
     return plain_password == stored_password
 
 def init_db():
     """Initialize database tables, pragmas, and default seed data."""
     with get_db() as conn:
         cursor = conn.cursor()
-        # Enable Write-Ahead Logging for better concurrent read/write handling
         cursor.execute("PRAGMA journal_mode=WAL;")
         
         # Users Table
@@ -131,7 +128,7 @@ def init_db():
             )
         """)
         
-        # Seed default admin and supervisor accounts if table is empty
+        # Seed default admin and supervisor accounts if empty
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
             hashed_admin = hash_password("admin123")
@@ -142,14 +139,13 @@ def init_db():
         conn.commit()
 
 def login_user(username, password):
-    """Verify user login and auto-upgrade legacy plain-text passwords to bcrypt hashes."""
+    """Verify user login and auto-upgrade legacy passwords."""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT username, password, role FROM users WHERE username = ?", (username,))
         user = cursor.fetchone()
         
         if user and verify_password(password, user["password"]):
-            # Auto-migrate plain text password to bcrypt hash if needed
             if not user["password"].startswith(("$2a$", "$2b$", "$2y$")):
                 new_hash = hash_password(password)
                 cursor.execute("UPDATE users SET password = ? WHERE username = ?", (new_hash, username))
@@ -159,7 +155,6 @@ def login_user(username, password):
             
     return None
 
-# Run initialization
 init_db()
 
 # ==========================================
@@ -233,7 +228,6 @@ if selected_menu == "📊 Dashboard Overview":
         df_items = pd.read_sql_query("SELECT * FROM master_items ORDER BY category ASC, item_name ASC", conn)
         df_tx = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC LIMIT 10", conn)
 
-    # Top High-Level Metrics
     col1, col2, col3 = st.columns(3)
     col1.metric("Total Master Items", len(df_items))
     
@@ -249,13 +243,10 @@ if selected_menu == "📊 Dashboard Overview":
     if df_items.empty:
         st.info("No master items configured yet. Go to 'Manage Master Items' to add items.")
     else:
-        # Group items by Category
         categories = df_items['category'].unique()
 
         for cat in categories:
-            # Bold Category Header
             st.markdown(f"### **{cat.upper()}**")
-            
             cat_df = df_items[df_items['category'] == cat].copy()
             
             display_rows = []
@@ -263,11 +254,7 @@ if selected_menu == "📊 Dashboard Overview":
                 stock = row['current_stock']
                 min_t = row['min_threshold']
                 
-                # Determine stock status & physical inventory variance flag
-                if stock <= min_t:
-                    status = "⚠️ Lacking / Low Stock"
-                else:
-                    status = "✅ Normal / Surplus Available"
+                status = "⚠️ Lacking / Low Stock" if stock <= min_t else "✅ Normal / Surplus Available"
                 
                 display_rows.append({
                     "Item Name": row['item_name'],
@@ -277,141 +264,255 @@ if selected_menu == "📊 Dashboard Overview":
                     "Physical Audit Variance / Status": status
                 })
             
-            # Present category items in a clean table
-            st.dataframe(
-                pd.DataFrame(display_rows), 
-                use_container_width=True, 
-                hide_index=True
-            )
+            st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
             st.markdown("<br>", unsafe_allow_html=True)
 
     st.divider()
-
-    # Recent Transactions Activity Stream
     st.subheader("⏱️ Recent Activity (Stock IN / OUT / Adjustments)")
     if not df_tx.empty:
         recent_display = df_tx[['timestamp', 'item_name', 'type', 'quantity', 'user_name', 'project_name', 'remarks', 'edit_status']].copy()
         recent_display.columns = ['Timestamp', 'Item Name', 'Type', 'Qty', 'Logged By', 'Project / Destination', 'Remarks / Details', 'Status']
-        
         st.dataframe(recent_display, use_container_width=True, hide_index=True)
     else:
         st.info("No transaction activity recorded yet.")
 
 # --- MENU 2: STOCK RECEIPT (IN) ---
 elif selected_menu == "📥 Stock Receipt (IN)":
-    st.subheader("📥 Receive Material Deliveries (IN)")
+    st.title("📥 Receive Material Deliveries (Stock IN)")
+    st.caption("Log incoming material deliveries to update stock inventory and record proof of receipt.")
     
+    if "is_submitting_in" not in st.session_state:
+        st.session_state.is_submitting_in = False
+
     with get_db() as conn:
-        df_items = pd.read_sql_query("SELECT item_name FROM master_items ORDER BY item_name ASC", conn)
+        df_items = pd.read_sql_query("SELECT id, item_name, category, unit, current_stock FROM master_items ORDER BY category ASC, item_name ASC", conn)
 
     if df_items.empty:
-        st.warning("No master items found. Please add items in 'Manage Master Items' first.")
+        st.warning("⚠️ No master items found in database. Please add items under 'Manage Master Items' first.")
     else:
-        item_list = df_items['item_name'].tolist()
+        item_dict = {row['item_name']: row for _, row in df_items.iterrows()}
+        item_list = list(item_dict.keys())
+        
+        st.subheader("📋 Delivery Log Form")
         
         with st.form("stock_in_form", clear_on_submit=True):
-            col_a, col_b = st.columns(2)
-            item_selected = col_a.selectbox("Select Item", item_list)
-            qty_in = col_b.number_input("Quantity Received", min_value=0.1, step=1.0)
+            col1, col2 = st.columns(2)
             
-            driver_info = st.text_input("Driver & Vehicle Details (e.g., Plate #, Driver Name)")
-            project_name = st.text_input("Project / Site Destination")
-            remarks = st.text_area("Delivery Remarks / DR Number")
-            uploaded_file = st.file_uploader("Upload Delivery Receipt / Proof Photo", type=["png", "jpg", "jpeg"])
-            
-            submit_in = st.form_submit_button("Log Stock Receipt")
-            
-            if submit_in:
-                photo_path = ""
-                if uploaded_file is not None:
-                    file_ext = os.path.splitext(uploaded_file.name)[1]
-                    filename = f"IN_{datetime.now().strftime('%Y%m%d_%H%M%S')}{file_ext}"
-                    photo_path = os.path.join(UPLOAD_DIR, filename)
-                    with open(photo_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
+            with col1:
+                item_selected = st.selectbox("Select Material / Item", item_list, key="in_item_select")
+                selected_item_info = item_dict[item_selected]
+                unit_label = selected_item_info['unit']
+                current_bal = selected_item_info['current_stock']
+                
+                qty_in = st.number_input(
+                    f"Quantity Received ({unit_label})", 
+                    value=None, 
+                    min_value=0.01, 
+                    step=1.0, 
+                    format="%.2f", 
+                    placeholder="0.00", 
+                    key="in_qty"
+                )
+                dr_number = st.text_input("Delivery Receipt (DR) / Invoice No.", placeholder="e.g., DR-2026-0891", key="in_dr")
+                supplier_name = st.text_input("Supplier / Vendor Name", placeholder="e.g., Holcim Concrete / SteelCorp", key="in_supplier")
 
-                try:
-                    with get_db() as conn:
-                        cursor = conn.cursor()
-                        cursor.execute("BEGIN IMMEDIATE")
-                        
-                        # Update Stock
-                        cursor.execute("UPDATE master_items SET current_stock = current_stock + ? WHERE item_name = ?", (qty_in, item_selected))
-                        
-                        # Log Transaction
-                        cursor.execute("""
-                            INSERT INTO transactions (
-                                timestamp, item_name, type, quantity, user_name, user_role, 
-                                driver_details, project_name, remarks, photo_path
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            item_selected, "IN", qty_in, user_name, user_role,
-                            driver_info, project_name, remarks, photo_path
-                        ))
-                        
-                        conn.commit()
-                        st.success(f"Successfully received {qty_in} units of {item_selected}!")
-                        st.rerun()
-                except sqlite3.OperationalError:
-                    st.error("Database is currently busy. Please try submitting again.")
+            with col2:
+                st.info(f"📌 **Current Recorded Balance:** `{current_bal:,.2f} {unit_label}`\n\n**Category:** `{selected_item_info['category']}`")
+                driver_info = st.text_input("Driver Name & Vehicle Plate No.", placeholder="e.g., Juan Dela Cruz (ABC-1234)", key="in_driver")
+                project_name = st.text_input("Project Site / Unloading Location", placeholder="e.g., Sector 3 - Ground Floor", key="in_project")
+                remarks = st.text_area("Delivery Remarks / Quality Notes", placeholder="e.g., Delivered in good condition", key="in_remarks")
 
-# --- MENU 3: MATERIAL ISSUE (OUT) ---
-elif selected_menu == "📤 Material Issue (OUT)":
-    st.subheader("📤 Issue Materials to Site (OUT)")
-    
-    with get_db() as conn:
-        df_items = pd.read_sql_query("SELECT item_name, current_stock, unit FROM master_items ORDER BY item_name ASC", conn)
+            st.divider()
+            uploaded_file = st.file_uploader("📷 Upload Delivery Receipt or Photo Proof (PNG, JPG, JPEG)", type=["png", "jpg", "jpeg"], key="in_file")
+            
+            submit_in = st.form_submit_button("📦 Confirm & Record Material Receipt", disabled=st.session_state.is_submitting_in)
+            
+            if submit_in and not st.session_state.is_submitting_in:
+                if qty_in is None or qty_in <= 0:
+                    st.error("Please enter a valid quantity received.")
+                elif not dr_number.strip():
+                    st.error("Please enter a valid Delivery Receipt (DR) or Invoice number for tracking.")
+                else:
+                    st.session_state.is_submitting_in = True
+                    
+                    try:
+                        photo_path = ""
+                        if uploaded_file is not None:
+                            file_ext = os.path.splitext(uploaded_file.name)[1]
+                            filename = f"IN_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{dr_number.strip()}{file_ext}"
+                            photo_path = os.path.join(UPLOAD_DIR, filename)
+                            with open(photo_path, "wb") as f:
+                                f.write(uploaded_file.getbuffer())
 
-    if df_items.empty:
-        st.warning("No master items found.")
-    else:
-        item_list = df_items['item_name'].tolist()
-        
-        with st.form("stock_out_form", clear_on_submit=True):
-            col_a, col_b = st.columns(2)
-            item_selected = col_a.selectbox("Select Item to Issue", item_list)
-            qty_out = col_b.number_input("Quantity Issued", min_value=0.1, step=1.0)
-            
-            issued_to = st.text_input("Issued To (Subcontractor / Personnel)")
-            driver_out = st.text_input("Hauler / Transport Details")
-            project_name = st.text_input("Project / Site Location")
-            purpose = st.text_area("Purpose / Usage Details")
-            
-            submit_out = st.form_submit_button("Issue Material")
-            
-            if submit_out:
-                try:
-                    with get_db() as conn:
-                        cursor = conn.cursor()
-                        cursor.execute("BEGIN IMMEDIATE")
-                        
-                        cursor.execute("SELECT current_stock FROM master_items WHERE item_name = ?", (item_selected,))
-                        row = cursor.fetchone()
-                        
-                        if not row:
-                            st.error("Selected item not found.")
-                        elif qty_out > row['current_stock']:
-                            st.error(f"Insufficient stock! Available balance: {row['current_stock']}")
-                        else:
-                            cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (qty_out, item_selected))
-                            
+                        full_remarks = f"DR/Inv: {dr_number.strip()} | Supplier: {supplier_name.strip()}"
+                        if remarks.strip():
+                            full_remarks += f" | Notes: {remarks.strip()}"
+
+                        with get_db() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("BEGIN IMMEDIATE")
+                            cursor.execute("UPDATE master_items SET current_stock = current_stock + ? WHERE item_name = ?", (qty_in, item_selected))
                             cursor.execute("""
                                 INSERT INTO transactions (
                                     timestamp, item_name, type, quantity, user_name, user_role, 
-                                    driver_details, issued_to, project_name, purpose
+                                    driver_details, project_name, remarks, photo_path
                                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """, (
                                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                item_selected, "OUT", qty_out, user_name, user_role,
-                                driver_out, issued_to, project_name, purpose
+                                item_selected, "IN", qty_in, user_name, user_role,
+                                driver_info.strip(), project_name.strip(), full_remarks, photo_path
                             ))
-                            
                             conn.commit()
-                            st.success(f"Successfully issued {qty_out} units of {item_selected}!")
-                            st.rerun()
-                except sqlite3.OperationalError:
-                    st.error("Database is currently busy. Please try submitting again.")
+                            
+                            st.toast(f"✅ Material Receipt logged: {qty_in:,.2f} {unit_label} of {item_selected}", icon="📦")
+                            st.success(f"Successfully recorded **{qty_in:,.2f} {unit_label}** of **{item_selected}**! Form reset for next entry.")
+                    except sqlite3.OperationalError:
+                        st.error("Database is currently busy. Please try again.")
+                    finally:
+                        st.session_state.is_submitting_in = False
+                        st.rerun()
+
+    st.divider()
+    st.subheader("📑 Recent Incoming Material Deliveries Log")
+    with get_db() as conn:
+        df_recent_in = pd.read_sql_query("""
+            SELECT timestamp AS "Date & Time", 
+                   item_name AS "Item Name", 
+                   quantity AS "Qty Received", 
+                   user_name AS "Logged By", 
+                   driver_details AS "Driver / Plate #", 
+                   project_name AS "Destination Site", 
+                   remarks AS "DR / Supplier / Remarks" 
+            FROM transactions 
+            WHERE type = 'IN' 
+            ORDER BY id DESC LIMIT 10
+        """, conn)
+    
+    if not df_recent_in.empty:
+        st.dataframe(df_recent_in, use_container_width=True, hide_index=True)
+    else:
+        st.info("No incoming deliveries recorded yet.")
+
+# --- MENU 3: MATERIAL ISSUE (OUT) ---
+elif selected_menu == "📤 Material Issue (OUT)":
+    st.title("📤 Issue Materials to Site (Stock OUT)")
+    st.caption("Log material issuances to contractors, site locations, or tasks to deduct stock from inventory.")
+    
+    if "is_submitting_out" not in st.session_state:
+        st.session_state.is_submitting_out = False
+
+    with get_db() as conn:
+        df_items = pd.read_sql_query("SELECT id, item_name, category, unit, current_stock FROM master_items ORDER BY category ASC, item_name ASC", conn)
+
+    if df_items.empty:
+        st.warning("⚠️ No master items found in database. Please add items under 'Manage Master Items' first.")
+    else:
+        item_dict = {row['item_name']: row for _, row in df_items.iterrows()}
+        item_list = list(item_dict.keys())
+        
+        st.subheader("📋 Material Issuance Form")
+        
+        with st.form("stock_out_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                item_selected = st.selectbox("Select Material / Item", item_list, key="out_item_select")
+                selected_item_info = item_dict[item_selected]
+                unit_label = selected_item_info['unit']
+                current_bal = selected_item_info['current_stock']
+                
+                qty_out = st.number_input(
+                    f"Quantity to Issue ({unit_label})", 
+                    value=None, 
+                    min_value=0.01, 
+                    step=1.0, 
+                    format="%.2f", 
+                    placeholder="0.00", 
+                    key="out_qty"
+                )
+                issued_to = st.text_input("Issued To (Subcontractor / Foreperson / Person)", placeholder="e.g., Foreman Juan / ABC Construction", key="out_issued_to")
+                driver_out = st.text_input("Hauler / Driver Name & Vehicle Details", placeholder="e.g., Driver Pedro / Site Buggy #2", key="out_driver")
+
+            with col2:
+                st.info(f"📌 **Current Available Stock:** `{current_bal:,.2f} {unit_label}`\n\n**Category:** `{selected_item_info['category']}`")
+                project_name = st.text_input("Destination Site / Specific Location", placeholder="e.g., Sector 2 - Pier Column 4", key="out_project")
+                purpose = st.text_area("Purpose / Construction Activity Notes", placeholder="e.g., Concrete pouring for foundation slab", key="out_purpose")
+
+            st.divider()
+            uploaded_file = st.file_uploader("📷 Upload Gate Pass or Signed Requisition Photo Proof (PNG, JPG, JPEG)", type=["png", "jpg", "jpeg"], key="out_file")
+            
+            submit_out = st.form_submit_button("📦 Confirm & Issue Material", disabled=st.session_state.is_submitting_out)
+            
+            if submit_out and not st.session_state.is_submitting_out:
+                if qty_out is None or qty_out <= 0:
+                    st.error("Please enter a valid quantity to issue.")
+                elif not issued_to.strip():
+                    st.error("Please enter who or which contractor the material is being issued to.")
+                elif qty_out > current_bal:
+                    st.error(f"❌ Cannot issue **{qty_out:,.2f} {unit_label}**. Only **{current_bal:,.2f} {unit_label}** available in stock.")
+                else:
+                    st.session_state.is_submitting_out = True
+                    
+                    try:
+                        photo_path = ""
+                        if uploaded_file is not None:
+                            file_ext = os.path.splitext(uploaded_file.name)[1]
+                            filename = f"OUT_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{item_selected.replace(' ', '_')}{file_ext}"
+                            photo_path = os.path.join(UPLOAD_DIR, filename)
+                            with open(photo_path, "wb") as f:
+                                f.write(uploaded_file.getbuffer())
+
+                        with get_db() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("BEGIN IMMEDIATE")
+                            
+                            cursor.execute("SELECT current_stock FROM master_items WHERE item_name = ?", (item_selected,))
+                            latest_stock = cursor.fetchone()['current_stock']
+                            
+                            if qty_out > latest_stock:
+                                st.error(f"Stock changed during entry! Current balance is now {latest_stock:,.2f} {unit_label}.")
+                            else:
+                                cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (qty_out, item_selected))
+                                cursor.execute("""
+                                    INSERT INTO transactions (
+                                        timestamp, item_name, type, quantity, user_name, user_role, 
+                                        driver_details, issued_to, project_name, purpose, photo_path
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (
+                                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    item_selected, "OUT", qty_out, user_name, user_role,
+                                    driver_out.strip(), issued_to.strip(), project_name.strip(), purpose.strip(), photo_path
+                                ))
+                                conn.commit()
+                                
+                                st.toast(f"✅ Material Issued: {qty_out:,.2f} {unit_label} of {item_selected}", icon="📤")
+                                st.success(f"Successfully issued **{qty_out:,.2f} {unit_label}** of **{item_selected}** to **{issued_to.strip()}**! Form reset for next entry.")
+                    except sqlite3.OperationalError:
+                        st.error("Database is currently busy. Please try again.")
+                    finally:
+                        st.session_state.is_submitting_out = False
+                        st.rerun()
+
+    st.divider()
+    st.subheader("📑 Recent Material Issuances Log")
+    with get_db() as conn:
+        df_recent_out = pd.read_sql_query("""
+            SELECT timestamp AS "Date & Time", 
+                   item_name AS "Item Name", 
+                   quantity AS "Qty Issued", 
+                   issued_to AS "Issued To", 
+                   project_name AS "Destination Site", 
+                   purpose AS "Purpose / Activity",
+                   user_name AS "Logged By" 
+            FROM transactions 
+            WHERE type = 'OUT' 
+            ORDER BY id DESC LIMIT 10
+        """, conn)
+    
+    if not df_recent_out.empty:
+        st.dataframe(df_recent_out, use_container_width=True, hide_index=True)
+    else:
+        st.info("No material issuances recorded yet.")
 
 # --- MENU 4: LOW STOCK ALERTS ---
 elif selected_menu == "⚠️ Low Stock Alerts":
@@ -449,16 +550,12 @@ elif selected_menu == "📝 Edit/Void Transactions":
                         cursor = conn.cursor()
                         cursor.execute("BEGIN IMMEDIATE")
                         
-                        # Reverse Stock impact
                         if tx_row['type'] == 'IN':
                             cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (tx_row['quantity'], tx_row['item_name']))
                         elif tx_row['type'] == 'OUT':
                             cursor.execute("UPDATE master_items SET current_stock = current_stock + ? WHERE item_name = ?", (tx_row['quantity'], tx_row['item_name']))
                         
-                        # Mark transaction voided
                         cursor.execute("UPDATE transactions SET edit_status = ? WHERE id = ?", (f"VOIDED: {reason}", sel_tx_id))
-                        
-                        # Log adjustment audit record
                         cursor.execute("""
                             INSERT INTO transactions (
                                 timestamp, item_name, type, quantity, user_name, user_role, remarks
@@ -469,7 +566,6 @@ elif selected_menu == "📝 Edit/Void Transactions":
                             (-tx_row['quantity'] if tx_row['type'] == 'IN' else tx_row['quantity']),
                             user_name, user_role, f"Reversal of TX #{sel_tx_id}: {reason}"
                         ))
-                        
                         conn.commit()
                         st.success(f"Transaction #{sel_tx_id} successfully voided.")
                         st.rerun()
@@ -481,7 +577,6 @@ elif selected_menu == "📝 Edit/Void Transactions":
 # --- MENU 6: MANAGE MASTER ITEMS ---
 elif selected_menu == "➕ Manage Master Items":
     st.subheader("➕ Master Catalog Management")
-    
     tab1, tab2 = st.tabs(["Add New Master Item", "Modify Item Details / Adjust Stock"])
     
     with tab1:
@@ -514,11 +609,7 @@ elif selected_menu == "➕ Manage Master Items":
             df_m = pd.read_sql_query("SELECT id, item_name, category, unit, current_stock, min_threshold FROM master_items", conn)
         
         if not df_m.empty:
-            selected_mod_id = st.selectbox(
-                "Select Item to Update", 
-                df_m['id'].tolist(), 
-                format_func=lambda x: df_m[df_m['id']==x]['item_name'].values[0]
-            )
+            selected_mod_id = st.selectbox("Select Item to Update", df_m['id'].tolist(), format_func=lambda x: df_m[df_m['id']==x]['item_name'].values[0])
             m_row = df_m[df_m['id'] == selected_mod_id].iloc[0]
 
             st.markdown("##### 📝 Update Item Details (Metadata Only)")
@@ -531,17 +622,13 @@ elif selected_menu == "➕ Manage Master Items":
                 if st.form_submit_button("Update Item Details"):
                     with get_db() as conn:
                         cursor = conn.cursor()
-                        cursor.execute("""
-                            UPDATE master_items 
-                            SET item_name = ?, category = ?, unit = ?, min_threshold = ?
-                            WHERE id = ?
-                        """, (m_name.strip(), m_cat.strip(), m_unit.strip(), m_thresh, selected_mod_id))
+                        cursor.execute("UPDATE master_items SET item_name = ?, category = ?, unit = ?, min_threshold = ? WHERE id = ?", 
+                                       (m_name.strip(), m_cat.strip(), m_unit.strip(), m_thresh, selected_mod_id))
                         conn.commit()
                         st.success(f"Item '{m_name}' metadata updated successfully!")
                         st.rerun()
 
             st.divider()
-
             st.markdown("##### ⚖️ Manual Stock Adjustment (Logged Audit Transaction)")
             st.info(f"Current Recorded Stock Balance: **{m_row['current_stock']} {m_row['unit']}**")
 
@@ -566,10 +653,7 @@ elif selected_menu == "➕ Manage Master Items":
                                 INSERT INTO transactions (
                                     timestamp, item_name, type, quantity, user_name, user_role, remarks
                                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """, (
-                                ts, m_row['item_name'], "ADJUSTMENT", diff, 
-                                user_name, user_role, f"Manual Adjustment: {adj_reason.strip()}"
-                            ))
+                            """, (ts, m_row['item_name'], "ADJUSTMENT", diff, user_name, user_role, f"Manual Adjustment: {adj_reason.strip()}"))
                             conn.commit()
                             st.success(f"Stock for '{m_row['item_name']}' adjusted by {diff:+.2f}. Logged to audit trail.")
                             st.rerun()
@@ -608,7 +692,6 @@ elif selected_menu == "📜 Master Audit Log":
 # --- MENU 8: MANAGE USERS (HEAD OFFICE ONLY) ---
 elif selected_menu == "👤 Manage Users":
     st.subheader("👤 User Management & Role Access Control")
-    
     tab_users, tab_add_user = st.tabs(["User Directory", "Add New User"])
     
     with tab_users:
