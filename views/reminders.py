@@ -12,6 +12,15 @@ def render_reminders(user_name, user_role):
 
     tab_tasks, tab_add = st.tabs(["📋 Task List", "➕ Create Task / Reminder"])
 
+    # Inspect table schema dynamically to avoid missing column errors
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(reminders)")
+        columns = [col[1] for col in cursor.fetchall()]
+
+    # Detect exact task/description column name
+    task_col = "task" if "task" in columns else ("description" if "description" in columns else ("reminder" if "reminder" in columns else None))
+
     # -------------------------------------------------------------
     # TAB 1: TASK LIST & STATUS UPDATES
     # -------------------------------------------------------------
@@ -20,65 +29,67 @@ def render_reminders(user_name, user_role):
 
         filter_status = st.selectbox("Filter Status", ["All", "OPEN", "COMPLETED", "CANCELLED"], key="rem_filter_status")
 
-        # Query omitting optional created_at to avoid schema missing column errors
-        query = "SELECT id, due_date, task, assigned_to, status FROM reminders WHERE 1=1"
-        params = []
+        if not task_col:
+            st.error("⚠️ Could not locate a valid task description column in the database.")
+        else:
+            query = f"SELECT id, due_date, {task_col} AS task, assigned_to, status FROM reminders WHERE 1=1"
+            params = []
 
-        if filter_status != "All":
-            query += " AND status = ?"
-            params.append(filter_status)
+            if filter_status != "All" and "status" in columns:
+                query += " AND status = ?"
+                params.append(filter_status)
 
-        query += " ORDER BY due_date ASC, id DESC"
+            query += " ORDER BY due_date ASC, id DESC"
 
-        try:
-            with get_db() as conn:
-                df = pd.read_sql_query(query, conn, params=params)
+            try:
+                with get_db() as conn:
+                    df = pd.read_sql_query(query, conn, params=params)
 
-            if not df.empty:
-                df_display = df.rename(columns={
-                    "id": "ID",
-                    "due_date": "Due Date",
-                    "task": "Task Description",
-                    "assigned_to": "Assigned To",
-                    "status": "Status"
-                })
-                st.dataframe(df_display, use_container_width=True, hide_index=True)
+                if not df.empty:
+                    df_display = df.rename(columns={
+                        "id": "ID",
+                        "due_date": "Due Date",
+                        "task": "Task Description",
+                        "assigned_to": "Assigned To",
+                        "status": "Status"
+                    })
+                    st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-                st.divider()
-                st.subheader("🔄 Update Task Status")
+                    st.divider()
+                    st.subheader("🔄 Update Task Status")
 
-                with st.form("update_reminder_form"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        open_tasks = df[df["status"] == "OPEN"]
-                        if not open_tasks.empty:
-                            task_options = [f"#{row['id']} - {row['task']} (Due: {row['due_date']})" for _, row in open_tasks.iterrows()]
-                            selected_task = st.selectbox("Select Open Task", task_options)
-                        else:
-                            st.info("No open tasks available to update.")
-                            selected_task = None
+                    with st.form("update_reminder_form"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            open_tasks = df[df["status"] == "OPEN"] if "status" in df.columns else df
+                            if not open_tasks.empty:
+                                task_options = [f"#{row['id']} - {row['task']} (Due: {row['due_date']})" for _, row in open_tasks.iterrows()]
+                                selected_task = st.selectbox("Select Task", task_options)
+                            else:
+                                st.info("No open tasks available to update.")
+                                selected_task = None
 
-                    with col2:
-                        new_status = st.selectbox("Set Status", ["COMPLETED", "CANCELLED"])
+                        with col2:
+                            new_status = st.selectbox("Set Status", ["COMPLETED", "CANCELLED"])
 
-                    submit_update = st.form_submit_button("Update Task Status", use_container_width=True)
+                        submit_update = st.form_submit_button("Update Task Status", use_container_width=True)
 
-                    if submit_update and selected_task:
-                        task_id = int(selected_task.split("#")[1].split(" ")[0])
-                        try:
-                            with get_db() as conn:
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE reminders SET status = ? WHERE id = ?", (new_status, task_id))
-                                conn.commit()
-                                st.success(f"✅ Task #{task_id} marked as '{new_status}'.")
-                                st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to update task: {e}")
-            else:
-                st.info("No task reminders found.")
+                        if submit_update and selected_task:
+                            task_id = int(selected_task.split("#")[1].split(" ")[0])
+                            try:
+                                with get_db() as conn:
+                                    cursor = conn.cursor()
+                                    cursor.execute("UPDATE reminders SET status = ? WHERE id = ?", (new_status, task_id))
+                                    conn.commit()
+                                    st.success(f"✅ Task #{task_id} marked as '{new_status}'.")
+                                    st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to update task: {e}")
+                else:
+                    st.info("No task reminders found.")
 
-        except Exception as e:
-            st.error(f"Error loading tasks: {e}")
+            except Exception as e:
+                st.error(f"Error loading tasks: {e}")
 
     # -------------------------------------------------------------
     # TAB 2: CREATE NEW TASK
@@ -103,10 +114,11 @@ def render_reminders(user_name, user_role):
                     st.error("⚠️ Task Description is required.")
                 else:
                     try:
+                        target_col = task_col if task_col else "task"
                         with get_db() as conn:
                             cursor = conn.cursor()
-                            cursor.execute("""
-                                INSERT INTO reminders (due_date, task, assigned_to, status)
+                            cursor.execute(f"""
+                                INSERT INTO reminders (due_date, {target_col}, assigned_to, status)
                                 VALUES (?, ?, ?, 'OPEN')
                             """, (str(due_date), task_desc.strip(), assigned_to.strip()))
                             conn.commit()
