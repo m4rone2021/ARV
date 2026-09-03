@@ -168,7 +168,7 @@ if cursor.fetchone()[0] == 0:
         ("Small Bags Cement", "2. Construction Materials", "bags", 121, 0),
         ("Tanner Cement", "2. Construction Materials", "Bags (1-Ton)", 0, 0),
         ("Rebar 10mm", "3. Steel / Rebar", "Pcs", 1323, 0),
-        ("Rebar 12mm", "3. Steel / Rebar", "Pcs", 603, 0),.
+        ("Rebar 12mm", "3. Steel / Rebar", "Pcs", 603, 0),
         ("Rebar 16mm", "3. Steel / Rebar", "Pcs", 401, 0),
         ("Rebar 20mm", "3. Steel / Rebar", "Pcs", 0, 0),
         ("Rebar 25mm", "3. Steel / Rebar", "Pcs", 218, 0),
