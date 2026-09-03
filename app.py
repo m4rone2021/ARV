@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS schedules (
 )
 """)
 
-# NEW TABLE: Physical Inventory Audits & Reconciliation
+# Physical Inventory Audit Table (Updated with Resolution Workflow)
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS physical_inventory_counts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,8 +118,11 @@ CREATE TABLE IF NOT EXISTS physical_inventory_counts (
     variance REAL,
     unit TEXT,
     counted_by TEXT,
-    remarks TEXT,
+    supervisor_remarks TEXT,
     sync_status TEXT DEFAULT 'UNSYNCED',
+    resolved_by TEXT,
+    resolved_stock REAL,
+    admin_explanation TEXT,
     timestamp TEXT
 )
 """)
@@ -135,6 +138,17 @@ for col, col_type in [
 ]:
     try:
         cursor.execute(f"ALTER TABLE transactions ADD COLUMN {col} {col_type}")
+    except sqlite3.OperationalError:
+        pass
+
+for col, col_type in [
+    ("supervisor_remarks", "TEXT"),
+    ("resolved_by", "TEXT"),
+    ("resolved_stock", "REAL"),
+    ("admin_explanation", "TEXT")
+]:
+    try:
+        cursor.execute(f"ALTER TABLE physical_inventory_counts ADD COLUMN {col} {col_type}")
     except sqlite3.OperationalError:
         pass
 
@@ -473,7 +487,7 @@ else:
     st.sidebar.markdown(f"**Role:** `{user_role}`")
     st.sidebar.markdown("---")
 
-    # Navigation options updated with Physical Inventory module
+    # Navigation options updated with Head Office Variance Resolution Badge
     if user_role == "Materials Supervisor":
         nav_options = [
             "📋 Current Inventory", 
@@ -488,14 +502,17 @@ else:
         ]
     else:  # Head Office Admin
         pending_requests_count = cursor.execute("SELECT COUNT(*) FROM edit_requests WHERE status = 'PENDING'").fetchone()[0]
+        pending_variances_count = cursor.execute("SELECT COUNT(*) FROM physical_inventory_counts WHERE sync_status = 'PENDING_ADMIN_REVIEW'").fetchone()[0]
+        
         edit_option_title = f"✏️ Edit Requests ({pending_requests_count})" if pending_requests_count > 0 else "✏️ Edit Requests"
+        audit_option_title = f"📦 Physical Inventory Audit ({pending_variances_count})" if pending_variances_count > 0 else "📦 Physical Inventory Audit"
 
         nav_options = [
             "📋 Current Inventory", 
             "📊 Analytics",
             "+ Stock In", 
             "- Stock Out", 
-            "📦 Physical Inventory Audit",
+            audit_option_title,
             edit_option_title,
             "➕ Manage Master Items", 
             "📜 Master Audit Log",
@@ -641,28 +658,6 @@ else:
                 cat_summary.columns = ["Category", "Total Items"]
                 st.bar_chart(cat_summary, x="Category", y="Total Items", use_container_width=True)
 
-            st.markdown("---")
-
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.markdown(f"##### 🔥 Top Issued Items ({time_view.split()[0]})")
-                if not df_filtered_tx.empty and not df_filtered_tx[df_filtered_tx['type'] == 'OUT'].empty:
-                    df_out_top = df_filtered_tx[df_filtered_tx['type'] == 'OUT'].groupby('item_name')['quantity'].sum().reset_index()
-                    df_out_top = df_out_top.sort_values(by='quantity', ascending=False).head(10)
-                    st.dataframe(df_out_top, use_container_width=True)
-                else:
-                    st.caption("No Stock OUT transactions logged in this period.")
-
-            with col_b:
-                st.markdown(f"##### 🚚 Active Drivers & Transport Logins ({time_view.split()[0]})")
-                if not df_filtered_tx.empty and df_filtered_tx['driver_details'].notnull().any():
-                    df_drivers = df_filtered_tx[df_filtered_tx['driver_details'] != ''].groupby('driver_details')['timestamp'].count().reset_index()
-                    df_drivers.columns = ['Driver / Vehicle Details', 'Trips Logged']
-                    df_drivers = df_drivers.sort_values(by='Trips Logged', ascending=False).head(10)
-                    st.dataframe(df_drivers, use_container_width=True)
-                else:
-                    st.caption("No driver entries logged in this period.")
-
     # --- MENU 3: STOCK IN ---
     elif selected_menu == "+ Stock In":
         st.subheader("Log Stock Delivery (Receiving)")
@@ -769,12 +764,113 @@ else:
         else:
             st.warning("Please add items to Master Inventory first.")
 
-    # --- MENU: PHYSICAL INVENTORY AUDIT (NEW FEATURE) ---
-    elif selected_menu == "📦 Physical Inventory Audit":
-        st.subheader("📦 Physical Inventory Count & Variance Audit")
+    # --- MENU: PHYSICAL INVENTORY AUDIT & ADMIN VARIANCE RESOLUTION ---
+    elif selected_menu.startswith("📦 Physical Inventory Audit"):
+        st.subheader("📦 Physical Inventory Audit & Discrepancy Management")
 
-        tab_audit, tab_history = st.tabs(["📝 Record Physical Count", "📜 Audit History & Discrepancies"])
+        if user_role == "Head Office":
+            tab_resolve, tab_audit, tab_history = st.tabs(["⚡ Resolve Discrepancies", "📝 Record Physical Count", "📜 Audit History"])
+        else:
+            tab_audit, tab_history = st.tabs(["📝 Record Physical Count", "📜 Audit History & Status"])
+            tab_resolve = None
 
+        # --- ADMIN TAB: RESOLVE DISCREPANCIES ---
+        if tab_resolve:
+            with tab_resolve:
+                st.markdown("### ⚠️ Pending Physical Inventory Discrepancies")
+                
+                pending_audits = pd.read_sql_query("""
+                    SELECT * FROM physical_inventory_counts 
+                    WHERE sync_status = 'PENDING_ADMIN_REVIEW' 
+                    ORDER BY id DESC
+                """, conn)
+
+                if not pending_audits.empty:
+                    for _, row in pending_audits.iterrows():
+                        audit_id = row['id']
+                        item_name = row['item_name']
+                        unit = row['unit']
+                        sys_stk = row['system_stock']
+                        phys_stk = row['physical_stock']
+                        var = row['variance']
+                        counted_by = row['counted_by']
+                        sup_remarks = row['supervisor_remarks']
+                        audit_date = row['audit_date']
+
+                        var_color = "🔴" if var < 0 else "🟠"
+
+                        with st.expander(f"{var_color} Audit #{audit_id} - {item_name} | Discrepancy: {var:+,.2f} {unit} (Submitted by {counted_by})"):
+                            col_a, col_b, col_c = st.columns(3)
+                            col_a.metric("System Stock Record", f"{sys_stk:,.2f} {unit}")
+                            col_b.metric("Supervisor Count", f"{phys_stk:,.2f} {unit}")
+                            col_c.metric("Discrepancy Variance", f"{var:+,.2f} {unit}")
+
+                            st.write(f"**Audit Date:** `{audit_date}`")
+                            st.write(f"**Supervisor Explanation Note:** {sup_remarks or 'None provided'}")
+
+                            st.markdown("---")
+                            st.markdown("#### 🛠️ Head Office Resolution Action")
+
+                            with st.form(f"resolve_form_{audit_id}"):
+                                final_qty = st.number_input(
+                                    f"Final Approved Stock Quantity ({unit})", 
+                                    min_value=0.0, 
+                                    value=float(phys_stk), 
+                                    step=1.0, 
+                                    key=f"final_qty_{audit_id}"
+                                )
+                                admin_exp = st.text_area(
+                                    "Admin Explanation / Corrective Action Note (Required)", 
+                                    placeholder="e.g. Confirmed site audit discrepancy. Adjusting master stock to match physical count.",
+                                    key=f"admin_exp_{audit_id}"
+                                )
+
+                                col_btn1, col_btn2 = st.columns(2)
+                                submit_resolution = col_btn1.form_submit_button("✅ Approve & Resolve Stock Level")
+
+                                if submit_resolution:
+                                    if not admin_exp.strip():
+                                        st.error("Please provide an explanation for resolving this inventory discrepancy.")
+                                    else:
+                                        # 1. Update Master Stock
+                                        cursor.execute("UPDATE master_items SET current_stock = ? WHERE item_name = ?", (final_qty, item_name))
+                                        
+                                        # 2. Update Physical Inventory Record
+                                        cursor.execute("""
+                                            UPDATE physical_inventory_counts 
+                                            SET sync_status = 'RESOLVED',
+                                                resolved_by = ?,
+                                                resolved_stock = ?,
+                                                admin_explanation = ?
+                                            WHERE id = ?
+                                        """, (user_name, final_qty, admin_exp.strip(), audit_id))
+
+                                        # 3. Log Audit Reconciliation Transaction
+                                        cursor.execute("""
+                                            INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, remarks) 
+                                            VALUES (?, ?, ?, ?, ?, ?)
+                                        """, (
+                                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                                            item_name, 
+                                            "AUDIT_ADJUSTMENT", 
+                                            final_qty - sys_stk, 
+                                            user_name, 
+                                            f"Physical Audit #{audit_id} resolved by Admin ({user_name}). Note: {admin_exp.strip()}"
+                                        ))
+
+                                        # 4. Notify Supervisor
+                                        create_notification(
+                                            f"✅ Physical Inventory Audit #{audit_id} for '{item_name}' was RESOLVED by Head Office. Final Stock set to {final_qty} {unit}.",
+                                            target_user=counted_by
+                                        )
+
+                                        conn.commit()
+                                        st.success(f"Audit #{audit_id} resolved! Master inventory updated to {final_qty} {unit}.")
+                                        st.rerun()
+                else:
+                    st.info("🎉 No pending physical inventory discrepancies requiring Head Office review.")
+
+        # --- TAB: RECORD PHYSICAL COUNT ---
         with tab_audit:
             items_master = cursor.execute("SELECT item_name, current_stock, unit FROM master_items ORDER BY item_name ASC").fetchall()
             
@@ -802,79 +898,70 @@ else:
                 else:
                     st.warning(f"ℹ️ Stock Surplus Identified: Physical stock is **{variance:,.2f} {item_unit} MORE** than system stock.")
 
-                audit_remarks = st.text_area("Audit Notes / Explanation for Variance", placeholder="e.g. Damaged goods removed, unrecorded issuance, or supplier over-delivery")
+                audit_remarks = st.text_area("Supervisor Audit Notes / Explanation for Variance", placeholder="e.g. Damaged goods removed, unrecorded issuance, or supplier over-delivery")
 
                 if st.button("Submit Physical Count", use_container_width=True):
+                    # Flag status: If variance exists, send to Head Office review. Otherwise auto-sync.
+                    initial_status = "PENDING_ADMIN_REVIEW" if variance != 0 else "SYNCED"
+
                     cursor.execute("""
                         INSERT INTO physical_inventory_counts 
-                        (audit_date, item_name, system_stock, physical_stock, variance, unit, counted_by, remarks, timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (audit_date.strftime("%Y-%m-%d"), selected_item, system_qty, physical_qty, variance, item_unit, user_name, audit_remarks, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                        (audit_date, item_name, system_stock, physical_stock, variance, unit, counted_by, supervisor_remarks, sync_status, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        audit_date.strftime("%Y-%m-%d"), 
+                        selected_item, 
+                        system_qty, 
+                        physical_qty, 
+                        variance, 
+                        item_unit, 
+                        user_name, 
+                        audit_remarks, 
+                        initial_status, 
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    ))
                     
                     conn.commit()
 
                     if variance != 0:
                         create_notification(
-                            f"📦 Physical count discrepancy logged for '{selected_item}': Variance = {variance:+,.2f} {item_unit} (Audited by {user_name})", 
+                            f"📦 DISCREPANCY ALERT: Physical count for '{selected_item}' by {user_name} has a variance of {variance:+,.2f} {item_unit}. Requires Head Office resolution.", 
                             target_role="Head Office"
                         )
-
-                    st.success(f"Physical count audit logged for {selected_item}!")
+                        st.warning(f"Physical count logged with a variance of {variance:+,.2f} {item_unit}. Sent to Head Office for review and resolution.")
+                    else:
+                        st.success(f"Physical count audit logged for {selected_item}! Inventory counts match.")
+                    
                     st.rerun()
 
+        # --- TAB: AUDIT HISTORY ---
         with tab_history:
-            st.markdown("### Physical Inventory Audit Log")
+            st.markdown("### Physical Inventory Audit History Log")
             df_audits = pd.read_sql_query("SELECT * FROM physical_inventory_counts ORDER BY id DESC", conn)
 
             if not df_audits.empty:
-                def highlight_variance(val):
-                    if val < 0:
-                        return 'color: red; font-weight: bold;'
-                    elif val > 0:
-                        return 'color: orange; font-weight: bold;'
-                    return 'color: green;'
+                def highlight_status(val):
+                    if val == 'PENDING_ADMIN_REVIEW':
+                        return 'background-color: #fff3cd; color: #856404; font-weight: bold;'
+                    elif val == 'RESOLVED' or val == 'SYNCED':
+                        return 'background-color: #d4edda; color: #155724;'
+                    return ''
 
                 st.dataframe(
-                    df_audits.style.applymap(highlight_variance, subset=['variance']),
+                    df_audits.style.applymap(highlight_status, subset=['sync_status']),
+                    column_config={
+                        "id": "Audit ID",
+                        "audit_date": "Audit Date",
+                        "item_name": "Item Name",
+                        "system_stock": st.column_config.NumberColumn("System Qty", format="%.2f"),
+                        "physical_stock": st.column_config.NumberColumn("Physical Qty", format="%.2f"),
+                        "variance": st.column_config.NumberColumn("Variance", format="%+.2f"),
+                        "sync_status": "Status",
+                        "supervisor_remarks": "Supervisor Notes",
+                        "admin_explanation": "Admin Explanation"
+                    },
                     use_container_width=True
                 )
-
-                st.markdown("---")
-                st.markdown("### 🔄 Sync System Inventory to Physical Count")
-                st.caption("Reconcile system stock levels directly to match verified physical counts.")
-
-                unsynced_audits = df_audits[df_audits['sync_status'] == 'UNSYNCED']
-
-                if not unsynced_audits.empty:
-                    sync_target_id = st.selectbox(
-                        "Select Audit Entry to Sync:", 
-                        unsynced_audits['id'].tolist(),
-                        format_func=lambda x: f"Audit #{x} - {unsynced_audits[unsynced_audits['id']==x]['item_name'].values[0]} (Variance: {unsynced_audits[unsynced_audits['id']==x]['variance'].values[0]:+,.2f})"
-                    )
-
-                    target_row = unsynced_audits[unsynced_audits['id'] == sync_target_id].iloc[0]
-
-                    if st.button(f"Reconcile Stock for {target_row['item_name']} to {target_row['physical_stock']} {target_row['unit']}"):
-                        cursor.execute("UPDATE master_items SET current_stock = ? WHERE item_name = ?", (target_row['physical_stock'], target_row['item_name']))
-                        cursor.execute("UPDATE physical_inventory_counts SET sync_status = 'SYNCED' WHERE id = ?", (sync_target_id,))
-                        
-                        cursor.execute("""
-                            INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, remarks) 
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """, (
-                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-                            target_row['item_name'], 
-                            "AUDIT_ADJUSTMENT", 
-                            target_row['variance'], 
-                            user_name, 
-                            f"Stock adjusted via Physical Audit #{sync_target_id} (Reason: {target_row['remarks']})"
-                        ))
-
-                        conn.commit()
-                        st.success(f"System stock for '{target_row['item_name']}' reconciled to {target_row['physical_stock']}!")
-                        st.rerun()
-                else:
-                    st.info("All physical audit entries are synced with system inventory.")
             else:
                 st.info("No physical inventory count records logged yet.")
 
