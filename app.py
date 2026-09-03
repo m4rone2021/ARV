@@ -107,6 +107,23 @@ CREATE TABLE IF NOT EXISTS schedules (
 )
 """)
 
+# NEW TABLE: Physical Inventory Audits & Reconciliation
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS physical_inventory_counts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    audit_date TEXT,
+    item_name TEXT,
+    system_stock REAL,
+    physical_stock REAL,
+    variance REAL,
+    unit TEXT,
+    counted_by TEXT,
+    remarks TEXT,
+    sync_status TEXT DEFAULT 'UNSYNCED',
+    timestamp TEXT
+)
+""")
+
 # Schema Safe Migrations
 for col, col_type in [
     ("driver_details", "TEXT"),
@@ -456,13 +473,14 @@ else:
     st.sidebar.markdown(f"**Role:** `{user_role}`")
     st.sidebar.markdown("---")
 
-    # Navigation options updated with Reminders & Schedule
+    # Navigation options updated with Physical Inventory module
     if user_role == "Materials Supervisor":
         nav_options = [
             "📋 Current Inventory", 
             "📊 Analytics",
             "+ Stock In", 
             "- Stock Out",
+            "📦 Physical Inventory Audit",
             "📜 My Log & Request Edits",
             "📅 Daily Report (Excel)",
             "⏰ Reminders",
@@ -477,6 +495,7 @@ else:
             "📊 Analytics",
             "+ Stock In", 
             "- Stock Out", 
+            "📦 Physical Inventory Audit",
             edit_option_title,
             "➕ Manage Master Items", 
             "📜 Master Audit Log",
@@ -519,22 +538,10 @@ else:
                 st.dataframe(
                     df_cat.style.apply(highlight_low_stock, axis=1),
                     column_config={
-                        "item_name": st.column_config.Column(
-                            "Item Name",
-                            pinned=True,
-                            width="medium"
-                        ),
-                        "current_stock": st.column_config.NumberColumn(
-                            "Current Stock",
-                            format="%.2f"
-                        ),
-                        "min_threshold": st.column_config.NumberColumn(
-                            "Min. Threshold",
-                            format="%.2f"
-                        ),
-                        "unit": st.column_config.Column(
-                            "Unit"
-                        )
+                        "item_name": st.column_config.Column("Item Name", pinned=True, width="medium"),
+                        "current_stock": st.column_config.NumberColumn("Current Stock", format="%.2f"),
+                        "min_threshold": st.column_config.NumberColumn("Min. Threshold", format="%.2f"),
+                        "unit": st.column_config.Column("Unit")
                     },
                     hide_index=True,
                     use_container_width=True
@@ -718,7 +725,6 @@ else:
                 project_name = st.text_input("Project Name / Site Location", placeholder="e.g. Tower B - 5th Floor", key="out_project")
                 purpose = st.text_input("Purpose / Equipment Usage", placeholder="e.g. Concrete Pouring Foundation", key="out_purpose")
 
-            # Check stock availability
             current_stk, min_thresh = cursor.execute("SELECT current_stock, min_threshold FROM master_items WHERE item_name = ?", (item_selected,)).fetchone()
             st.caption(f"Current Stock Available: **{current_stk}** | Min Alert Threshold: **{min_thresh}**")
 
@@ -762,6 +768,115 @@ else:
                     st.rerun()
         else:
             st.warning("Please add items to Master Inventory first.")
+
+    # --- MENU: PHYSICAL INVENTORY AUDIT (NEW FEATURE) ---
+    elif selected_menu == "📦 Physical Inventory Audit":
+        st.subheader("📦 Physical Inventory Count & Variance Audit")
+
+        tab_audit, tab_history = st.tabs(["📝 Record Physical Count", "📜 Audit History & Discrepancies"])
+
+        with tab_audit:
+            items_master = cursor.execute("SELECT item_name, current_stock, unit FROM master_items ORDER BY item_name ASC").fetchall()
+            
+            if items_master:
+                item_dict = {row[0]: {"sys_stock": row[1], "unit": row[2]} for row in items_master}
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    audit_date = st.date_input("Audit Date", datetime.now(), key="phys_date")
+                    selected_item = st.selectbox("Select Item to Audit", list(item_dict.keys()), key="phys_item")
+                
+                with col2:
+                    system_qty = item_dict[selected_item]["sys_stock"]
+                    item_unit = item_dict[selected_item]["unit"]
+                    
+                    st.metric(f"Recorded System Stock ({item_unit})", f"{system_qty:,.2f}")
+                    physical_qty = st.number_input(f"Actual Physical Count ({item_unit})", min_value=0.0, step=1.0, value=float(system_qty), key="phys_qty")
+
+                variance = physical_qty - system_qty
+                
+                if variance == 0:
+                    st.success("✅ Perfect Match: Physical count matches system record.")
+                elif variance < 0:
+                    st.error(f"⚠️ Stock Deficit Identified: Physical stock is **{abs(variance):,.2f} {item_unit} LESS** than system stock.")
+                else:
+                    st.warning(f"ℹ️ Stock Surplus Identified: Physical stock is **{variance:,.2f} {item_unit} MORE** than system stock.")
+
+                audit_remarks = st.text_area("Audit Notes / Explanation for Variance", placeholder="e.g. Damaged goods removed, unrecorded issuance, or supplier over-delivery")
+
+                if st.button("Submit Physical Count", use_container_width=True):
+                    cursor.execute("""
+                        INSERT INTO physical_inventory_counts 
+                        (audit_date, item_name, system_stock, physical_stock, variance, unit, counted_by, remarks, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (audit_date.strftime("%Y-%m-%d"), selected_item, system_qty, physical_qty, variance, item_unit, user_name, audit_remarks, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                    
+                    conn.commit()
+
+                    if variance != 0:
+                        create_notification(
+                            f"📦 Physical count discrepancy logged for '{selected_item}': Variance = {variance:+,.2f} {item_unit} (Audited by {user_name})", 
+                            target_role="Head Office"
+                        )
+
+                    st.success(f"Physical count audit logged for {selected_item}!")
+                    st.rerun()
+
+        with tab_history:
+            st.markdown("### Physical Inventory Audit Log")
+            df_audits = pd.read_sql_query("SELECT * FROM physical_inventory_counts ORDER BY id DESC", conn)
+
+            if not df_audits.empty:
+                def highlight_variance(val):
+                    if val < 0:
+                        return 'color: red; font-weight: bold;'
+                    elif val > 0:
+                        return 'color: orange; font-weight: bold;'
+                    return 'color: green;'
+
+                st.dataframe(
+                    df_audits.style.applymap(highlight_variance, subset=['variance']),
+                    use_container_width=True
+                )
+
+                st.markdown("---")
+                st.markdown("### 🔄 Sync System Inventory to Physical Count")
+                st.caption("Reconcile system stock levels directly to match verified physical counts.")
+
+                unsynced_audits = df_audits[df_audits['sync_status'] == 'UNSYNCED']
+
+                if not unsynced_audits.empty:
+                    sync_target_id = st.selectbox(
+                        "Select Audit Entry to Sync:", 
+                        unsynced_audits['id'].tolist(),
+                        format_func=lambda x: f"Audit #{x} - {unsynced_audits[unsynced_audits['id']==x]['item_name'].values[0]} (Variance: {unsynced_audits[unsynced_audits['id']==x]['variance'].values[0]:+,.2f})"
+                    )
+
+                    target_row = unsynced_audits[unsynced_audits['id'] == sync_target_id].iloc[0]
+
+                    if st.button(f"Reconcile Stock for {target_row['item_name']} to {target_row['physical_stock']} {target_row['unit']}"):
+                        cursor.execute("UPDATE master_items SET current_stock = ? WHERE item_name = ?", (target_row['physical_stock'], target_row['item_name']))
+                        cursor.execute("UPDATE physical_inventory_counts SET sync_status = 'SYNCED' WHERE id = ?", (sync_target_id,))
+                        
+                        cursor.execute("""
+                            INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, remarks) 
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                            target_row['item_name'], 
+                            "AUDIT_ADJUSTMENT", 
+                            target_row['variance'], 
+                            user_name, 
+                            f"Stock adjusted via Physical Audit #{sync_target_id} (Reason: {target_row['remarks']})"
+                        ))
+
+                        conn.commit()
+                        st.success(f"System stock for '{target_row['item_name']}' reconciled to {target_row['physical_stock']}!")
+                        st.rerun()
+                else:
+                    st.info("All physical audit entries are synced with system inventory.")
+            else:
+                st.info("No physical inventory count records logged yet.")
 
     # --- MENU 5 (SUPERVISOR): MY LOG & REQUEST EDITS ---
     elif selected_menu == "📜 My Log & Request Edits":
@@ -840,7 +955,6 @@ else:
                     btn_col1, btn_col2 = st.columns(2)
                     with btn_col1:
                         if st.button("Approve Request", key=f"app_{r['id']}"):
-                            # Recalculate Stock Differences
                             item_name = orig['item_name']
                             tx_type = orig['type']
                             old_qty = float(orig['quantity'])
@@ -852,14 +966,12 @@ else:
                             else:
                                 cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (qty_diff, item_name))
 
-                            # Update Transaction Record
                             cursor.execute("""
                                 UPDATE transactions 
                                 SET quantity = ?, remarks = ?, edit_status = 'EDITED' 
                                 WHERE id = ?
                             """, (new_qty, prop.get('remarks', orig.get('remarks')), r['transaction_id']))
 
-                            # Update Edit Request Status
                             cursor.execute("""
                                 UPDATE edit_requests 
                                 SET status = 'APPROVED', review_remarks = ? 
