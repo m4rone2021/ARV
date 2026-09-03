@@ -6,7 +6,35 @@ import streamlit as st
 from datetime import datetime
 from database import get_db, UPLOAD_DIR
 
+def ensure_transactions_schema():
+    """Checks and automatically adds any missing columns to the transactions table."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(transactions)")
+        existing_cols = [row[1] for row in cursor.fetchall()]
+
+        required_cols = {
+            "driver_details": "TEXT",
+            "issued_to": "TEXT",
+            "project_name": "TEXT",
+            "purpose": "TEXT",
+            "remarks": "TEXT",
+            "photo_path": "TEXT",
+            "edit_status": "TEXT DEFAULT 'ACTIVE'"
+        }
+
+        for col_name, col_type in required_cols.items():
+            if col_name not in existing_cols:
+                try:
+                    cursor.execute(f"ALTER TABLE transactions ADD COLUMN {col_name} {col_type}")
+                except sqlite3.OperationalError:
+                    pass  # Column already added by concurrent request
+        conn.commit()
+
 def render_stock_out(user_name, user_role):
+    # Guarantee table and columns exist on startup
+    ensure_transactions_schema()
+
     st.title("📤 Stock OUT - Issue Inventory")
     st.caption("Record material dispatches, site issuances, and inventory stock-outs.")
 
@@ -91,37 +119,39 @@ def render_stock_out(user_name, user_role):
                 except sqlite3.OperationalError:
                     st.error("Database is currently busy or locked. Please try again in a moment.")
 
-    # 3. Recent Stock Out Log Table
+    # 3. Recent Stock Out Log Table (Fail-safe Query)
     st.divider()
     st.subheader("📑 Recent Outgoing Material Dispatches Log")
     
-    with get_db() as conn:
-        df_recent_out = pd.read_sql_query("""
-            SELECT 
-                timestamp, 
-                item_name, 
-                quantity, 
-                COALESCE(issued_to, '') AS issued_to, 
-                COALESCE(project_name, '') AS project_name, 
-                COALESCE(purpose, '') AS purpose, 
-                user_name, 
-                COALESCE(remarks, '') AS remarks 
-            FROM transactions 
-            WHERE type = 'OUT' 
-            ORDER BY id DESC LIMIT 10
-        """, conn)
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    timestamp, 
+                    item_name, 
+                    quantity, 
+                    issued_to, 
+                    project_name, 
+                    purpose, 
+                    user_name, 
+                    remarks 
+                FROM transactions 
+                WHERE type = 'OUT' 
+                ORDER BY id DESC LIMIT 10
+            """)
+            rows = cursor.fetchall()
 
-    if not df_recent_out.empty:
-        df_recent_out = df_recent_out.rename(columns={
-            "timestamp": "Date & Time",
-            "item_name": "Item Name",
-            "quantity": "Qty Issued",
-            "issued_to": "Issued To",
-            "project_name": "Destination / Site",
-            "purpose": "Purpose",
-            "user_name": "Dispatched By",
-            "remarks": "Remarks"
-        })
-        st.dataframe(df_recent_out, use_container_width=True, hide_index=True)
-    else:
-        st.info("No outgoing dispatches recorded yet.")
+        if rows:
+            df_recent_out = pd.DataFrame(rows, columns=[
+                "Date & Time", "Item Name", "Qty Issued", "Issued To",
+                "Destination / Site", "Purpose", "Dispatched By", "Remarks"
+            ])
+            st.dataframe(df_recent_out, use_container_width=True, hide_index=True)
+        else:
+            st.info("No outgoing dispatches recorded yet.")
+            
+    except sqlite3.OperationalError:
+        st.warning("Notice: Initializing transaction log table...")
+        ensure_transactions_schema()
+        st.rerun()
