@@ -2,8 +2,10 @@
 import sys
 import os
 
-# Ensure root directory is in Python's search path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Force Python to search the root directory where app.py lives
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
 import streamlit as st
 from database import init_db, login_user
