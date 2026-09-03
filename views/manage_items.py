@@ -4,189 +4,131 @@ import pandas as pd
 import streamlit as st
 from database import get_db
 
-def ensure_master_items_schema():
-    """Ensures the master_items table exists and contains all expected columns."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS master_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_name TEXT UNIQUE NOT NULL,
-                category TEXT NOT NULL,
-                unit TEXT NOT NULL,
-                current_stock REAL DEFAULT 0,
-                min_threshold REAL DEFAULT 10
-            )
-        """)
-        
-        cursor.execute("PRAGMA table_info(master_items)")
-        existing_cols = [row[1] for row in cursor.fetchall()]
-
-        required_cols = {
-            "category": "TEXT DEFAULT 'General'",
-            "unit": "TEXT DEFAULT 'pcs'",
-            "current_stock": "REAL DEFAULT 0",
-            "min_threshold": "REAL DEFAULT 10"
-        }
-
-        for col_name, col_type in required_cols.items():
-            if col_name not in existing_cols:
-                try:
-                    cursor.execute(f"ALTER TABLE master_items ADD COLUMN {col_name} {col_type}")
-                except sqlite3.OperationalError:
-                    pass
-        conn.commit()
-
 def render_manage_items(user_name, user_role):
-    # Ensure database table structure is ready
-    ensure_master_items_schema()
-
     st.title("📦 Manage Master Items")
-    st.caption("Add new materials, update item details/thresholds, or delete inactive inventory items.")
+    st.caption("Add, view, and manage stock items and safety threshold limits across site categories.")
 
-    # Create tabs for Add, Edit, and Remove actions
-    tab_add, tab_edit, tab_delete = st.tabs([
-        "➕ Add New Item", 
-        "✏️ Edit Item Details", 
-        "🗑️ Remove / Delete Item"
+    # Retrieve categories from app session state, or fallback to default site categories
+    categories = st.session_state.get("categories", [
+        "Fuel & Oils",
+        "Construction Materials",
+        "Steel / Rebar",
+        "Nails & Fasteners",
+        "Cutting & Grinding Consumables",
+        "Welding Supplies & PPE",
+        "General Site Supplies"
     ])
 
+    # Standard units of measurement
+    units_list = ["Pcs", "Bags", "Kg", "Tons", "Liters", "Gallons", "Boxes", "Bundles", "Rolls", "Pairs", "Sets", "Meters"]
+
+    tab_add, tab_view = st.tabs(["➕ Add New Item", "📋 Master Items Catalog"])
+
     # -------------------------------------------------------------
-    # TAB 1: ADD NEW ITEM
+    # TAB 1: ADD NEW ITEM FORM
     # -------------------------------------------------------------
     with tab_add:
-        st.subheader("➕ Add a New Master Inventory Item")
+        st.subheader("Add Master Item")
         with st.form("add_item_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
-            with col1:
-                new_item_name = st.text_input("Item Name *", placeholder="e.g., Portland Cement Type 1")
-                new_category = st.selectbox("Category", ["Construction Materials", "Electrical", "Plumbing", "Tools & Equipment", "General"])
-                new_unit = st.text_input("Unit of Measure *", placeholder="e.g., bags, pcs, meters, kg")
             
+            with col1:
+                item_name = st.text_input("Item Name / Description*", placeholder="e.g., Diesel Fuel, Portland Cement, Rebar 12mm")
+                category = st.selectbox("Site Category*", categories)
+                unit = st.selectbox("Unit of Measure*", units_list)
+
             with col2:
-                initial_stock = st.number_input("Initial Stock Quantity", min_value=0.0, step=1.0, value=0.0)
-                min_threshold = st.number_input("Low Stock Warning Threshold", min_value=0.0, step=1.0, value=10.0)
+                initial_stock = st.number_input("Initial Opening Stock", min_value=0.0, value=0.0, step=1.0)
+                min_threshold = st.number_input("Low Stock Threshold Warning Limit", min_value=0.0, value=10.0, step=1.0)
+                remarks = st.text_input("Remarks / Notes", placeholder="e.g., Supplier specs, storage bay location")
 
-            submit_add = st.form_submit_button("➕ Add Item to Master List")
+            submit_btn = st.form_submit_button("💾 Save Item to Master Catalog", use_container_width=True)
 
-            if submit_add:
-                if not new_item_name.strip() or not new_unit.strip():
-                    st.error("Item Name and Unit of Measure are required fields.")
+            if submit_btn:
+                if not item_name.strip():
+                    st.error("⚠️ Item Name is required.")
                 else:
                     try:
                         with get_db() as conn:
                             cursor = conn.cursor()
-                            cursor.execute("""
-                                INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold)
-                                VALUES (?, ?, ?, ?, ?)
-                            """, (new_item_name.strip(), new_category, new_unit.strip(), initial_stock, min_threshold))
-                            conn.commit()
-                        st.toast(f"✅ Item '{new_item_name.strip()}' added successfully!", icon="📦")
-                        st.success(f"Added **{new_item_name.strip()}** to inventory.")
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error(f"❌ Item '{new_item_name.strip()}' already exists in the system!")
+                            # Check for duplicates
+                            cursor.execute("SELECT id FROM master_items WHERE LOWER(item_name) = LOWER(?)", (item_name.strip(),))
+                            if cursor.fetchone():
+                                st.error(f"❌ An item named '{item_name.strip()}' already exists in the master list.")
+                            else:
+                                cursor.execute("""
+                                    INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold, remarks)
+                                    VALUES (?, ?, ?, ?, ?, ?)
+                                """, (item_name.strip(), category, unit, initial_stock, min_threshold, remarks.strip()))
+                                conn.commit()
+                                st.success(f"✅ Successfully added '{item_name.strip()}' under '{category}'.")
+                                st.rerun()
+                    except Exception as e:
+                        st.error(f"An error occurred while saving the item: {e}")
 
     # -------------------------------------------------------------
-    # FETCH ALL ITEMS FOR EDIT / DELETE / DISPLAY
+    # TAB 2: MASTER ITEMS CATALOG & MANAGEMENT
     # -------------------------------------------------------------
-    with get_db() as conn:
-        df_items = pd.read_sql_query("""
-            SELECT id, item_name, category, unit, current_stock, min_threshold 
-            FROM master_items 
-            ORDER BY item_name ASC
-        """, conn)
+    with tab_view:
+        st.subheader("Master Inventory Catalog")
 
-    # -------------------------------------------------------------
-    # TAB 2: EDIT EXISTING ITEM
-    # -------------------------------------------------------------
-    with tab_edit:
-        st.subheader("✏️ Edit Existing Master Item")
-        if df_items.empty:
-            st.info("No items available to edit. Add an item first.")
-        else:
-            item_list = df_items["item_name"].tolist()
-            selected_edit_item = st.selectbox("Select Item to Modify", item_list, key="select_edit")
+        # Filtering Controls
+        col_f1, col_f2 = st.columns([1, 2])
+        with col_f1:
+            filter_cat = st.selectbox("Filter by Category", ["All Categories"] + categories)
+        with col_f2:
+            search_query = st.text_input("🔍 Search Item Name", placeholder="Type item name to filter...")
 
-            # Extract selected item's current details
-            item_data = df_items[df_items["item_name"] == selected_edit_item].iloc[0]
+        # Build SQL Query dynamically based on filters
+        query = "SELECT id, item_name, category, unit, current_stock, min_threshold, remarks FROM master_items WHERE 1=1"
+        params = []
 
-            with st.form("edit_item_form"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    updated_name = st.text_input("Item Name", value=str(item_data["item_name"]))
-                    
-                    categories = ["Construction Materials", "Electrical", "Plumbing", "Tools & Equipment", "General"]
-                    current_cat_idx = categories.index(item_data["category"]) if item_data["category"] in categories else 4
-                    updated_category = st.selectbox("Category", categories, index=current_cat_idx)
-                    
-                    updated_unit = st.text_input("Unit of Measure", value=str(item_data["unit"]))
+        if filter_cat != "All Categories":
+            query += " AND category = ?"
+            params.append(filter_cat)
 
-                with col2:
-                    updated_stock = st.number_input("Current Stock (Manual Override)", min_value=0.0, value=float(item_data["current_stock"]))
-                    updated_threshold = st.number_input("Low Stock Threshold", min_value=0.0, value=float(item_data["min_threshold"]))
+        if search_query.strip():
+            query += " AND item_name LIKE ?"
+            params.append(f"%{search_query.strip()}%")
 
-                submit_edit = st.form_submit_button("💾 Save Updated Changes")
+        query += " ORDER BY category ASC, item_name ASC"
 
-                if submit_edit:
-                    if not updated_name.strip() or not updated_unit.strip():
-                        st.error("Item Name and Unit cannot be empty.")
-                    else:
+        with get_db() as conn:
+            df_items = pd.read_sql_query(query, conn, params=params)
+
+        if not df_items.empty:
+            df_display = df_items.rename(columns={
+                "id": "ID",
+                "item_name": "Item Name / Description",
+                "category": "Category",
+                "unit": "Unit",
+                "current_stock": "Current Stock",
+                "min_threshold": "Low Stock Limit",
+                "remarks": "Remarks"
+            })
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+            # ADMIN ONLY: Delete / Remove Item Feature
+            if user_role.lower() == "admin":
+                st.divider()
+                st.subheader("🗑️ Delete Master Item (Admin Only)")
+                with st.expander("Warning: Deleting an item removes it permanently"):
+                    item_to_delete = st.selectbox(
+                        "Select item to delete",
+                        df_items["item_name"].tolist(),
+                        key="delete_item_select"
+                    )
+                    confirm_delete = st.button("🔴 Confirm Delete Item", use_container_width=True)
+
+                    if confirm_delete:
                         try:
                             with get_db() as conn:
                                 cursor = conn.cursor()
-                                cursor.execute("""
-                                    UPDATE master_items 
-                                    SET item_name = ?, category = ?, unit = ?, current_stock = ?, min_threshold = ?
-                                    WHERE id = ?
-                                """, (updated_name.strip(), updated_category, updated_unit.strip(), updated_stock, updated_threshold, int(item_data["id"])))
+                                cursor.execute("DELETE FROM master_items WHERE item_name = ?", (item_to_delete,))
                                 conn.commit()
-                            st.toast("✅ Master item updated successfully!", icon="✏️")
-                            st.success(f"Updated details for **{updated_name.strip()}**.")
-                            st.rerun()
-                        except sqlite3.IntegrityError:
-                            st.error(f"❌ Another item named '{updated_name.strip()}' already exists.")
-
-    # -------------------------------------------------------------
-    # TAB 3: REMOVE / DELETE ITEM
-    # -------------------------------------------------------------
-    with tab_delete:
-        st.subheader("🗑️ Delete an Item from Master Inventory")
-        if df_items.empty:
-            st.info("No items available to remove.")
+                                st.success(f"Deleted '{item_to_delete}' from database.")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to delete item: {e}")
         else:
-            item_list_del = df_items["item_name"].tolist()
-            selected_del_item = st.selectbox("Select Item to Permanently Delete", item_list_del, key="select_del")
-            
-            item_del_data = df_items[df_items["item_name"] == selected_del_item].iloc[0]
-            st.warning(f"⚠️ Warning: Deleting **{selected_del_item}** (ID: {item_del_data['id']}) cannot be undone!")
-
-            confirm_check = st.checkbox(f"I confirm that I want to delete '{selected_del_item}'")
-            
-            if st.button("🗑️ Permanently Delete Item", type="primary", disabled=not confirm_check):
-                with get_db() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM master_items WHERE id = ?", (int(item_del_data["id"]),))
-                    conn.commit()
-                st.toast(f"🗑️ Deleted {selected_del_item} from master inventory.", icon="🗑️")
-                st.success(f"Item **{selected_del_item}** has been removed.")
-                st.rerun()
-
-    # -------------------------------------------------------------
-    # BOTTOM SECTION: OVERVIEW MASTER DATA TABLE
-    # -------------------------------------------------------------
-    st.divider()
-    st.subheader("📋 Current Master Inventory Catalog")
-    
-    if not df_items.empty:
-        df_display = df_items.rename(columns={
-            "id": "Item ID",
-            "item_name": "Item Name",
-            "category": "Category",
-            "unit": "Unit",
-            "current_stock": "Current Balance",
-            "min_threshold": "Min Threshold"
-        })
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
-    else:
-        st.info("Master catalog is currently empty. Add your first item using the 'Add New Item' tab above.")
+            st.info("No items found matching the selected filters.")
