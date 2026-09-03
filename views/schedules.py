@@ -1,34 +1,33 @@
-# views/schedules.py
+# views/reminders.py
 import sqlite3
 import pandas as pd
 import streamlit as st
 from database import get_db, init_db
 
-def render_schedules(user_name, user_role):
-    st.title("📅 Schedules & Deliveries")
-    st.caption("Manage upcoming site deliveries, expected material shipments, and supplier schedules.")
+def render_reminders(user_name, user_role):
+    st.title("📝 Reminders & Tasks")
+    st.caption("Track site tasks, equipment inspections, inventory audits, and follow-ups.")
 
     init_db()
 
-    # Action Tabs
-    tab_list, tab_add = st.tabs(["📋 Delivery Schedule List", "➕ Schedule New Delivery"])
+    tab_tasks, tab_add = st.tabs(["📋 Task List", "➕ Create Task / Reminder"])
 
     # -------------------------------------------------------------
-    # TAB 1: SCHEDULE LIST & STATUS MANAGEMENT
+    # TAB 1: TASK LIST & STATUS UPDATES
     # -------------------------------------------------------------
-    with tab_list:
-        st.subheader("Upcoming & Historic Deliveries")
-        
-        filter_status = st.selectbox("Filter Status", ["All", "PENDING", "DELIVERED", "CANCELLED"], key="sched_filter_status")
+    with tab_tasks:
+        st.subheader("Site Tasks Overview")
 
-        query = "SELECT id, scheduled_date, item_name, expected_quantity, unit, supplier, status, remarks FROM schedules WHERE 1=1"
+        filter_status = st.selectbox("Filter Status", ["All", "OPEN", "COMPLETED", "CANCELLED"], key="rem_filter_status")
+
+        query = "SELECT id, created_at, due_date, task, assigned_to, status FROM reminders WHERE 1=1"
         params = []
 
         if filter_status != "All":
             query += " AND status = ?"
             params.append(filter_status)
 
-        query += " ORDER BY scheduled_date ASC, id DESC"
+        query += " ORDER BY due_date ASC, id DESC"
 
         try:
             with get_db() as conn:
@@ -37,101 +36,81 @@ def render_schedules(user_name, user_role):
             if not df.empty:
                 df_display = df.rename(columns={
                     "id": "ID",
-                    "scheduled_date": "Scheduled Date",
-                    "item_name": "Item Description",
-                    "expected_quantity": "Expected Qty",
-                    "unit": "Unit",
-                    "supplier": "Supplier",
-                    "status": "Status",
-                    "remarks": "Remarks"
+                    "created_at": "Created Date",
+                    "due_date": "Due Date",
+                    "task": "Task Description",
+                    "assigned_to": "Assigned To",
+                    "status": "Status"
                 })
                 st.dataframe(df_display, use_container_width=True, hide_index=True)
 
                 st.divider()
-                st.subheader("🔄 Update Delivery Status")
-                
-                # Status Update Form
-                with st.form("update_schedule_status_form"):
+                st.subheader("🔄 Update Task Status")
+
+                with st.form("update_reminder_form"):
                     col1, col2 = st.columns(2)
                     with col1:
-                        pending_df = df[df["status"] == "PENDING"]
-                        if not pending_df.empty:
-                            sched_options = [f"#{row['id']} - {row['item_name']} ({row['scheduled_date']})" for _, row in pending_df.iterrows()]
-                            selected_sched = st.selectbox("Select Pending Delivery", sched_options)
+                        open_tasks = df[df["status"] == "OPEN"]
+                        if not open_tasks.empty:
+                            task_options = [f"#{row['id']} - {row['task']} (Due: {row['due_date']})" for _, row in open_tasks.iterrows()]
+                            selected_task = st.selectbox("Select Open Task", task_options)
                         else:
-                            st.info("No pending deliveries available to update.")
-                            selected_sched = None
+                            st.info("No open tasks available to update.")
+                            selected_task = None
 
                     with col2:
-                        new_status = st.selectbox("New Status", ["DELIVERED", "CANCELLED"])
+                        new_status = st.selectbox("Set Status", ["COMPLETED", "CANCELLED"])
 
-                    submit_update = st.form_submit_button("Update Status", use_container_width=True)
+                    submit_update = st.form_submit_button("Update Task Status", use_container_width=True)
 
-                    if submit_update and selected_sched:
-                        sched_id = int(selected_sched.split("#")[1].split(" ")[0])
+                    if submit_update and selected_task:
+                        task_id = int(selected_task.split("#")[1].split(" ")[0])
                         try:
                             with get_db() as conn:
                                 cursor = conn.cursor()
-                                cursor.execute("UPDATE schedules SET status = ? WHERE id = ?", (new_status, sched_id))
+                                cursor.execute("UPDATE reminders SET status = ? WHERE id = ?", (new_status, task_id))
                                 conn.commit()
-                                st.success(f"✅ Schedule #{sched_id} status updated to '{new_status}'.")
+                                st.success(f"✅ Task #{task_id} marked as '{new_status}'.")
                                 st.rerun()
                         except Exception as e:
-                            st.error(f"Failed to update schedule status: {e}")
+                            st.error(f"Failed to update task: {e}")
             else:
-                st.info("No delivery schedules found matching the criteria.")
+                st.info("No task reminders found.")
 
         except Exception as e:
-            st.error(f"Error loading delivery schedules: {e}")
+            st.error(f"Error loading tasks: {e}")
 
     # -------------------------------------------------------------
-    # TAB 2: SCHEDULE NEW DELIVERY
+    # TAB 2: CREATE NEW TASK
     # -------------------------------------------------------------
     with tab_add:
-        st.subheader("Log Expected Supplier Shipment")
+        st.subheader("Create New Task or Reminder")
 
-        # Fetch master item list for dropdown
-        try:
-            with get_db() as conn:
-                df_master = pd.read_sql_query("SELECT item_name, unit FROM master_items ORDER BY item_name ASC", conn)
-            master_items = df_master["item_name"].tolist() if not df_master.empty else []
-        except Exception:
-            master_items = []
-
-        with st.form("add_schedule_form", clear_on_submit=True):
+        with st.form("add_reminder_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
 
             with col1:
-                if master_items:
-                    selected_item = st.selectbox("Item Description*", master_items, key="sched_item_select")
-                    item_unit = df_master[df_master["item_name"] == selected_item]["unit"].values[0]
-                else:
-                    selected_item = st.text_input("Item Description*", placeholder="e.g., Cement Bags")
-                    item_unit = "Pcs"
-
-                expected_qty = st.number_input("Expected Quantity*", min_value=0.1, value=100.0, step=1.0)
-                unit_display = st.text_input("Unit of Measure", value=item_unit, disabled=True)
+                task_desc = st.text_input("Task Description*", placeholder="e.g., Weekly Fuel Reserve Audit")
+                due_date = st.date_input("Target Due Date*")
 
             with col2:
-                scheduled_date = st.date_input("Scheduled Arrival Date*")
-                supplier = st.text_input("Supplier Name / Contractor", placeholder="e.g., Northern Concrete Corp")
-                remarks = st.text_input("Remarks", placeholder="e.g., Batch 1 delivery")
+                assigned_to = st.text_input("Assigned Personnel / Team", value=user_name, placeholder="e.g., Warehouse Team")
 
-            submit_add = st.form_submit_button("💾 Save Delivery Schedule", use_container_width=True)
+            submit_add = st.form_submit_button("💾 Save Task / Reminder", use_container_width=True)
 
             if submit_add:
-                if not selected_item:
-                    st.error("⚠️ Please select or provide an item description.")
+                if not task_desc.strip():
+                    st.error("⚠️ Task Description is required.")
                 else:
                     try:
                         with get_db() as conn:
                             cursor = conn.cursor()
                             cursor.execute("""
-                                INSERT INTO schedules (scheduled_date, item_name, expected_quantity, unit, supplier, status, remarks)
-                                VALUES (?, ?, ?, ?, ?, 'PENDING', ?)
-                            """, (str(scheduled_date), selected_item, expected_qty, item_unit, supplier.strip(), remarks.strip()))
+                                INSERT INTO reminders (due_date, task, assigned_to, status)
+                                VALUES (?, ?, ?, 'OPEN')
+                            """, (str(due_date), task_desc.strip(), assigned_to.strip()))
                             conn.commit()
-                            st.success(f"✅ Delivery schedule created for **{selected_item}** on {scheduled_date}.")
+                            st.success(f"✅ Created new task: **{task_desc.strip()}**.")
                             st.rerun()
                     except Exception as e:
-                        st.error(f"Failed to save schedule: {e}")
+                        st.error(f"Failed to save task: {e}")
