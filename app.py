@@ -1,4 +1,10 @@
 # app.py
+import sys
+import os
+
+# Ensure root directory is in Python's search path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import streamlit as st
 from database import init_db, login_user
 from views.dashboard import render_dashboard
@@ -11,6 +17,8 @@ from views.audit_log import render_audit_log
 from views.manage_users import render_manage_users
 from views.reminders import render_reminders
 from views.schedules import render_schedules
+
+# ... rest of your app.py code
 
 # Set Streamlit page layout
 st.set_page_config(
