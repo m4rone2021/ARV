@@ -1,18 +1,14 @@
 # database.py
 import sqlite3
-import os
+import streamlit as st
 from contextlib import contextmanager
 
-# Absolute path to the database file
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inventory.db")
+DB_FILE = "database.db"  # Change to your SQLite filename if different (e.g. 'inventory.db')
 
-# Absolute path for uploaded file attachments (Delivery Receipts, Invoices, etc.)
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @contextmanager
 def get_db():
-    """Provides a transactional database connection context."""
+    """Context manager for handling SQLite database connections safely."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     try:
@@ -20,120 +16,64 @@ def get_db():
     finally:
         conn.close()
 
+
 def init_db():
-    """Initializes database tables, runs column migrations, and ensures default admin credentials."""
+    """Initializes tables and automatically migrates/updates missing or mismatched columns."""
     with get_db() as conn:
         cursor = conn.cursor()
 
-        # 1. Users Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                role TEXT NOT NULL DEFAULT 'User'
-            )
-        """)
-
-        # 2. Master Items Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS master_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_name TEXT UNIQUE NOT NULL,
-                category TEXT NOT NULL,
-                unit TEXT NOT NULL,
-                current_stock REAL DEFAULT 0.0,
-                min_threshold REAL DEFAULT 10.0,
-                remarks TEXT
-            )
-        """)
-
-        # AUTO-MIGRATION: Ensure 'remarks' column exists on legacy master_items tables
-        cursor.execute("PRAGMA table_info(master_items)")
-        columns = [column[1] for column in cursor.fetchall()]
-        if "remarks" not in columns:
-            cursor.execute("ALTER TABLE master_items ADD COLUMN remarks TEXT")
-
-        # 3. Transactions Table (Stock IN / OUT Ledger)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                type TEXT NOT NULL,
-                item_name TEXT NOT NULL,
-                category TEXT,
-                unit TEXT,
-                quantity REAL NOT NULL,
-                user_name TEXT NOT NULL,
-                remarks TEXT,
-                attachment TEXT,
-                status TEXT DEFAULT 'ACTIVE'
-            )
-        """)
-
-        # 4. Schedules & Deliveries Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS schedules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scheduled_date TEXT NOT NULL,
-                item_name TEXT NOT NULL,
-                expected_quantity REAL NOT NULL,
-                unit TEXT NOT NULL,
-                supplier TEXT,
-                status TEXT DEFAULT 'PENDING',
-                remarks TEXT
-            )
-        """)
-
-        # 5. Reminders & Tasks Table
-        cursor.execute("""
+        # -------------------------------------------------------------
+        # 1. CREATE TABLES IF THEY DO NOT EXIST
+        # -------------------------------------------------------------
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                due_date TEXT NOT NULL,
-                task TEXT NOT NULL,
+                due_date TEXT,
+                task TEXT,
                 assigned_to TEXT,
                 status TEXT DEFAULT 'OPEN'
             )
-        """)
+        """
+        )
 
-        # 6. System Audit Logs Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS audit_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                user_name TEXT NOT NULL,
-                action TEXT NOT NULL,
-                details TEXT
+        # -------------------------------------------------------------
+        # 2. SCHEMA AUTO-MIGRATION FOR 'reminders'
+        # -------------------------------------------------------------
+        cursor.execute("PRAGMA table_info(reminders);")
+        columns_info = cursor.fetchall()
+        existing_columns = [col["name"] for col in columns_info]
+
+        # Standardize the task description column
+        if "task" not in existing_columns:
+            if "description" in existing_columns:
+                cursor.execute(
+                    "ALTER TABLE reminders RENAME COLUMN description TO task;"
+                )
+            elif "reminder" in existing_columns:
+                cursor.execute(
+                    "ALTER TABLE reminders RENAME COLUMN reminder TO task;"
+                )
+            else:
+                cursor.execute("ALTER TABLE reminders ADD COLUMN task TEXT;")
+
+        # Ensure due_date column exists
+        if "due_date" not in existing_columns:
+            cursor.execute("ALTER TABLE reminders ADD COLUMN due_date TEXT;")
+
+        # Ensure assigned_to column exists
+        if "assigned_to" not in existing_columns:
+            cursor.execute("ALTER TABLE reminders ADD COLUMN assigned_to TEXT;")
+
+        # Ensure status column exists
+        if "status" not in existing_columns:
+            cursor.execute(
+                "ALTER TABLE reminders ADD COLUMN status TEXT DEFAULT 'OPEN';"
             )
-        """)
-
-        # Seed/Ensure Default Admin Credentials (admin / admin123)
-        cursor.execute("SELECT id FROM users WHERE username = 'admin'")
-        admin_row = cursor.fetchone()
-        if not admin_row:
-            cursor.execute("""
-                INSERT INTO users (username, password, role)
-                VALUES ('admin', 'admin123', 'Admin')
-            """)
-        else:
-            # Force reset admin password to 'admin123'
-            cursor.execute("""
-                UPDATE users SET password = 'admin123', role = 'Admin'
-                WHERE username = 'admin'
-            """)
 
         conn.commit()
 
-def login_user(username, password):
-    """Authenticates a user against the database."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT username, role FROM users 
-            WHERE LOWER(username) = LOWER(?) AND password = ?
-        """, (username, password))
-        row = cursor.fetchone()
-        if row:
-            return {"username": row["username"], "role": row["role"]}
-        return None
+
+if __name__ == "__main__":
+    init_db()
+    print("Database initialized and migrated successfully.")
