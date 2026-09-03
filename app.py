@@ -1,55 +1,92 @@
-# --- STOCK OUT SECTION ---
-driver_out = st.text_input("Driver / Transport Vehicle", placeholder="e.g. Driver Bob (Dump Truck #02)", key="out_driver")
-project_name = st.text_input("Project Name / Phase", placeholder="e.g. Bridge Abutment - Sector A", key="out_project")
-purpose = st.text_input("Purpose / Equipment Usage", placeholder="e.g. Concrete formwork framing", key="out_purpose")
+import sqlite3
+import json
+import os
+from datetime import datetime, time
+import pandas as pd
+import streamlit as st
 
-st.markdown("### 📷 Withdrawal Slip / Issue Proof Photo")
-photo_mode = st.radio("Choose Photo Upload Method:", ["Camera Capture", "Upload File"], horizontal=True, key="out_photo_mode")
+# Initialize Streamlit Page Config
+st.set_page_config(page_title="Inventory Management", layout="wide")
 
-image_bytes = None
-if photo_mode == "Camera Capture":
-    camera_photo = st.camera_input("Take a picture of signed withdrawal slip", key="out_camera")
-    if camera_photo:
-        image_bytes = camera_photo.getvalue()
-else:
-    uploaded_file = st.file_uploader("Upload Withdrawal Slip / Photo Proof", type=["jpg", "jpeg", "png"], key="out_upload")
-    if uploaded_file:
-        image_bytes = uploaded_file.getvalue()
+# Database connection setup
+conn = sqlite3.connect("inventory.db", check_same_thread=False)
+cursor = conn.cursor()
 
-if st.button("Submit Stock Out", use_container_width=True):
-    # Verify available stock before issuing
-    current_stock = cursor.execute("SELECT current_stock FROM master_items WHERE item_name = ?", (item_selected,)).fetchone()[0]
-    if qty_out > current_stock:
-        st.error(f"Insufficient stock! Available balance: {current_stock:,.2f}")
+# Dummy session state initializations if not set
+if "user_name" not in st.session_state:
+    st.session_state["user_name"] = "Supervisor Admin"
+if "selected_menu" not in st.session_state:
+    st.session_state["selected_menu"] = "📤 Stock Out"
+
+user_name = st.session_state["user_name"]
+selected_menu = st.session_state["selected_menu"]
+item_selected = "Sample Item"
+qty_out = 1.0
+issued_to = "Site Team"
+
+def create_notification(message, target_role=None, target_user=None):
+    """Helper function to log system notifications."""
+    pass
+
+def generate_excel_report(user_name, date_str, df_tx, df_stock):
+    """Helper function stub for Excel export."""
+    return b""
+
+# --- MAIN CONTROLLER / ROUTING ---
+if selected_menu == "📤 Stock Out":
+    driver_out = st.text_input("Driver / Transport Vehicle", placeholder="e.g. Driver Bob (Dump Truck #02)", key="out_driver")
+    project_name = st.text_input("Project Name / Phase", placeholder="e.g. Bridge Abutment - Sector A", key="out_project")
+    purpose = st.text_input("Purpose / Equipment Usage", placeholder="e.g. Concrete formwork framing", key="out_purpose")
+
+    st.markdown("### 📷 Withdrawal Slip / Issue Proof Photo")
+    photo_mode = st.radio("Choose Photo Upload Method:", ["Camera Capture", "Upload File"], horizontal=True, key="out_photo_mode")
+
+    image_bytes = None
+    if photo_mode == "Camera Capture":
+        camera_photo = st.camera_input("Take a picture of signed withdrawal slip", key="out_camera")
+        if camera_photo:
+            image_bytes = camera_photo.getvalue()
     else:
-        saved_photo_path = None
-        if image_bytes:
-            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_filename = f"uploads/issuance_{timestamp_str}.jpg"
-            with open(file_filename, "wb") as f:
-                f.write(image_bytes)
-            saved_photo_path = file_filename
+        uploaded_file = st.file_uploader("Upload Withdrawal Slip / Photo Proof", type=["jpg", "jpeg", "png"], key="out_upload")
+        if uploaded_file:
+            image_bytes = uploaded_file.getvalue()
 
-        new_stock = current_stock - qty_out
-        cursor.execute("UPDATE master_items SET current_stock = ? WHERE item_name = ?", (new_stock, item_selected))
-        cursor.execute("""
-            INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, driver_details, issued_to, project_name, purpose, photo_path) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "OUT", qty_out, user_name, driver_out, issued_to, project_name, purpose, saved_photo_path))
-        conn.commit()
+    if st.button("Submit Stock Out", use_container_width=True):
+        res = cursor.execute("SELECT current_stock FROM master_items WHERE item_name = ?", (item_selected,)).fetchone()
+        current_stock = res[0] if res else 0.0
 
-        # Trigger notification if stock drops below minimum threshold
-        min_thresh = cursor.execute("SELECT min_threshold FROM master_items WHERE item_name = ?", (item_selected,)).fetchone()[0]
-        if new_stock <= min_thresh:
-            create_notification(
-                f"⚠️ Low Stock Alert: {item_selected} dropped to {new_stock:,.2f} (Threshold: {min_thresh:,.2f})",
-                target_role="Head Office"
-            )
+        if qty_out > current_stock:
+            st.error(f"Insufficient stock! Available balance: {current_stock:,.2f}")
+        else:
+            saved_photo_path = None
+            if image_bytes:
+                os.makedirs("uploads", exist_ok=True)
+                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                file_filename = f"uploads/issuance_{timestamp_str}.jpg"
+                with open(file_filename, "wb") as f:
+                    f.write(image_bytes)
+                saved_photo_path = file_filename
 
-        st.success(f"Successfully issued {qty_out} of {item_selected}!")
-        st.rerun()
+            new_stock = current_stock - qty_out
+            cursor.execute("UPDATE master_items SET current_stock = ? WHERE item_name = ?", (new_stock, item_selected))
+            cursor.execute("""
+                INSERT INTO transactions (timestamp, item_name, type, quantity, user_role, driver_details, issued_to, project_name, purpose, photo_path) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "OUT", qty_out, user_name, driver_out, issued_to, project_name, purpose, saved_photo_path))
+            conn.commit()
 
-# --- MENU 5 (SUPERVISOR): MY LOG & REQUEST EDITS ---
+            res_thresh = cursor.execute("SELECT min_threshold FROM master_items WHERE item_name = ?", (item_selected,)).fetchone()
+            min_thresh = res_thresh[0] if res_thresh else 0.0
+            
+            if new_stock <= min_thresh:
+                create_notification(
+                    f"⚠️ Low Stock Alert: {item_selected} dropped to {new_stock:,.2f} (Threshold: {min_thresh:,.2f})",
+                    target_role="Head Office"
+                )
+
+            st.success(f"Successfully issued {qty_out} of {item_selected}!")
+            st.rerun()
+
 elif selected_menu == "📜 My Log & Request Edits":
     st.subheader("📜 My Logged Transactions & Edit Requests")
 
@@ -109,7 +146,6 @@ elif selected_menu == "📜 My Log & Request Edits":
     else:
         st.info("You haven't logged any transactions yet.")
 
-# --- MENU 5 (ADMIN): REVIEW EDIT REQUESTS ---
 elif "✏️ Edit Requests" in selected_menu:
     st.subheader("✏️ Review Supervisor Edit Requests")
 
@@ -139,7 +175,6 @@ elif "✏️ Edit Requests" in selected_menu:
                     btn_col1, btn_col2 = st.columns(2)
                     
                     if btn_col1.button("✅ Approve Request", key=f"app_{req_id}", use_container_width=True):
-                        # Adjust inventory if quantity changed
                         old_qty = float(orig['quantity'])
                         new_qty = float(prop['quantity'])
                         item_name = orig['item_name']
@@ -152,7 +187,6 @@ elif "✏️ Edit Requests" in selected_menu:
                             else:
                                 cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (diff, item_name))
 
-                        # Apply edits
                         cursor.execute("""
                             UPDATE transactions SET 
                                 quantity = ?, issued_to = ?, driver_details = ?, project_name = ?, purpose = ?, edit_status = 'EDITED'
@@ -186,7 +220,6 @@ elif "✏️ Edit Requests" in selected_menu:
     else:
         st.info("No edit requests found.")
 
-# --- MENU 6 (SUPERVISOR): DAILY REPORT (EXCEL) ---
 elif selected_menu == "📅 Daily Report (Excel)":
     st.subheader("📅 Export Multi-Sheet Daily Site Inventory Report")
 
@@ -215,7 +248,6 @@ elif selected_menu == "📅 Daily Report (Excel)":
         use_container_width=True
     )
 
-# --- MENU 6 (ADMIN): MANAGE MASTER ITEMS ---
 elif selected_menu == "➕ Manage Master Items":
     st.subheader("➕ Master Inventory Items Management")
 
@@ -275,7 +307,6 @@ elif selected_menu == "➕ Manage Master Items":
                 st.warning(f"Deleted '{item_to_del}' from database.")
                 st.rerun()
 
-# --- MENU 7 (ADMIN): MASTER AUDIT LOG ---
 elif selected_menu == "📜 Master Audit Log":
     st.subheader("📜 Complete System Audit Trail")
 
@@ -289,7 +320,6 @@ elif selected_menu == "📜 Master Audit Log":
 
         st.dataframe(df_all_tx, use_container_width=True, hide_index=True)
         
-        # Photo Viewer
         st.markdown("---")
         st.markdown("### 📷 View Attached Receipt / Withdrawal Proof")
         tx_with_photos = df_all_tx[df_all_tx['photo_path'].notnull() & (df_all_tx['photo_path'] != '')]
@@ -307,7 +337,6 @@ elif selected_menu == "📜 Master Audit Log":
     else:
         st.info("No transaction logs available.")
 
-# --- MENU 8 (ADMIN): MANAGE USERS ---
 elif selected_menu == "👤 Manage Users":
     st.subheader("👤 User Account Management")
 
@@ -336,7 +365,6 @@ elif selected_menu == "👤 Manage Users":
                 else:
                     st.error("Username and Password are required.")
 
-# --- MENU: REMINDERS ---
 elif selected_menu == "⏰ Reminders":
     st.subheader("⏰ Site Reminders & Tasks")
 
@@ -381,7 +409,6 @@ elif selected_menu == "⏰ Reminders":
         else:
             st.info("No pending reminders.")
 
-# --- MENU: SCHEDULE ---
 elif selected_menu == "📅 Schedule":
     st.subheader("📅 Site Operations & Delivery Schedule")
 
