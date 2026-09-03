@@ -1,15 +1,14 @@
 # app.py
 import sys
 import os
+import streamlit as st
 
-# Force Python to resolve imports from the project root folder
+# 1. Force project root into system path to resolve module import issues on Streamlit Cloud
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-import streamlit as st
-
-# MUST be the first Streamlit command called
+# 2. Page Configuration (Must be the first Streamlit command)
 st.set_page_config(
     page_title="Inventory Management System",
     page_icon="📦",
@@ -17,22 +16,20 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# 3. Local Package & Database Imports
 from database import init_db, login_user
 from views.dashboard import render_dashboard
 from views.stock_in import render_stock_in
 from views.stock_out import render_stock_out
-from views.low_stock import render_low_stock
-from views.edit_void import render_edit_void
-from views.master_items import render_master_items
-from views.audit_log import render_audit_log
-from views.manage_users import render_manage_users
-from views.reminders import render_reminders
-from views.schedules import render_schedules
+from views.manage_items import render_manage_items
 
-# Initialize database tables & default accounts
-init_db()
+# 4. Initialize Database Tables & Schema Migrations
+try:
+    init_db()
+except Exception as e:
+    st.error(f"Failed to initialize database: {e}")
 
-# Session State Initialization
+# 5. Initialize Session State Variables
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "user_name" not in st.session_state:
@@ -40,37 +37,45 @@ if "user_name" not in st.session_state:
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
 
-# --- AUTHENTICATION SCREEN ---
-if not st.session_state.authenticated:
-    st.title("🔐 Inventory Management System")
-    st.subheader("Sign In")
-
-    col1, _ = st.columns([1, 1])
-    with col1:
+# -------------------------------------------------------------
+# LOGIN VIEW
+# -------------------------------------------------------------
+def render_login():
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("<h1 style='text-align: center;'>📦 Inventory Portal</h1>", unsafe_allow_html=True)
+        st.caption("Sign in to manage stock dispatches, receipts, and material logs.")
+        
         with st.form("login_form"):
             username_input = st.text_input("Username")
             password_input = st.text_input("Password", type="password")
-            submit_login = st.form_submit_button("Sign In")
+            submit_login = st.form_submit_button("🔓 Sign In", use_container_width=True)
 
             if submit_login:
-                user = login_user(username_input.strip(), password_input.strip())
-                if user:
-                    st.session_state.authenticated = True
-                    st.session_state.user_name = user["username"]
-                    st.session_state.user_role = user["role"]
-                    st.toast(f"Welcome back, {user['username']}!", icon="👋")
-                    st.rerun()
+                if not username_input.strip() or not password_input.strip():
+                    st.error("Please enter both username and password.")
                 else:
-                    st.error("Invalid username or password.")
+                    user = login_user(username_input.strip(), password_input.strip())
+                    if user:
+                        st.session_state.authenticated = True
+                        st.session_state.user_name = user["username"]
+                        st.session_state.user_role = user["role"]
+                        st.toast(f"Welcome back, {user['username']}!", icon="👋")
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid username or password.")
 
-# --- MAIN APPLICATION DASHBOARD ---
+# -------------------------------------------------------------
+# MAIN APPLICATION ROUTING
+# -------------------------------------------------------------
+if not st.session_state.authenticated:
+    render_login()
 else:
     # Sidebar Profile & Logout
-    st.sidebar.title("📌 Navigation")
-    st.sidebar.markdown(f"**Logged in as:** `{st.session_state.user_name}`")
-    st.sidebar.markdown(f"**Role:** `{st.session_state.user_role}`")
+    st.sidebar.title(f"👤 {st.session_state.user_name}")
+    st.sidebar.caption(f"Role: **{st.session_state.user_role}**")
     
-    if st.sidebar.button("🚪 Logout", key="logout_btn"):
+    if st.sidebar.button("🚪 Logout", use_container_width=True):
         st.session_state.authenticated = False
         st.session_state.user_name = None
         st.session_state.user_role = None
@@ -79,42 +84,24 @@ else:
     st.sidebar.divider()
 
     # Sidebar Navigation Menu
-    nav_options = [
+    menu_options = [
         "📊 Dashboard",
         "📥 Stock IN",
         "📤 Stock OUT",
-        "⚠️ Low Stock Alerts",
-        "📝 Edit / Void Entries",
-        "➕ Manage Master Items",
-        "📜 Audit Log Ledger",
-        "📌 Reminders & Tasks",
-        "📅 Schedules & Calendar"
+        "📦 Manage Master Items"
     ]
+    
+    selected_page = st.sidebar.radio("Navigation Menu", menu_options)
 
-    # Include User Management for Head Office role
-    if st.session_state.user_role == "Head Office":
-        nav_options.append("👤 Manage Users")
-
-    choice = st.sidebar.radio("Select View:", nav_options)
-
-    # Route navigation choices to modules
-    if choice == "📊 Dashboard":
-        render_dashboard()
-    elif choice == "📥 Stock IN":
+    # Route to Views
+    if selected_page == "📊 Dashboard":
+        render_dashboard(st.session_state.user_name, st.session_state.user_role)
+        
+    elif selected_page == "📥 Stock IN":
         render_stock_in(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📤 Stock OUT":
+        
+    elif selected_page == "📤 Stock OUT":
         render_stock_out(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "⚠️ Low Stock Alerts":
-        render_low_stock()
-    elif choice == "📝 Edit / Void Entries":
-        render_edit_void(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "➕ Manage Master Items":
-        render_master_items()
-    elif choice == "📜 Audit Log Ledger":
-        render_audit_log()
-    elif choice == "📌 Reminders & Tasks":
-        render_reminders(st.session_state.user_name)
-    elif choice == "📅 Schedules & Calendar":
-        render_schedules(st.session_state.user_name)
-    elif choice == "👤 Manage Users":
-        render_manage_users()
+        
+    elif selected_page == "📦 Manage Master Items":
+        render_manage_items(st.session_state.user_name, st.session_state.user_role)
