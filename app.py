@@ -1,136 +1,133 @@
-# app.py
-import streamlit as st
-from database import init_db, login_user
+# database.py
+import sqlite3
+import os
+from contextlib import contextmanager
 
-# Page Configuration
-st.set_page_config(
-    page_title="ARV Site Inventory System",
-    page_icon="🏗️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Absolute path to the database file
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inventory.db")
 
-# Initialize Session States
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "user_name" not in st.session_state:
-    st.session_state.user_name = ""
-if "user_role" not in st.session_state:
-    st.session_state.user_role = "User"
+# Absolute path for uploaded file attachments (Delivery Receipts, Invoices, etc.)
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Global Site Categories List
-if "categories" not in st.session_state:
-    st.session_state.categories = [
-        "Fuel & Oils",
-        "Construction Materials",
-        "Steel / Rebar",
-        "Nails & Fasteners",
-        "Cutting & Grinding Consumables",
-        "Welding Supplies & PPE",
-        "General Site Supplies"
-    ]
+@contextmanager
+def get_db():
+    """Provides a transactional database connection context."""
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
 
-# Ensure DB & Tables exist on load
-init_db()
+def init_db():
+    """Initializes all required database tables and default admin credentials."""
+    with get_db() as conn:
+        cursor = conn.cursor()
 
+        # 1. Users Table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'User'
+            )
+        """)
 
-# -----------------------------------------------------------------------------
-# LOGIN PAGE
-# -----------------------------------------------------------------------------
-def render_login():
-    st.markdown("<h1 style='text-align: center;'>🏗️ ARV Construction Site Inventory</h1>", unsafe_allow_html=True)
-    st.markdown("<h4 style='text-align: center; color: gray;'>Material Tracking & Warehouse Management</h4>", unsafe_allow_html=True)
-    st.write("---")
+        # 2. Master Items Table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS master_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_name TEXT UNIQUE NOT NULL,
+                category TEXT NOT NULL,
+                unit TEXT NOT NULL,
+                current_stock REAL DEFAULT 0.0,
+                min_threshold REAL DEFAULT 10.0,
+                remarks TEXT
+            )
+        """)
 
-    col1, col2, col3 = st.columns([1, 2, 1])
+        # 3. Transactions Table (Stock IN / OUT Ledger)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                type TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                category TEXT,
+                unit TEXT,
+                quantity REAL NOT NULL,
+                user_name TEXT NOT NULL,
+                remarks TEXT,
+                attachment TEXT,
+                status TEXT DEFAULT 'ACTIVE'
+            )
+        """)
 
-    with col2:
-        st.subheader("🔑 Sign In")
-        with st.form("login_form", clear_on_submit=False):
-            username = st.text_input("Username", placeholder="Enter your username")
-            password = st.text_input("Password", type="password", placeholder="Enter your password")
-            submit = st.form_submit_button("Login", use_container_width=True)
+        # 4. Schedules & Deliveries Table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scheduled_date TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                expected_quantity REAL NOT NULL,
+                unit TEXT NOT NULL,
+                supplier TEXT,
+                status TEXT DEFAULT 'PENDING',
+                remarks TEXT
+            )
+        """)
 
-            if submit:
-                if not username.strip() or not password.strip():
-                    st.error("⚠️ Please fill in both Username and Password.")
-                else:
-                    user_data = login_user(username.strip(), password.strip())
-                    if user_data:
-                        st.session_state.logged_in = True
-                        st.session_state.user_name = user_data["username"]
-                        st.session_state.user_role = user_data["role"]
-                        st.success(f"Welcome back, {user_data['username']}!")
-                        st.rerun()
-                    else:
-                        st.error("❌ Invalid Username or Password.")
+        # 5. Reminders & Tasks Table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                due_date TEXT NOT NULL,
+                task TEXT NOT NULL,
+                assigned_to TEXT,
+                status TEXT DEFAULT 'OPEN'
+            )
+        """)
 
-        st.caption("Default Admin Credentials: **admin** / **admin123**")
+        # 6. System Audit Logs Table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                user_name TEXT NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT
+            )
+        """)
 
+        # Seed/Ensure Default Admin Credentials (admin / admin123)
+        cursor.execute("SELECT id FROM users WHERE username = 'admin'")
+        admin_row = cursor.fetchone()
+        if not admin_row:
+            cursor.execute("""
+                INSERT INTO users (username, password, role)
+                VALUES ('admin', 'admin123', 'Admin')
+            """)
+        else:
+            # Force reset admin password to 'admin123'
+            cursor.execute("""
+                UPDATE users SET password = 'admin123', role = 'Admin'
+                WHERE username = 'admin'
+            """)
 
-# -----------------------------------------------------------------------------
-# MAIN APPLICATION
-# -----------------------------------------------------------------------------
-def render_app():
-    # Lazy Imports for Views
-    from views.dashboard import render_dashboard
-    from views.manage_items import render_manage_items
-    from views.stock_in import render_stock_in
-    from views.stock_out import render_stock_out
-    from views.low_stock import render_low_stock
-    from views.schedules import render_schedules
-    from views.reminders import render_reminders
-    from views.audit_log import render_audit_log
+        conn.commit()
 
-    # Sidebar Navigation
-    st.sidebar.markdown(f"### 👤 Logged in as: **{st.session_state.user_name}**")
-    st.sidebar.caption(f"Role: **{st.session_state.user_role}**")
-    st.sidebar.divider()
-
-    menu_options = [
-        "📊 Executive Dashboard",
-        "📦 Manage Master Items",
-        "📥 Stock IN Receive",
-        "📤 Stock OUT Dispatch",
-        "⚠️ Low Stock Alerts",
-        "📅 Schedules & Deliveries",
-        "📝 Reminders & Tasks",
-        "📜 Transaction Ledger & Audit"
-    ]
-
-    choice = st.sidebar.radio("Navigation", menu_options)
-
-    st.sidebar.divider()
-    if st.sidebar.button("🚪 Logout", use_container_width=True):
-        st.session_state.logged_in = False
-        st.session_state.user_name = ""
-        st.session_state.user_role = "User"
-        st.rerun()
-
-    # View Router
-    if choice == "📊 Executive Dashboard":
-        render_dashboard(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📦 Manage Master Items":
-        render_manage_items(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📥 Stock IN Receive":
-        render_stock_in(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📤 Stock OUT Dispatch":
-        render_stock_out(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "⚠️ Low Stock Alerts":
-        render_low_stock(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📅 Schedules & Deliveries":
-        render_schedules(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📝 Reminders & Tasks":
-        render_reminders(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "📜 Transaction Ledger & Audit":
-        render_audit_log(st.session_state.user_name, st.session_state.user_role)
-
-
-# -----------------------------------------------------------------------------
-# APP ENTRY POINT
-# -----------------------------------------------------------------------------
-if __name__ == "__main__":
-    if not st.session_state.logged_in:
-        render_login()
-    else:
-        render_app()
+def login_user(username, password):
+    """Authenticates a user against the database."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT username, role FROM users 
+            WHERE LOWER(username) = LOWER(?) AND password = ?
+        """, (username, password))
+        row = cursor.fetchone()
+        if row:
+            return {"username": row["username"], "role": row["role"]}
+        return None
