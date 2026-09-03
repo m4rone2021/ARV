@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS schedules (
 )
 """)
 
-# Physical Inventory Audit Table (Updated with Resolution Workflow)
+# Physical Inventory Audit Table
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS physical_inventory_counts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -947,8 +947,15 @@ else:
                         return 'background-color: #d4edda; color: #155724;'
                     return ''
 
+                # Version-safe Pandas Styler method (.map for Pandas >=2.1, fallback to .applymap)
+                styled_df = df_audits.style
+                if hasattr(styled_df, "map"):
+                    styled_df = styled_df.map(highlight_status, subset=['sync_status'])
+                else:
+                    styled_df = styled_df.applymap(highlight_status, subset=['sync_status'])
+
                 st.dataframe(
-                    df_audits.style.applymap(highlight_status, subset=['sync_status']),
+                    styled_df,
                     column_config={
                         "id": "Audit ID",
                         "audit_date": "Audit Date",
