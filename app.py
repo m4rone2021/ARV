@@ -671,142 +671,118 @@ elif selected_menu == "➕ Manage Master Items":
                                 INSERT INTO transactions (
                                     timestamp, item_name, type, quantity, user_name, user_role, remarks
                                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """, (ts, m_row['item_name'], "ADJUSTMENT", diff, user_name, user_role, f"Manual Adjustment: {adj_reason.strip()}"))
+                            """, (ts, m_row['item_name'], "ADJUSTMENT", diff, user_name, user_role, f"Manual Audit: {adj_reason.strip()}"))
                             conn.commit()
-                            st.success(f"Stock for '{m_row['item_name']}' adjusted by {diff:+.2f}. Logged to audit trail.")
+                            st.success(f"Stock adjusted to {new_stock_val} {m_row['unit']}.")
                             st.rerun()
 
 # --- MENU 7: MASTER AUDIT LOG ---
 elif selected_menu == "📜 Master Audit Log":
-    st.subheader("📜 Complete Site Transaction Audit Log")
-
+    st.title("📜 Master Audit Log & Transaction History")
+    
     with get_db() as conn:
-        df_master_log = pd.read_sql_query("""
-            SELECT id, timestamp, item_name, type, quantity, user_name, user_role, 
-                   driver_details, issued_to, project_name, purpose, remarks, edit_status, photo_path
-            FROM transactions 
-            ORDER BY id DESC
-        """, conn)
+        df_audit = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
 
-    if not df_master_log.empty:
-        st.dataframe(df_master_log, use_container_width=True)
-
-        st.markdown("#### 📷 View Delivery Proof Photo")
-        photo_logs = df_master_log[df_master_log['photo_path'].notnull() & (df_master_log['photo_path'] != '')]
-        
-        if not photo_logs.empty:
-            sel_p_id = st.selectbox("Select Transaction ID with Photo", photo_logs['id'].tolist())
-            p_path = photo_logs[photo_logs['id'] == sel_p_id]['photo_path'].values[0]
-            
-            if os.path.exists(p_path):
-                st.image(p_path, caption=f"Delivery Proof for Transaction #{sel_p_id}", use_column_width=True)
-            else:
-                st.warning("⚠️ Photo record exists in database, but image file was not found on disk.")
-        else:
-            st.info("No delivery proof photos attached to logs yet.")
+    if not df_audit.empty:
+        st.dataframe(df_audit, use_container_width=True, hide_index=True)
     else:
-        st.info("No transaction history recorded yet.")
+        st.info("No audit logs available.")
 
 # --- MENU 8: MANAGE USERS (HEAD OFFICE ONLY) ---
-elif selected_menu == "👤 Manage Users":
-    st.subheader("👤 User Management & Role Access Control")
-    tab_users, tab_add_user = st.tabs(["User Directory", "Add New User"])
+elif selected_menu == "👤 Manage Users" and user_role == "Head Office":
+    st.title("👤 User Account Management")
     
-    with tab_users:
-        with get_db() as conn:
-            df_users = pd.read_sql_query("SELECT id, username, role FROM users", conn)
-        st.dataframe(df_users, use_container_width=True)
-        
-    with tab_add_user:
-        with st.form("add_user_form", clear_on_submit=True):
-            new_username = st.text_input("Username")
-            new_password = st.text_input("Password", type="password")
-            new_role = st.selectbox("Assign Role", ["Materials Supervisor", "Head Office"])
+    tab1, tab2 = st.tabs(["Create New User", "User List"])
+    
+    with tab1:
+        with st.form("create_user_form", clear_on_submit=True):
+            new_u = st.text_input("Username")
+            new_p = st.text_input("Password", type="password")
+            new_r = st.selectbox("Role", ["Materials Supervisor", "Head Office", "Site Inspector"])
             
-            if st.form_submit_button("Create User Account"):
-                if new_username and new_password:
+            if st.form_submit_button("Register User"):
+                if new_u.strip() and new_p.strip():
                     try:
-                        hashed_pwd = hash_password(new_password.strip())
                         with get_db() as conn:
                             cursor = conn.cursor()
-                            cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-                                           (new_username.strip(), hashed_pwd, new_role))
+                            cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", 
+                                           (new_u.strip(), hash_password(new_p.strip()), new_r))
                             conn.commit()
-                            st.success(f"User account '{new_username}' created successfully!")
-                            st.rerun()
+                            st.success(f"User '{new_u}' registered successfully.")
                     except sqlite3.IntegrityError:
-                        st.error("Username already exists. Please choose a unique username.")
+                        st.error("Username already exists.")
                 else:
-                    st.error("Please fill in all required fields.")
+                    st.error("Please enter a valid username and password.")
+
+    with tab2:
+        with get_db() as conn:
+            df_users = pd.read_sql_query("SELECT id, username, role FROM users", conn)
+        st.dataframe(df_users, use_container_width=True, hide_index=True)
 
 # --- MENU 9: REMINDERS ---
 elif selected_menu == "⏰ Reminders":
-    st.subheader("⏰ Site Reminders & Tasks")
+    st.title("⏰ Task & Inventory Reminders")
     
     with st.form("add_reminder_form", clear_on_submit=True):
-        col_t, col_d, col_p = st.columns([2, 1, 1])
-        r_title = col_t.text_input("Task / Reminder Title")
-        r_due = col_d.date_input("Due Date", datetime.now())
-        r_priority = col_p.selectbox("Priority", ["Low", "Medium", "High"])
+        r_title = st.text_input("Reminder Title")
+        r_due = st.date_input("Due Date")
+        r_prio = st.selectbox("Priority", ["Low", "Medium", "High"])
         
         if st.form_submit_button("Add Reminder"):
-            if r_title:
+            if r_title.strip():
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 with get_db() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
                         INSERT INTO reminders (user_name, title, due_date, priority, timestamp)
                         VALUES (?, ?, ?, ?, ?)
-                    """, (user_name, r_title, r_due.strftime("%Y-%m-%d"), r_priority, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                    """, (user_name, r_title.strip(), str(r_due), r_prio, ts))
                     conn.commit()
-                    st.success("Reminder created!")
+                    st.success("Reminder created successfully!")
                     st.rerun()
 
-    st.markdown("#### Pending Reminders")
+    st.divider()
+    st.subheader("📋 Active Reminders")
     with get_db() as conn:
-        df_rem = pd.read_sql_query("SELECT id, title, due_date, priority, status FROM reminders WHERE user_name = ? AND status = 'PENDING' ORDER BY due_date ASC", conn, params=(user_name,))
+        df_rem = pd.read_sql_query("SELECT id, title, due_date, priority, status FROM reminders WHERE user_name = ? ORDER BY id DESC", conn, params=(user_name,))
     
     if not df_rem.empty:
-        st.dataframe(df_rem, use_container_width=True)
-        rem_to_complete = st.selectbox("Select Task ID to Mark Complete", df_rem['id'].tolist())
-        if st.button("Mark Task Completed"):
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute("UPDATE reminders SET status = 'COMPLETED' WHERE id = ?", (rem_to_complete,))
-                conn.commit()
-                st.success("Task completed!")
-                st.rerun()
+        st.dataframe(df_rem, use_container_width=True, hide_index=True)
     else:
-        st.info("No pending reminders.")
+        st.info("No reminders saved.")
 
 # --- MENU 10: SCHEDULE ---
 elif selected_menu == "📅 Schedule":
-    st.subheader("📅 Site Delivery & Event Schedules")
+    st.title("📅 Deliveries & Site Operations Schedule")
     
     with st.form("add_schedule_form", clear_on_submit=True):
         s_title = st.text_input("Event / Delivery Title")
-        c_d, c_s, c_e = st.columns(3)
-        s_date = c_d.date_input("Event Date", datetime.now())
-        s_start = c_s.time_input("Start Time", time(8, 0))
-        s_end = c_e.time_input("End Time", time(17, 0))
-        s_loc = st.text_input("Location / Site Area")
-        s_notes = st.text_area("Notes / Special Instructions")
+        s_date = st.date_input("Date")
+        col_t1, col_t2 = st.columns(2)
+        s_start = col_t1.time_input("Start Time", time(9, 0))
+        s_end = col_t2.time_input("End Time", time(10, 0))
+        s_loc = st.text_input("Location / Site Sector")
+        s_notes = st.text_area("Notes")
         
-        if st.form_submit_button("Schedule Event"):
-            if s_title:
+        if st.form_submit_button("Add Event to Schedule"):
+            if s_title.strip():
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 with get_db() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
                         INSERT INTO schedules (user_name, title, event_date, start_time, end_time, location_details, notes, timestamp)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (user_name, s_title, s_date.strftime("%Y-%m-%d"), s_start.strftime("%H:%M"), s_end.strftime("%H:%M"), s_loc, s_notes, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                    """, (user_name, s_title.strip(), str(s_date), str(s_start), str(s_end), s_loc.strip(), s_notes.strip(), ts))
                     conn.commit()
                     st.success("Event scheduled successfully!")
                     st.rerun()
 
+    st.divider()
+    st.subheader("🗓️ Scheduled Events")
     with get_db() as conn:
-        df_sched = pd.read_sql_query("SELECT title, event_date, start_time, end_time, location_details, notes FROM schedules ORDER BY event_date ASC, start_time ASC", conn)
+        df_sched = pd.read_sql_query("SELECT id, title, event_date, start_time, end_time, location_details, notes FROM schedules ORDER BY event_date ASC", conn)
     
     if not df_sched.empty:
-        st.dataframe(df_sched, use_container_width=True)
+        st.dataframe(df_sched, use_container_width=True, hide_index=True)
     else:
-        st.info("No scheduled events found.")
+        st.info("No upcoming events scheduled.")
