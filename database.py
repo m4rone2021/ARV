@@ -20,9 +20,23 @@ def hash_password(password: str) -> str:
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
-def check_password(password: str, hashed: str) -> bool:
-    """Verifies a plain text password against a stored hash."""
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+def check_password(password: str, stored_password: str) -> bool:
+    """
+    Verifies a plain text password against a stored bcrypt hash.
+    Safely handles legacy/unhashed plain-text strings to avoid ValueError crashes.
+    """
+    if not stored_password:
+        return False
+    
+    # Check if the stored string is a valid bcrypt hash
+    if stored_password.startswith(("$2a$", "$2b$", "$2y$")):
+        try:
+            return bcrypt.checkpw(password.encode('utf-8'), stored_password.encode('utf-8'))
+        except ValueError:
+            return False
+            
+    # Fallback comparison if legacy password in DB is stored as plain text
+    return password == stored_password
 
 def init_db():
     """Initializes tables, migrates missing columns, and seeds initial accounts."""
@@ -136,12 +150,22 @@ def init_db():
         conn.commit()
 
 def login_user(username: str, password: str):
-    """Validates user login credentials against hashed passwords in the DB."""
+    """
+    Validates user credentials against stored passwords in the DB.
+    Automatically upgrades plain-text passwords to bcrypt hashes upon successful login.
+    """
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT username, password, role FROM users WHERE username = ?", (username,))
+        cursor.execute("SELECT id, username, password, role FROM users WHERE username = ?", (username,))
         user = cursor.fetchone()
         
         if user and check_password(password, user["password"]):
+            # Auto-upgrade plain text passwords to bcrypt hashes in DB if needed
+            if not user["password"].startswith(("$2a$", "$2b$", "$2y$")):
+                new_hash = hash_password(password)
+                cursor.execute("UPDATE users SET password = ? WHERE id = ?", (new_hash, user["id"]))
+                conn.commit()
+
             return {"username": user["username"], "role": user["role"]}
+            
         return None
