@@ -81,9 +81,10 @@ def render_app():
     # Sidebar Navigation Menu
     menu_options = [
         "Dashboard",
-        "Manage Items",
         "Stock In",
         "Stock Out",
+        "Physical Inventory",
+        "Manage Items",
         "Low Stock Alerts",
         "Schedules & Deliveries",
         "Reminders & Tasks",
@@ -140,6 +141,10 @@ def render_app():
     elif menu_choice == "User Management" and st.session_state.user_role == "Admin":
         from views.user_management import render_user_management
         render_user_management(st.session_state.user_name, st.session_state.user_role)
+
+    elif menu_choice == "Physical Inventory":
+        from views.physical_inventory import render_physical_inventory
+        render_physical_inventory(st.session_state.user_name, st.session_state.user_role)
 
 
 # 6. Main Entry Point
