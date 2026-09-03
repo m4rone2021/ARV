@@ -152,7 +152,7 @@ def main():
         elif selected_page == "📋 Physical Inventory & Approval":
             render_physical_inventory(st.session_state.username, st.session_state.user_role)
         elif selected_page == "🚚 Schedules & Deliveries":
-            render_schedules_deliveries(st.session_state.username, st.session_state.user_role)
+            render_schedules(st.session_state.username, st.session_state.user_role)
         elif selected_page == "📝 Reminders & Tasks":
             render_reminders_tasks(st.session_state.username, st.session_state.user_role)
         elif selected_page == "📈 Reports & Analytics":
