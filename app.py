@@ -1,3 +1,23 @@
+# Direct fix to inject default admin into the active DB file
+import hashlib
+from database import get_db
+
+def force_seed_admin():
+    hashed_pass = hashlib.sha256("admin123".encode()).hexdigest()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO users (username, password, role)
+            VALUES ('admin', ?, 'Admin')
+            ON CONFLICT(username) DO UPDATE SET password = excluded.password;
+        """, (hashed_pass,))
+        conn.commit()
+
+# Execute seed before login checks
+try:
+    force_seed_admin()
+except Exception as e:
+    pass
 # app.py
 import streamlit as st
 from database import init_db, login_user
