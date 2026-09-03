@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 from database import init_db, get_db
 
@@ -6,7 +7,7 @@ from views.manage_items import render_manage_items
 from views.stock_in import render_stock_in
 from views.stock_out import render_stock_out
 from views.schedules import render_schedules
-from views.admin_panel import render_admin_panel
+from views.admin_panel import render_admin_panel  # Imported admin panel view
 
 # Page configuration
 st.set_page_config(
@@ -20,10 +21,11 @@ st.set_page_config(
 init_db()
 
 # -------------------------------------------------------------
-# SESSION STATE SETUP (EMERGENCY BYPASS ENABLED)
+# SESSION STATE SETUP & EMERGENCY ADMIN BYPASS
 # -------------------------------------------------------------
+# Temporarily set defaults to True so you bypass the login screen immediately.
 if "authenticated" not in st.session_state:
-    st.session_state.authenticated = True  # Set to False once access is restored
+    st.session_state.authenticated = True  # Bypass login screen
 if "user_name" not in st.session_state:
     st.session_state.user_name = "admin"
 if "user_role" not in st.session_state:
@@ -85,7 +87,7 @@ else:
         "Schedules & Deliveries"
     ]
 
-    # Admin Exclusive Option
+    # Show Admin Control option exclusively to users with the Admin role
     if st.session_state.user_role == "Admin":
         menu_options.append("🔑 Admin Control")
 
