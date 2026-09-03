@@ -153,6 +153,24 @@ def init_db():
 
         conn.commit()
 
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS discrepancies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        item_name TEXT NOT NULL,
+        system_stock REAL NOT NULL,
+        physical_count REAL NOT NULL,
+        variance REAL NOT NULL,
+        unit TEXT NOT NULL,
+        submitted_by TEXT NOT NULL,
+        submission_notes TEXT,
+        status TEXT DEFAULT 'PENDING', -- PENDING, APPROVED, REJECTED
+        resolved_by TEXT,
+        resolved_timestamp DATETIME,
+        resolution_notes TEXT
+    )
+""")
+
 if __name__ == "__main__":
     init_db()
     print("Database auto-migration complete.")
