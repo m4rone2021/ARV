@@ -1,6 +1,6 @@
 # app.py
 import streamlit as st
-from database import init_db, login_user
+from database import init_db, get_db
 
 # Page Configuration
 st.set_page_config(
