@@ -24,11 +24,14 @@ def ensure_transactions_schema():
 
         for col_name, col_type in required_cols.items():
             if col_name not in existing_cols:
-                cursor.execute(f"ALTER TABLE transactions ADD COLUMN {col_name} {col_type}")
+                try:
+                    cursor.execute(f"ALTER TABLE transactions ADD COLUMN {col_name} {col_type}")
+                except sqlite3.OperationalError:
+                    pass  # Column already added by concurrent request
         conn.commit()
 
 def render_stock_in(user_name, user_role):
-    # Ensure database schema is migrated before rendering anything
+    # Guarantee table and columns exist on startup
     ensure_transactions_schema()
 
     st.title("📥 Stock IN - Receive Inventory")
@@ -101,37 +104,39 @@ def render_stock_in(user_name, user_role):
                 except sqlite3.OperationalError:
                     st.error("Database is currently locked or busy. Please try again in a moment.")
 
-    # 3. Recent Delivery Logs Table
+    # 3. Recent Delivery Logs Table (Fail-safe Query)
     st.divider()
     st.subheader("📑 Recent Incoming Material Deliveries Log")
     
-    with get_db() as conn:
-        df_recent_in = pd.read_sql_query("""
-            SELECT 
-                timestamp, 
-                item_name, 
-                quantity, 
-                COALESCE(driver_details, '') AS driver_details, 
-                COALESCE(project_name, '') AS project_name, 
-                COALESCE(purpose, '') AS purpose, 
-                user_name, 
-                COALESCE(remarks, '') AS remarks 
-            FROM transactions 
-            WHERE type = 'IN' 
-            ORDER BY id DESC LIMIT 10
-        """, conn)
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    timestamp, 
+                    item_name, 
+                    quantity, 
+                    driver_details, 
+                    project_name, 
+                    purpose, 
+                    user_name, 
+                    remarks 
+                FROM transactions 
+                WHERE type = 'IN' 
+                ORDER BY id DESC LIMIT 10
+            """)
+            rows = cursor.fetchall()
 
-    if not df_recent_in.empty:
-        df_recent_in = df_recent_in.rename(columns={
-            "timestamp": "Date & Time",
-            "item_name": "Item Name",
-            "quantity": "Qty Received",
-            "driver_details": "Transporter / Driver",
-            "project_name": "Destination / Site",
-            "purpose": "Purpose / PO",
-            "user_name": "Logged By",
-            "remarks": "Remarks"
-        })
-        st.dataframe(df_recent_in, use_container_width=True, hide_index=True)
-    else:
-        st.info("No incoming deliveries recorded yet.")
+        if rows:
+            df_recent_in = pd.DataFrame(rows, columns=[
+                "Date & Time", "Item Name", "Qty Received", "Transporter / Driver",
+                "Destination / Site", "Purpose / PO", "Logged By", "Remarks"
+            ])
+            st.dataframe(df_recent_in, use_container_width=True, hide_index=True)
+        else:
+            st.info("No incoming deliveries recorded yet.")
+            
+    except sqlite3.OperationalError as e:
+        st.warning("Notice: Initializing transaction log table...")
+        ensure_transactions_schema()
+        st.rerun()
