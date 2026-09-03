@@ -39,9 +39,20 @@ def hash_password(password: str) -> str:
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Check a plaintext password against a stored bcrypt hash."""
-    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+def verify_password(plain_password: str, stored_password: str) -> bool:
+    """Check plaintext password against a stored bcrypt hash with fallback for legacy plain text."""
+    if not stored_password:
+        return False
+        
+    # Check if stored string has standard bcrypt prefix ($2a$, $2b$, or $2y$)
+    if stored_password.startswith(("$2a$", "$2b$", "$2y$")):
+        try:
+            return bcrypt.checkpw(plain_password.encode('utf-8'), stored_password.encode('utf-8'))
+        except (ValueError, TypeError):
+            return False
+            
+    # Fallback for old plain-text entries in database
+    return plain_password == stored_password
 
 def init_db():
     """Initialize database tables, pragmas, and default seed data."""
@@ -131,14 +142,21 @@ def init_db():
         conn.commit()
 
 def login_user(username, password):
-    """Verify user login credentials against bcrypt hashes."""
+    """Verify user login and auto-upgrade legacy plain-text passwords to bcrypt hashes."""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT username, password, role FROM users WHERE username = ?", (username,))
         user = cursor.fetchone()
         
         if user and verify_password(password, user["password"]):
+            # Auto-migrate plain text password to bcrypt hash if needed
+            if not user["password"].startswith(("$2a$", "$2b$", "$2y$")):
+                new_hash = hash_password(password)
+                cursor.execute("UPDATE users SET password = ? WHERE username = ?", (new_hash, username))
+                conn.commit()
+                
             return {"username": user["username"], "role": user["role"]}
+            
     return None
 
 # Run initialization
