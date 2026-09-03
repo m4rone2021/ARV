@@ -69,12 +69,12 @@ def render_login():
 
 
 # -----------------------------------------------------------------------------
-# MAIN APPLICATION & FIXED NAVIGATION
+# MAIN APPLICATION & NAVIGATION
 # -----------------------------------------------------------------------------
 def render_app():
-    # Views imports
+    # Views imports - directly importing from manage_items.py
     from views.dashboard import render_dashboard
-    from views.master_items import render_master_items
+    from views.manage_items import render_manage_items
     from views.stock_in import render_stock_in
     from views.stock_out import render_stock_out
     from views.low_stock import render_low_stock
@@ -87,10 +87,10 @@ def render_app():
     st.sidebar.caption(f"Role: **{st.session_state.user_role}**")
     st.sidebar.divider()
 
-    # PERMANENT MENU NAVIGATION
+    # NAVIGATION OPTIONS
     menu_options = [
         "Dashboard",
-        "Master Catalog",
+        "Manage Master Items",
         "Stock IN",
         "Stock OUT",
         "Low Stock Alerts",
@@ -108,11 +108,11 @@ def render_app():
         st.session_state.user_role = "User"
         st.rerun()
 
-    # Router logic matching menu options strictly
+    # Router Logic
     if choice == "Dashboard":
         render_dashboard(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "Master Catalog":
-        render_master_items(st.session_state.user_name, st.session_state.user_role)
+    elif choice == "Manage Master Items":
+        render_manage_items(st.session_state.user_name, st.session_state.user_role)
     elif choice == "Stock IN":
         render_stock_in(st.session_state.user_name, st.session_state.user_role)
     elif choice == "Stock OUT":
