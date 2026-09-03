@@ -1,10 +1,15 @@
 # database.py
+import os
 import sqlite3
 import hashlib
 import streamlit as st
 from contextlib import contextmanager
 
-DB_FILE = "database.db"
+DB_FILE = "inventory.db"  # Standard database file for ARV Inventory System
+UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+
+# Ensure upload directory exists
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @contextmanager
 def get_db():
@@ -57,7 +62,34 @@ def init_db():
             )
         """)
 
-        # 2. CREATE REMINDERS TABLE
+        # 2. CREATE MASTER ITEMS TABLE
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS master_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_name TEXT UNIQUE NOT NULL,
+                category TEXT NOT NULL,
+                unit TEXT NOT NULL,
+                current_stock REAL DEFAULT 0.0,
+                min_threshold REAL DEFAULT 0.0,
+                remarks TEXT
+            )
+        """)
+
+        # 3. CREATE TRANSACTIONS TABLE
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                type TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                unit TEXT NOT NULL,
+                handled_by TEXT,
+                notes TEXT
+            )
+        """)
+
+        # 4. CREATE REMINDERS TABLE
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +100,21 @@ def init_db():
             )
         """)
 
-        # 3. SEED DEFAULT ADMIN USER IF EMPTY
+        # 5. CREATE SCHEDULES TABLE
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scheduled_date TEXT,
+                item_name TEXT,
+                expected_quantity REAL,
+                unit TEXT,
+                supplier TEXT,
+                status TEXT DEFAULT 'PENDING',
+                remarks TEXT
+            )
+        """)
+
+        # 6. SEED DEFAULT ADMIN USER IF EMPTY
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
             default_admin_pass = hash_password("admin123")
@@ -77,30 +123,26 @@ def init_db():
                 ("admin", default_admin_pass, "Admin")
             )
 
-        # 4. SCHEMA AUTO-MIGRATION FOR 'reminders'
-        cursor.execute("PRAGMA table_info(reminders);")
-        columns_info = cursor.fetchall()
-        existing_columns = [col["name"] for col in columns_info]
+        # 7. SCHEMA AUTO-MIGRATIONS
+        # Ensure remarks column exists on master_items
+        cursor.execute("PRAGMA table_info(master_items);")
+        mi_cols = [col["name"] for col in cursor.fetchall()]
+        if "remarks" not in mi_cols:
+            cursor.execute("ALTER TABLE master_items ADD COLUMN remarks TEXT;")
 
-        if "task" not in existing_columns:
-            if "description" in existing_columns:
+        # Ensure task column exists on reminders
+        cursor.execute("PRAGMA table_info(reminders);")
+        rem_cols = [col["name"] for col in cursor.fetchall()]
+        if "task" not in rem_cols:
+            if "description" in rem_cols:
                 cursor.execute("ALTER TABLE reminders RENAME COLUMN description TO task;")
-            elif "reminder" in existing_columns:
+            elif "reminder" in rem_cols:
                 cursor.execute("ALTER TABLE reminders RENAME COLUMN reminder TO task;")
             else:
                 cursor.execute("ALTER TABLE reminders ADD COLUMN task TEXT;")
-
-        if "due_date" not in existing_columns:
-            cursor.execute("ALTER TABLE reminders ADD COLUMN due_date TEXT;")
-
-        if "assigned_to" not in existing_columns:
-            cursor.execute("ALTER TABLE reminders ADD COLUMN assigned_to TEXT;")
-
-        if "status" not in existing_columns:
-            cursor.execute("ALTER TABLE reminders ADD COLUMN status TEXT DEFAULT 'OPEN';")
 
         conn.commit()
 
 if __name__ == "__main__":
     init_db()
-    print("Database initialized successfully.")
+    print("Database and UPLOAD_DIR initialized successfully.")
