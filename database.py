@@ -1,59 +1,30 @@
 # database.py
 import sqlite3
-import os
 import bcrypt
-from contextlib import contextmanager
 
-DB_FILE = "inventory_system.db"
-UPLOAD_DIR = "uploaded_proofs"
-
-# Ensure upload directory exists for storing delivery proof photos
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
-
-@contextmanager
 def get_db():
-    """Thread-safe SQLite database context manager."""
-    conn = sqlite3.connect(DB_FILE, timeout=20.0)
+    """Returns a SQLite connection configured with dict-like row access and WAL mode."""
+    conn = sqlite3.connect("inventory.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
+    # Enable Write-Ahead Logging for better concurrency handling
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
 
 def hash_password(password: str) -> str:
-    """Hash plain text password with bcrypt."""
+    """Hashes a plain text password using bcrypt."""
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
-def verify_password(plain_password: str, stored_password: str) -> bool:
-    """Verify plain password against stored bcrypt hash."""
-    if not stored_password:
-        return False
-    if stored_password.startswith(("$2a$", "$2b$", "$2y$")):
-        try:
-            return bcrypt.checkpw(plain_password.encode('utf-8'), stored_password.encode('utf-8'))
-        except (ValueError, TypeError):
-            return False
-    return plain_password == stored_password
+def check_password(password: str, hashed: str) -> bool:
+    """Verifies a plain text password against a stored hash."""
+    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
 def init_db():
-    """Initialize database tables and create default admin accounts."""
+    """Initializes tables, migrates missing columns, and seeds initial accounts."""
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL;")
         
-        # User authentication table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                role TEXT NOT NULL
-            )
-        """)
-        
-        # Master inventory items table
+        # 1. Master Items Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS master_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,11 +32,11 @@ def init_db():
                 category TEXT NOT NULL,
                 unit TEXT NOT NULL,
                 current_stock REAL DEFAULT 0,
-                min_threshold REAL DEFAULT 0
+                min_threshold REAL DEFAULT 10
             )
         """)
 
-        # Material transactions log table
+        # 2. Transactions Ledger Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,18 +45,28 @@ def init_db():
                 type TEXT NOT NULL,
                 quantity REAL NOT NULL,
                 user_name TEXT NOT NULL,
-                user_role TEXT NOT NULL,
+                user_role TEXT,
                 driver_details TEXT,
                 issued_to TEXT,
                 project_name TEXT,
                 purpose TEXT,
                 remarks TEXT,
                 photo_path TEXT,
-                edit_status TEXT DEFAULT 'NORMAL'
+                edit_status TEXT DEFAULT 'ACTIVE'
             )
         """)
 
-        # Reminders table
+        # 3. Users Table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL
+            )
+        """)
+
+        # 4. Reminders & Tasks Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,44 +79,64 @@ def init_db():
             )
         """)
 
-        # Schedules table
+        # 5. Schedules & Deliveries Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS schedules (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_name TEXT NOT NULL,
                 title TEXT NOT NULL,
                 event_date TEXT NOT NULL,
-                start_time TEXT NOT NULL,
-                end_time TEXT NOT NULL,
+                start_time TEXT,
+                end_time TEXT,
                 location_details TEXT,
                 notes TEXT,
                 timestamp TEXT NOT NULL
             )
         """)
-        
-        # Insert default accounts if database is empty
+
+        # --- SAFE DYNAMIC COLUMN MIGRATIONS ---
+        # Ensures existing inventory.db files acquire new columns without crashing
+        cursor.execute("PRAGMA table_info(transactions)")
+        existing_cols = [row[1] for row in cursor.fetchall()]
+
+        required_cols = {
+            "driver_details": "TEXT",
+            "issued_to": "TEXT",
+            "project_name": "TEXT",
+            "purpose": "TEXT",
+            "remarks": "TEXT",
+            "photo_path": "TEXT",
+            "edit_status": "TEXT DEFAULT 'ACTIVE'"
+        }
+
+        for col_name, col_type in required_cols.items():
+            if col_name not in existing_cols:
+                cursor.execute(f"ALTER TABLE transactions ADD COLUMN {col_name} {col_type}")
+
+        # --- SEED DEFAULT USER ACCOUNTS ---
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
-            hashed_admin = hash_password("admin123")
-            hashed_super = hash_password("super123")
-            cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", ('admin', hashed_admin, 'Head Office'))
-            cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", ('supervisor', hashed_super, 'Materials Supervisor'))
-        
+            default_admin_pass = hash_password("admin123")
+            default_super_pass = hash_password("super123")
+            
+            cursor.execute(
+                "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                ("admin", default_admin_pass, "Head Office")
+            )
+            cursor.execute(
+                "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                ("supervisor", default_super_pass, "Materials Supervisor")
+            )
+
         conn.commit()
 
-def login_user(username, password):
-    """Authenticate login credentials and handle auto-hashing of legacy accounts."""
+def login_user(username: str, password: str):
+    """Validates user login credentials against hashed passwords in the DB."""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT username, password, role FROM users WHERE username = ?", (username,))
         user = cursor.fetchone()
         
-        if user and verify_password(password, user["password"]):
-            # Migrate legacy plain text passwords to bcrypt hash on first successful login
-            if not user["password"].startswith(("$2a$", "$2b$", "$2y$")):
-                new_hash = hash_password(password)
-                cursor.execute("UPDATE users SET password = ? WHERE username = ?", (new_hash, username))
-                conn.commit()
+        if user and check_password(password, user["password"]):
             return {"username": user["username"], "role": user["role"]}
-            
-    return None
+        return None
