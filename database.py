@@ -15,12 +15,16 @@ def get_db():
     finally:
         conn.close()
 
+# database.py
+
 def init_db():
-    """Initializes all required database tables if they do not exist."""
+    """Initializes database tables and default admin credentials."""
     with get_db() as conn:
         cursor = conn.cursor()
 
-        # 1. Users Table
+        # ... (Keep existing CREATE TABLE statements) ...
+
+        # Users Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,6 +33,24 @@ def init_db():
                 role TEXT NOT NULL
             )
         """)
+
+        # FORCE update admin password to admin123
+        cursor.execute("SELECT id FROM users WHERE username = 'admin'")
+        existing_admin = cursor.fetchone()
+
+        if existing_admin:
+            cursor.execute("""
+                UPDATE users 
+                SET password = 'admin123', role = 'Admin' 
+                WHERE username = 'admin'
+            """)
+        else:
+            cursor.execute("""
+                INSERT INTO users (username, password, role) 
+                VALUES ('admin', 'admin123', 'Admin')
+            """)
+
+        conn.commit()
 
         # 2. Master Items Catalog
         cursor.execute("""
