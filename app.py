@@ -2,12 +2,21 @@
 import sys
 import os
 
-# Force Python to search the root directory where app.py lives
+# Force Python to resolve imports from the project root folder
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 import streamlit as st
+
+# MUST be the first Streamlit command called
+st.set_page_config(
+    page_title="Inventory Management System",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 from database import init_db, login_user
 from views.dashboard import render_dashboard
 from views.stock_in import render_stock_in
@@ -20,17 +29,7 @@ from views.manage_users import render_manage_users
 from views.reminders import render_reminders
 from views.schedules import render_schedules
 
-# ... rest of your app.py code
-
-# Set Streamlit page layout
-st.set_page_config(
-    page_title="Inventory Management System",
-    page_icon="📦",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Initialize database tables & default admin accounts
+# Initialize database tables & default accounts
 init_db()
 
 # Session State Initialization
