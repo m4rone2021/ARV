@@ -23,6 +23,38 @@ from views.stock_in import render_stock_in
 from views.stock_out import render_stock_out
 from views.manage_items import render_manage_items
 
+# Conditional imports for additional views (with safe fallbacks)
+try:
+    from views.edit_void import render_edit_void
+except ImportError:
+    render_edit_void = None
+
+try:
+    from views.manage_users import render_manage_users
+except ImportError:
+    render_manage_users = None
+
+try:
+    from views.reminders import render_reminders
+except ImportError:
+    render_reminders = None
+
+try:
+    from views.schedules import render_schedules
+except ImportError:
+    render_schedules = None
+
+try:
+    from views.audit_log import render_audit_log
+except ImportError:
+    render_audit_log = None
+
+try:
+    from views.low_stock import render_low_stock
+except ImportError:
+    render_low_stock = None
+
+
 # 4. Initialize Database Tables & Schema Migrations
 try:
     init_db()
@@ -83,17 +115,23 @@ else:
 
     st.sidebar.divider()
 
-    # Sidebar Navigation Menu
+    # Dynamic Sidebar Navigation Menu
     menu_options = [
         "📊 Dashboard",
         "📥 Stock IN",
         "📤 Stock OUT",
-        "📦 Manage Master Items"
+        "📦 Manage Master Items",
+        "⚠️ Low Stock Alerts",
+        "✏️ Edit / Void Ledger",
+        "📅 Schedules & Deliveries",
+        "⏰ Reminders & Tasks",
+        "📜 Audit Log",
+        "👥 User Management"
     ]
     
     selected_page = st.sidebar.radio("Navigation Menu", menu_options)
 
-    # Route to Views
+    # Core Navigation Routing
     if selected_page == "📊 Dashboard":
         render_dashboard(st.session_state.user_name, st.session_state.user_role)
         
@@ -105,3 +143,39 @@ else:
         
     elif selected_page == "📦 Manage Master Items":
         render_manage_items(st.session_state.user_name, st.session_state.user_role)
+
+    elif selected_page == "⚠️ Low Stock Alerts":
+        if render_low_stock:
+            render_low_stock(st.session_state.user_name, st.session_state.user_role)
+        else:
+            st.info("Module 'low_stock.py' is being updated. Check back shortly.")
+
+    elif selected_page == "✏️ Edit / Void Ledger":
+        if render_edit_void:
+            render_edit_void(st.session_state.user_name, st.session_state.user_role)
+        else:
+            st.info("Module 'edit_void.py' is being updated. Check back shortly.")
+
+    elif selected_page == "📅 Schedules & Deliveries":
+        if render_schedules:
+            render_schedules(st.session_state.user_name, st.session_state.user_role)
+        else:
+            st.info("Module 'schedules.py' is being updated. Check back shortly.")
+
+    elif selected_page == "⏰ Reminders & Tasks":
+        if render_reminders:
+            render_reminders(st.session_state.user_name, st.session_state.user_role)
+        else:
+            st.info("Module 'reminders.py' is being updated. Check back shortly.")
+
+    elif selected_page == "📜 Audit Log":
+        if render_audit_log:
+            render_audit_log(st.session_state.user_name, st.session_state.user_role)
+        else:
+            st.info("Module 'audit_log.py' is being updated. Check back shortly.")
+
+    elif selected_page == "👥 User Management":
+        if render_manage_users:
+            render_manage_users(st.session_state.user_name, st.session_state.user_role)
+        else:
+            st.info("Module 'manage_users.py' is being updated. Check back shortly.")
