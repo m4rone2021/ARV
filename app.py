@@ -8,7 +8,7 @@ from views.manage_items import render_manage_items
 from views.stock_in import render_stock_in
 from views.stock_out import render_stock_out
 from views.physical_inventory import render_physical_inventory
-from views.schedules_deliveries import render_schedules_deliveries
+from views.schedules import render_schedules
 from views.reminders_tasks import render_reminders_tasks
 from views.reports import render_reports
 from views.user_management import render_user_management
