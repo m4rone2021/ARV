@@ -4,7 +4,7 @@ from database import init_db, get_db
 
 # Views
 from views.dashboard import render_dashboard
-from views.master_catalog import render_master_catalog
+from views.manage_items import render_manage_items
 from views.stock_in import render_stock_in
 from views.stock_out import render_stock_out
 from views.physical_inventory import render_physical_inventory
@@ -95,7 +95,7 @@ def render_sidebar():
     if st.session_state.user_role == "Admin":
         nav_options = [
             "📊 Dashboard",
-            "🗂️ Master Catalog",
+            "🗂️ manage_items",
             "📥 Stock In",
             "📤 Stock Out",
             "📋 Physical Inventory & Approval",
