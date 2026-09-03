@@ -79,7 +79,7 @@ else:
     st.sidebar.divider()
 
     menu_options = [
-        "Manage Catalog",
+        "Manage Items",
         "Stock In",
         "Stock Out",
         "Schedules & Deliveries"
@@ -95,7 +95,7 @@ else:
         st.rerun()
 
     # Route Page Views
-    if page == "Manage Catalog":
+    if page == "Manage Items":
         render_master_catalog(st.session_state.user_name, st.session_state.user_role)
         
     elif page == "Stock In":
