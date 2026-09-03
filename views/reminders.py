@@ -20,7 +20,8 @@ def render_reminders(user_name, user_role):
 
         filter_status = st.selectbox("Filter Status", ["All", "OPEN", "COMPLETED", "CANCELLED"], key="rem_filter_status")
 
-        query = "SELECT id, created_at, due_date, task, assigned_to, status FROM reminders WHERE 1=1"
+        # Query omitting optional created_at to avoid schema missing column errors
+        query = "SELECT id, due_date, task, assigned_to, status FROM reminders WHERE 1=1"
         params = []
 
         if filter_status != "All":
@@ -36,7 +37,6 @@ def render_reminders(user_name, user_role):
             if not df.empty:
                 df_display = df.rename(columns={
                     "id": "ID",
-                    "created_at": "Created Date",
                     "due_date": "Due Date",
                     "task": "Task Description",
                     "assigned_to": "Assigned To",
