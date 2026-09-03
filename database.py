@@ -1,12 +1,17 @@
 # database.py
+import os
 import sqlite3
 import bcrypt
+
+# 1. Define upload directory for stored receipt photos / attachments
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 def get_db():
     """Returns a SQLite connection configured with dict-like row access and WAL mode."""
     conn = sqlite3.connect("inventory.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    # Enable Write-Ahead Logging for better concurrency handling
+    # Enable Write-Ahead Logging for improved concurrency
     conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
