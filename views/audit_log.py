@@ -1,74 +1,78 @@
 # views/audit_log.py
-import os
 import pandas as pd
 import streamlit as st
-from datetime import datetime
-from database import get_db
+from database import get_db, init_db
 
-def render_audit_log():
-    st.title("📜 Master Audit & Transaction Ledger")
-    st.caption("Complete, immutable history of stock receipts, material issuances, and manual adjustments.")
+def render_audit_log(user_name, user_role):
+    st.title("📜 Audit Log & Transaction History")
+    st.caption("Track all stock-in, stock-out, and system operations.")
 
-    with get_db() as conn:
-        df_all_tx = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
+    init_db()
 
-    if df_all_tx.empty:
-        st.info("Audit log is currently empty. No transactions recorded yet.")
-        return
-
-    # Filter & Search Controls
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        search_query = st.text_input("🔍 Search Keyword (Item, User, Destination, DR, Remarks)", "")
-    with col_f2:
-        type_filter = st.multiselect(
-            "Filter Transaction Type", 
-            options=["IN", "OUT", "ADJUSTMENT"], 
-            default=["IN", "OUT", "ADJUSTMENT"]
-        )
-
-    # Filter logic
-    filtered_df = df_all_tx[df_all_tx['type'].isin(type_filter)]
-
-    if search_query.strip():
-        query = search_query.lower().strip()
-        filtered_df = filtered_df[
-            filtered_df['item_name'].str.lower().str.contains(query, na=False) |
-            filtered_df['user_name'].str.lower().str.contains(query, na=False) |
-            filtered_df['project_name'].str.lower().str.contains(query, na=False) |
-            filtered_df['remarks'].str.lower().str.contains(query, na=False) |
-            filtered_df['driver_details'].str.lower().str.contains(query, na=False)
-        ]
-
-    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
-
-    # CSV Export Button
-    csv_data = filtered_df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Export Filtered Ledger as CSV",
-        data=csv_data,
-        file_name=f"audit_log_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv"
-    )
-
-    st.divider()
-    st.markdown("##### 🖼️ Attached Proof Photos Viewer")
+    # Filter controls
+    col1, col2, col3 = st.columns([2, 2, 1])
     
-    # Filter transactions containing a recorded photo path
-    has_photo = filtered_df[filtered_df['photo_path'].str.strip() != ""]
+    with col1:
+        type_filter = st.selectbox("Filter by Type", ["All", "STOCK IN", "STOCK OUT"])
     
-    if not has_photo.empty:
-        photo_options = {}
-        for _, row in has_photo.iterrows():
-            label = f"Tx #{row['id']} | {row['timestamp']} | {row['item_name']} ({row['type']})"
-            photo_options[label] = row['photo_path']
+    with col2:
+        search_query = st.text_input("Search Item or Handler", placeholder="Type to search...")
+        
+    with col3:
+        st.write("") # Spacing
+        st.write("")
+        refresh_btn = st.button("🔄 Refresh", use_container_width=True)
 
-        selected_label = st.selectbox("Select Transaction to View Attached Proof", list(photo_options.keys()))
-        img_path = photo_options[selected_label]
+    try:
+        with get_db() as conn:
+            query = "SELECT id, timestamp, type, item_name, quantity, unit, handled_by, notes FROM transactions WHERE 1=1"
+            params = []
 
-        if os.path.exists(img_path):
-            st.image(img_path, caption=f"Proof Attachment: {selected_label}", width=450)
+            if type_filter != "All":
+                query += " AND type = ?"
+                params.append(type_filter)
+
+            if search_query.strip():
+                query += " AND (item_name LIKE ? OR handled_by LIKE ? OR notes LIKE ?)"
+                wildcard = f"%{search_query.strip()}%"
+                params.extend([wildcard, wildcard, wildcard])
+
+            query += " ORDER BY id DESC"
+
+            df = pd.read_sql_query(query, conn, params=params)
+
+        if not df.empty:
+            df_display = df.rename(columns={
+                "id": "Trans ID",
+                "timestamp": "Date & Time",
+                "type": "Type",
+                "item_name": "Item Name",
+                "quantity": "Quantity",
+                "unit": "Unit",
+                "handled_by": "Handled By",
+                "notes": "Notes / Remarks"
+            })
+
+            # Metrics Summary
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Total Transactions Logged", len(df))
+            m2.metric("Stock In Logs", len(df[df["Type"] == "STOCK IN"]))
+            m3.metric("Stock Out Logs", len(df[df["Type"] == "STOCK OUT"]))
+
+            st.divider()
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+            # Export Option
+            csv_data = df_display.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Export Audit Log to CSV",
+                data=csv_data,
+                file_name="audit_log.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
         else:
-            st.warning("⚠️ Photo file record exists in database, but the image file was not found on disk.")
-    else:
-        st.info("No photo attachments found in the current filtered transaction set.")
+            st.info("No transaction logs found matching the selected filters.")
+
+    except Exception as e:
+        st.error(f"Error loading audit log: {e}")
