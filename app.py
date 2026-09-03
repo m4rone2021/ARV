@@ -107,7 +107,6 @@ CREATE TABLE IF NOT EXISTS schedules (
 )
 """)
 
-# Physical Inventory Audit Table
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS physical_inventory_counts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -723,7 +722,7 @@ else:
 
             if st.button("Submit Stock Out", use_container_width=True):
                 if qty_out > current_stk:
-                    st.error(f"Cannot issue {qty_out}. Stock available is only {current_stk}.")
+                    st.error(f"Cannot issue {qty_out}. Current stock is only {current_stk}.")
                 else:
                     cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (qty_out, item_selected))
                     cursor.execute("""
@@ -731,10 +730,11 @@ else:
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_selected, "OUT", qty_out, user_name, driver_out, issued_to, project_name, purpose))
                     conn.commit()
-
-                    if (current_stk - qty_out) <= min_thresh:
-                        create_notification(f"⚠️ LOW STOCK ALERT: {item_selected} reached {current_stk - qty_out} units!", target_role="Head Office")
-
+                    
+                    new_stk = current_stk - qty_out
+                    if new_stk <= min_thresh:
+                        create_notification(f"⚠️ LOW STOCK ALERT: {item_selected} stock dropped to {new_stk}.", target_role="Head Office")
+                    
                     st.success(f"Successfully issued {qty_out} of {item_selected}!")
                     st.rerun()
         else:
@@ -742,287 +742,343 @@ else:
 
     # --- MENU 5: PHYSICAL INVENTORY AUDIT ---
     elif "Physical Inventory Audit" in selected_menu:
-        st.subheader("📦 Physical Inventory Audit & Reconciliation")
+        st.subheader("📦 Physical Inventory Audit & Variance Resolution")
 
         if user_role == "Materials Supervisor":
-            st.markdown("##### 📝 Submit Physical Count Audit")
-            audit_date = st.date_input("Audit Date", datetime.now())
-            items = [row[0] for row in cursor.execute("SELECT item_name FROM master_items").fetchall()]
+            st.markdown("##### 📝 Perform Physical Stock Count")
+            audit_date = st.date_input("Audit Date", datetime.now()).strftime("%Y-%m-%d")
             
-            if items:
-                col_aud1, col_aud2 = st.columns(2)
-                with col_aud1:
-                    audit_item = st.selectbox("Item Counted", items, key="audit_item")
-                    sys_stock = cursor.execute("SELECT current_stock, unit FROM master_items WHERE item_name = ?", (audit_item,)).fetchone()
-                    st.info(f"System Stock On Hand: **{sys_stock[0]} {sys_stock[1]}**")
-                    physical_qty = st.number_input("Actual Physical Count", min_value=0.0, step=1.0, key="audit_phys_qty")
+            df_curr = pd.read_sql_query("SELECT item_name, category, current_stock, unit FROM master_items ORDER BY category, item_name", conn)
+            
+            with st.form("audit_form"):
+                counts = {}
+                st.markdown("Enter actual physical counts for items below:")
+                for idx, row in df_curr.iterrows():
+                    c1, c2, c3 = st.columns([0.4, 0.3, 0.3])
+                    c1.write(f"**{row['item_name']}** ({row['category']})")
+                    c2.caption(f"System: {row['current_stock']} {row['unit']}")
+                    counts[row['item_name']] = c3.number_input(f"Actual Count ({row['unit']})", min_value=0.0, value=float(row['current_stock']), key=f"audit_{idx}")
                 
-                with col_aud2:
-                    variance = physical_qty - sys_stock[0]
-                    st.metric("Variance", f"{variance:+.2f}", delta_color="normal" if variance == 0 else "inverse")
-                    sup_remarks = st.text_area("Supervisor Notes / Explanation for Discrepancy", placeholder="Explain missing/unaccounted items...")
+                sup_remarks = st.text_area("Supervisor Audit Notes / Remarks")
+                submit_audit = st.form_submit_button("Submit Audit Counts")
 
-                if st.button("Submit Audit Count", use_container_width=True):
-                    sync_st = "SYNCED" if variance == 0 else "PENDING_ADMIN_REVIEW"
+            if submit_audit:
+                variances_found = 0
+                for item_name, phys_qty in counts.items():
+                    sys_qty = float(df_curr[df_curr['item_name'] == item_name]['current_stock'].values[0])
+                    unit = str(df_curr[df_curr['item_name'] == item_name]['unit'].values[0])
+                    var = phys_qty - sys_qty
+
+                    sync_status = "SYNCED" if var == 0 else "PENDING_ADMIN_REVIEW"
+                    if var != 0:
+                        variances_found += 1
+
                     cursor.execute("""
                         INSERT INTO physical_inventory_counts 
                         (audit_date, item_name, system_stock, physical_stock, variance, unit, counted_by, supervisor_remarks, sync_status, timestamp)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (audit_date.strftime("%Y-%m-%d"), audit_item, sys_stock[0], physical_qty, variance, sys_stock[1], user_name, sup_remarks, sync_st, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                    
-                    if sync_st == "PENDING_ADMIN_REVIEW":
-                        create_notification(f"🚨 Physical Audit Discrepancy reported by {user_name} for {audit_item} (Variance: {variance}).", target_role="Head Office")
-                        st.warning("Audit submitted. Variance flagged for Head Office approval.")
-                    else:
-                        st.success("Audit count matches system stock! Submitted successfully.")
-                    conn.commit()
-                    st.rerun()
+                    """, (audit_date, item_name, sys_qty, phys_qty, var, unit, user_name, sup_remarks, sync_status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
-        else:  # Head Office Admin
-            st.markdown("##### ⚖️ Audit Discrepancy Reconciliation")
-            pending_audits = pd.read_sql_query("""
-                SELECT id, audit_date, item_name, system_stock, physical_stock, variance, unit, counted_by, supervisor_remarks 
-                FROM physical_inventory_counts WHERE sync_status = 'PENDING_ADMIN_REVIEW'
+                conn.commit()
+                if variances_found > 0:
+                    create_notification(f"⚠️ Audit submitted by {user_name} with {variances_found} stock variance(s) needing review.", target_role="Head Office")
+                    st.warning(f"Audit submitted! {variances_found} variances flagged for Head Office review.")
+                else:
+                    st.success("Audit submitted successfully with zero stock variances!")
+                st.rerun()
+
+        else: # Head Office Admin Review
+            st.markdown("##### 🔍 Pending Audit Variances Review")
+            df_pending_audits = pd.read_sql_query("""
+                SELECT id, audit_date, item_name, system_stock, physical_stock, variance, unit, counted_by, supervisor_remarks, timestamp 
+                FROM physical_inventory_counts 
+                WHERE sync_status = 'PENDING_ADMIN_REVIEW'
             """, conn)
 
-            if not pending_audits.empty:
-                for _, r in pending_audits.iterrows():
-                    with st.expander(f"🔴 Discrepancy: {r['item_name']} | Date: {r['audit_date']} | Counted by: {r['counted_by']}"):
+            if df_pending_audits.empty:
+                st.info("No pending audit variances require review.")
+            else:
+                for _, r in df_pending_audits.iterrows():
+                    with st.expander(f"⚠️ Variance: {r['item_name']} | Diff: {r['variance']:+} {r['unit']} (Audited: {r['audit_date']})"):
+                        st.write(f"**Counted By:** {r['counted_by']} | **Date:** {r['timestamp']}")
+                        st.write(f"**System Stock:** {r['system_stock']} | **Physical Count:** {r['physical_stock']}")
+                        st.write(f"**Supervisor Remarks:** {r['supervisor_remarks']}")
+
+                        adj_stock = st.number_input(f"Final Resolved Stock Level ({r['unit']})", value=float(r['physical_stock']), key=f"res_{r['id']}")
+                        admin_expl = st.text_input("Resolution Explanation", placeholder="e.g. Approved adjustment due to physical damage", key="expl_{r['id']}")
+
                         c_a, c_b = st.columns(2)
-                        c_a.write(f"**System Stock:** {r['system_stock']} {r['unit']}")
-                        c_a.write(f"**Physical Count:** {r['physical_stock']} {r['unit']}")
-                        c_a.write(f"**Variance:** `{r['variance']:+.2f}`")
-                        c_b.write(f"**Supervisor Notes:** {r['supervisor_remarks']}")
-
-                        resolved_val = st.number_input("Final Reconciled Stock Quantity", value=float(r['physical_stock']), key=f"res_val_{r['id']}")
-                        admin_note = st.text_input("Head Office Resolution Notes", key=f"res_note_{r['id']}")
-
-                        col_act1, col_act2 = st.columns(2)
-                        if col_act1.button("Approve & Adjust System Stock", key=f"app_audit_{r['id']}"):
-                            cursor.execute("UPDATE master_items SET current_stock = ? WHERE item_name = ?", (resolved_val, r['item_name']))
+                        if c_a.button("Approve & Adjust Stock", key=f"app_aud_{r['id']}"):
+                            cursor.execute("UPDATE master_items SET current_stock = ? WHERE item_name = ?", (adj_stock, r['item_name']))
                             cursor.execute("""
                                 UPDATE physical_inventory_counts 
                                 SET sync_status = 'RESOLVED', resolved_by = ?, resolved_stock = ?, admin_explanation = ?
                                 WHERE id = ?
-                            """, (user_name, resolved_val, admin_note, r['id']))
+                            """, (user_name, adj_stock, admin_expl, r['id']))
                             conn.commit()
-                            create_notification(f"✅ Audit Variance for {r['item_name']} resolved by Admin.", target_user=r['counted_by'])
-                            st.success("Stock updated and audit resolved!")
+                            create_notification(f"✅ Stock variance for {r['item_name']} resolved by Head Office.", target_user=r['counted_by'])
+                            st.success(f"Stock adjusted for {r['item_name']}.")
                             st.rerun()
 
-                        if col_act2.button("Reject / Keep System Stock", key=f"rej_audit_{r['id']}"):
-                            cursor.execute("""
-                                UPDATE physical_inventory_counts 
-                                SET sync_status = 'REJECTED', resolved_by = ?, admin_explanation = ?
-                                WHERE id = ?
-                            """, (user_name, admin_note, r['id']))
+                        if c_b.button("Reject Variance Entry", key=f"rej_aud_{r['id']}"):
+                            cursor.execute("UPDATE physical_inventory_counts SET sync_status = 'REJECTED', resolved_by = ?, admin_explanation = ? WHERE id = ?", (user_name, admin_expl, r['id']))
                             conn.commit()
-                            create_notification(f"❌ Audit Count for {r['item_name']} rejected by Admin.", target_user=r['counted_by'])
-                            st.info("Audit discrepancy rejected.")
+                            st.info("Variance report rejected.")
                             st.rerun()
-            else:
-                st.success("No pending audit variances to review.")
 
-    # --- MENU 6: MY LOG & REQUEST EDITS (Supervisor) ---
-    elif selected_menu == "📜 My Log & Request Edits":
-        st.subheader("📜 My Daily Activity & Request Edits")
-        df_my_tx = pd.read_sql_query("SELECT * FROM transactions WHERE user_role = ? ORDER BY id DESC", conn, params=(user_name,))
+    # --- MENU 6: MY LOG & REQUEST EDITS (SUPERVISOR) / EDIT REQUESTS (ADMIN) ---
+    elif "Edit Requests" in selected_menu or selected_menu == "📜 My Log & Request Edits":
+        if user_role == "Materials Supervisor":
+            st.subheader("📜 My Submitted Transactions & Edit Requests")
+            df_my_tx = pd.read_sql_query("""
+                SELECT id, timestamp, item_name, type, quantity, issued_to, driver_details, project_name, purpose, remarks, edit_status 
+                FROM transactions WHERE user_role = ? ORDER BY id DESC
+            """, conn, params=(user_name,))
 
-        if not df_my_tx.empty:
-            st.dataframe(df_my_tx[['id', 'timestamp', 'item_name', 'type', 'quantity', 'driver_details', 'issued_to', 'edit_status']], use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown("##### ✏️ Request Edit for Previous Entry")
-            tx_ids = df_my_tx['id'].tolist()
-            selected_tx_id = st.selectbox("Select Transaction ID to Request Edit", tx_ids)
-            
-            tx_data = df_my_tx[df_my_tx['id'] == selected_tx_id].iloc[0].to_dict()
-            st.json(tx_data)
+            if not df_my_tx.empty:
+                st.dataframe(df_my_tx, use_container_width=True)
+                st.markdown("---")
+                st.markdown("##### ✏️ Request Transaction Correction")
+                
+                tx_ids = df_my_tx['id'].tolist()
+                selected_tx_id = st.selectbox("Select Transaction ID to Edit", tx_ids)
+                
+                tx_detail = df_my_tx[df_my_tx['id'] == selected_tx_id].iloc[0]
+                st.json(tx_detail.to_dict())
 
-            reason = st.text_area("Reason for Edit Request")
-            new_qty = st.number_input("Proposed New Quantity", value=float(tx_data['quantity']))
-            new_remarks = st.text_input("Proposed New Remarks/Purpose", value=str(tx_data.get('remarks') or tx_data.get('purpose', '')))
+                req_reason = st.text_area("Reason for Edit Request")
+                new_qty = st.number_input("Proposed Correct Quantity", value=float(tx_detail['quantity']))
+                new_remarks = st.text_input("Proposed Remarks / Explanation", value=str(tx_detail['remarks'] or ''))
 
-            if st.button("Submit Edit Request"):
-                proposed = {"quantity": new_qty, "remarks": new_remarks}
-                cursor.execute("""
-                    INSERT INTO edit_requests (transaction_id, requested_by, reason, original_data, proposed_data, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (selected_tx_id, user_name, reason, json.dumps(tx_data), json.dumps(proposed), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                cursor.execute("UPDATE transactions SET edit_status = 'PENDING_EDIT' WHERE id = ?", (selected_tx_id,))
-                conn.commit()
-                create_notification(f"✏️ New edit request from {user_name} for Tx #{selected_tx_id}.", target_role="Head Office")
-                st.success("Edit request submitted to Head Office!")
-                st.rerun()
-        else:
-            st.info("No transaction history recorded yet.")
+                if st.button("Submit Edit Request to Admin"):
+                    orig_data = json.dumps(tx_detail.to_dict())
+                    prop_data = json.dumps({"quantity": new_qty, "remarks": new_remarks})
 
-    # --- MENU 7: DAILY REPORT (EXCEL) ---
-    elif selected_menu == "📅 Daily Report (Excel)":
-        st.subheader("📅 Export Comprehensive Daily Excel Report")
-        selected_rep_date = st.date_input("Select Report Date", datetime.now())
-        date_str = selected_rep_date.strftime("%Y-%m-%d")
-
-        if st.button("Generate Excel Report", use_container_width=True):
-            df_daily_tx = pd.read_sql_query("SELECT * FROM transactions WHERE timestamp LIKE ?", conn, params=(f"{date_str}%",))
-            df_current_stock = pd.read_sql_query("SELECT * FROM master_items ORDER BY category ASC, item_name ASC", conn)
-
-            excel_file = generate_excel_report(user_name, date_str, df_daily_tx, df_current_stock)
-            st.download_button(
-                label="📥 Download Excel Report",
-                data=excel_file,
-                file_name=f"Inventory_Report_{date_str}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-
-    # --- MENU 8: EDIT REQUESTS (Head Office Admin) ---
-    elif "Edit Requests" in selected_menu:
-        st.subheader("✏️ Manage Supervisor Edit Requests")
-        pending_edits = pd.read_sql_query("""
-            SELECT e.id, e.transaction_id, e.requested_by, e.reason, e.original_data, e.proposed_data, e.timestamp 
-            FROM edit_requests e WHERE e.status = 'PENDING'
-        """, conn)
-
-        if not pending_edits.empty:
-            for _, r in pending_edits.iterrows():
-                with st.expander(f"Req #{r['id']} | Tx #{r['transaction_id']} by {r['requested_by']}"):
-                    st.write(f"**Reason:** {r['reason']}")
-                    col_orig, col_prop = st.columns(2)
-                    col_orig.markdown("**Original Data:**")
-                    col_orig.json(json.loads(r['original_data']))
-                    col_prop.markdown("**Proposed Data:**")
-                    col_prop.json(json.loads(r['proposed_data']))
-
-                    rev_notes = st.text_input("Admin Remarks", key=f"rev_note_{r['id']}")
-                    c_app, c_rej = st.columns(2)
-                    
-                    if c_app.button("Approve Request", key=f"app_req_{r['id']}"):
-                        prop_dict = json.loads(r['proposed_data'])
-                        cursor.execute("UPDATE transactions SET quantity = ?, remarks = ?, edit_status = 'EDITED' WHERE id = ?", 
-                                       (prop_dict['quantity'], prop_dict.get('remarks', ''), r['transaction_id']))
-                        cursor.execute("UPDATE edit_requests SET status = 'APPROVED', review_remarks = ? WHERE id = ?", (rev_notes, r['id']))
-                        conn.commit()
-                        create_notification(f"✅ Your edit request for Tx #{r['transaction_id']} was APPROVED.", target_user=r['requested_by'])
-                        st.success("Request approved!")
-                        st.rerun()
-
-                    if c_rej.button("Reject Request", key=f"rej_req_{r['id']}"):
-                        cursor.execute("UPDATE transactions SET edit_status = 'NORMAL' WHERE id = ?", (r['transaction_id'],))
-                        cursor.execute("UPDATE edit_requests SET status = 'REJECTED', review_remarks = ? WHERE id = ?", (rev_notes, r['id']))
-                        conn.commit()
-                        create_notification(f"❌ Your edit request for Tx #{r['transaction_id']} was REJECTED.", target_user=r['requested_by'])
-                        st.info("Request rejected.")
-                        st.rerun()
-        else:
-            st.success("No pending edit requests.")
-
-    # --- MENU 9: MANAGE MASTER ITEMS (Admin) ---
-    elif selected_menu == "➕ Manage Master Items":
-        st.subheader("➕ Manage Master Inventory Items")
-        
-        st.markdown("##### Add New Item")
-        with st.form("add_item_form"):
-            new_item = st.text_input("Item Name")
-            new_cat = st.text_input("Category", placeholder="e.g. 2. Construction Materials")
-            new_unit = st.text_input("Unit", placeholder="e.g. Bags, Liters, Pcs")
-            new_stock = st.number_input("Initial Stock", min_value=0.0, step=1.0)
-            new_thresh = st.number_input("Minimum Threshold Alert", min_value=0.0, step=1.0)
-            
-            submit_item = st.form_submit_button("Add Item to Master")
-            if submit_item and new_item and new_cat:
-                try:
                     cursor.execute("""
-                        INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (new_item.strip(), new_cat.strip(), new_unit.strip(), new_stock, new_thresh))
+                        INSERT INTO edit_requests (transaction_id, requested_by, reason, original_data, proposed_data, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (selected_tx_id, user_name, req_reason, orig_data, prop_data, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                    cursor.execute("UPDATE transactions SET edit_status = 'PENDING_EDIT' WHERE id = ?", (selected_tx_id,))
                     conn.commit()
-                    st.success(f"Added {new_item} to Master Inventory!")
-                    st.rerun()
-                except sqlite3.IntegrityError:
-                    st.error("An item with this name already exists!")
 
-    # --- MENU 10: MASTER AUDIT LOG (Admin) ---
+                    create_notification(f"✏️ New edit request for Tx #{selected_tx_id} submitted by {user_name}.", target_role="Head Office")
+                    st.success("Edit request submitted successfully!")
+                    st.rerun()
+            else:
+                st.info("No transaction logs recorded yet.")
+
+        else: # Head Office Admin Review
+            st.subheader("✏️ Review Pending Transaction Edit Requests")
+            df_edits = pd.read_sql_query("""
+                SELECT id, transaction_id, requested_by, reason, original_data, proposed_data, timestamp 
+                FROM edit_requests WHERE status = 'PENDING'
+            """, conn)
+
+            if df_edits.empty:
+                st.info("No pending transaction edit requests.")
+            else:
+                for _, r in df_edits.iterrows():
+                    with st.expander(f"Edit Request #{r['id']} for Tx #{r['transaction_id']} by {r['requested_by']}"):
+                        st.write(f"**Reason:** {r['reason']}")
+                        col_o, col_p = st.columns(2)
+                        orig = json.loads(r['original_data'])
+                        prop = json.loads(r['proposed_data'])
+                        
+                        col_o.markdown("**Original Data:**")
+                        col_o.json(orig)
+                        col_p.markdown("**Proposed Changes:**")
+                        col_p.json(prop)
+
+                        rev_remarks = st.text_input("Admin Remarks", key=f"rev_rem_{r['id']}")
+                        
+                        btn_col1, btn_col2 = st.columns(2)
+                        if btn_col1.button("Approve Request", key=f"app_req_{r['id']}"):
+                            # Revert old qty effect on current stock
+                            item_name = orig['item_name']
+                            tx_type = orig['type']
+                            old_qty = float(orig['quantity'])
+                            new_qty = float(prop['quantity'])
+                            diff_qty = new_qty - old_qty
+
+                            if tx_type == 'IN':
+                                cursor.execute("UPDATE master_items SET current_stock = current_stock + ? WHERE item_name = ?", (diff_qty, item_name))
+                            else:
+                                cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?", (diff_qty, item_name))
+
+                            cursor.execute("UPDATE transactions SET quantity = ?, remarks = ?, edit_status = 'EDITED' WHERE id = ?", (new_qty, prop['remarks'], r['transaction_id']))
+                            cursor.execute("UPDATE edit_requests SET status = 'APPROVED', review_remarks = ? WHERE id = ?", (rev_remarks, r['id']))
+                            conn.commit()
+
+                            create_notification(f"✅ Your edit request for Tx #{r['transaction_id']} was APPROVED.", target_user=r['requested_by'])
+                            st.success("Edit request approved and stock adjusted!")
+                            st.rerun()
+
+                        if btn_col2.button("Reject Request", key=f"rej_req_{r['id']}"):
+                            cursor.execute("UPDATE transactions SET edit_status = 'NORMAL' WHERE id = ?", (r['transaction_id'],))
+                            cursor.execute("UPDATE edit_requests SET status = 'REJECTED', review_remarks = ? WHERE id = ?", (rev_remarks, r['id']))
+                            conn.commit()
+
+                            create_notification(f"❌ Your edit request for Tx #{r['transaction_id']} was REJECTED.", target_user=r['requested_by'])
+                            st.info("Edit request rejected.")
+                            st.rerun()
+
+    # --- MENU 7: MANAGE MASTER ITEMS (ADMIN) ---
+    elif selected_menu == "➕ Manage Master Items":
+        st.subheader("➕ Master Item Inventory Management")
+
+        tab_add, tab_edit = st.tabs(["Add New Item", "Update Existing Item"])
+        
+        with tab_add:
+            with st.form("add_item_form"):
+                new_name = st.text_input("Item Name")
+                new_cat = st.selectbox("Category", ["1. Fuel & Oils", "2. Construction Materials", "3. Steel / Rebar", "4A. Nails & Fasteners", "4B. Cutting & Grinding Consumables", "4C. Welding Supplies & PPE", "4D. General Site Supplies"])
+                new_unit = st.text_input("Unit of Measure (e.g., Pcs, Liters, Kilos, Bags)")
+                new_stock = st.number_input("Initial Stock Quantity", min_value=0.0)
+                new_thresh = st.number_input("Minimum Alert Threshold", min_value=0.0)
+                
+                if st.form_submit_button("Add Master Item"):
+                    try:
+                        cursor.execute("INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold) VALUES (?, ?, ?, ?, ?)",
+                                       (new_name.strip(), new_cat, new_unit.strip(), new_stock, new_thresh))
+                        conn.commit()
+                        st.success(f"Successfully added '{new_name}' to master inventory!")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("An item with this name already exists!")
+
+        with tab_edit:
+            df_m = pd.read_sql_query("SELECT * FROM master_items", conn)
+            if not df_m.empty:
+                item_to_mod = st.selectbox("Select Item to Update", df_m['item_name'].tolist())
+                row_mod = df_m[df_m['item_name'] == item_to_mod].iloc[0]
+
+                mod_cat = st.text_input("Category", value=row_mod['category'])
+                mod_unit = st.text_input("Unit", value=row_mod['unit'])
+                mod_thresh = st.number_input("Min Alert Threshold", value=float(row_mod['min_threshold']))
+
+                if st.button("Save Item Changes"):
+                    cursor.execute("UPDATE master_items SET category = ?, unit = ?, min_threshold = ? WHERE id = ?", (mod_cat, mod_unit, mod_thresh, int(row_mod['id'])))
+                    conn.commit()
+                    st.success(f"Updated {item_to_mod}!")
+                    st.rerun()
+
+    # --- MENU 8: MASTER AUDIT LOG (ADMIN) ---
     elif selected_menu == "📜 Master Audit Log":
         st.subheader("📜 Master Activity & Audit Log")
         df_master_log = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
         st.dataframe(df_master_log, use_container_width=True)
 
-    # --- MENU 11: MANAGE USERS (Admin) ---
+    # --- MENU 9: DAILY REPORT EXCEL EXPORT ---
+    elif selected_menu == "📅 Daily Report (Excel)":
+        st.subheader("📅 Export Daily Inventory Report (Excel)")
+        
+        rep_date = st.date_input("Select Report Date", datetime.now()).strftime("%Y-%m-%d")
+        
+        df_daily_tx = pd.read_sql_query("""
+            SELECT timestamp, item_name, type, quantity, issued_to, driver_details, project_name, purpose, remarks, user_role 
+            FROM transactions WHERE DATE(timestamp) = ? ORDER BY id ASC
+        """, conn, params=(rep_date,))
+
+        df_curr_stock = pd.read_sql_query("SELECT category, item_name, current_stock, min_threshold, unit FROM master_items ORDER BY category, item_name", conn)
+
+        st.info(f"Transactions found for {rep_date}: **{len(df_daily_tx)}**")
+
+        excel_data = generate_excel_report(user_name, rep_date, df_daily_tx, df_curr_stock)
+        
+        st.download_button(
+            label="📥 Download Structured Excel Report",
+            data=excel_data,
+            file_name=f"Inventory_Report_{rep_date}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+    # --- MENU 10: MANAGE USERS (ADMIN) ---
     elif selected_menu == "👤 Manage Users":
         st.subheader("👤 User Account Management")
         
-        with st.form("add_user_form"):
+        with st.form("create_user_form"):
             st.markdown("##### Create New User Account")
             u_name = st.text_input("Username")
             u_pass = st.text_input("Password", type="password")
             u_role = st.selectbox("Role", ["Materials Supervisor", "Head Office"])
             
-            if st.form_submit_button("Create User"):
-                if u_name and u_pass:
-                    try:
-                        cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", (u_name.strip(), u_pass.strip(), u_role))
-                        conn.commit()
-                        st.success(f"User '{u_name}' created successfully!")
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("Username already exists!")
+            if st.form_submit_button("Register User"):
+                try:
+                    cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", (u_name.strip(), u_pass.strip(), u_role))
+                    conn.commit()
+                    st.success(f"User account '{u_name}' created successfully!")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error("Username already exists!")
 
         st.markdown("---")
-        st.markdown("##### Existing System Users")
+        st.markdown("##### Existing User Accounts")
         df_users = pd.read_sql_query("SELECT id, username, role FROM users", conn)
         st.dataframe(df_users, use_container_width=True)
 
-    # --- MENU 12: REMINDERS ---
+    # --- MENU 11: REMINDERS ---
     elif selected_menu == "⏰ Reminders":
         st.subheader("⏰ Reminders & Task Tracker")
         
-        with st.form("add_reminder_form"):
-            rem_title = st.text_input("Reminder Title")
-            rem_date = st.date_input("Due Date", datetime.now())
-            rem_priority = st.selectbox("Priority", ["Low", "Medium", "High"])
-            
-            if st.form_submit_button("Set Reminder"):
+        c_r1, c_r2 = st.columns([0.4, 0.6])
+        with c_r1:
+            st.markdown("##### ➕ Add New Reminder")
+            rem_title = st.text_input("Task Title")
+            rem_due = st.date_input("Due Date", datetime.now()).strftime("%Y-%m-%d")
+            rem_prio = st.selectbox("Priority Level", ["Low", "Medium", "High", "Urgent"])
+
+            if st.button("Save Reminder"):
                 cursor.execute("""
                     INSERT INTO reminders (user_name, title, due_date, priority, timestamp)
                     VALUES (?, ?, ?, ?, ?)
-                """, (user_name, rem_title, rem_date.strftime("%Y-%m-%d"), rem_priority, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                """, (user_name, rem_title, rem_due, rem_prio, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                 conn.commit()
-                st.success("Reminder created!")
+                st.success("Reminder added!")
                 st.rerun()
 
-        st.markdown("---")
-        df_rem = pd.read_sql_query("SELECT id, title, due_date, priority, status FROM reminders WHERE user_name = ? ORDER BY id DESC", conn, params=(user_name,))
-        if not df_rem.empty:
-            st.dataframe(df_rem, use_container_width=True)
-        else:
-            st.info("No active reminders.")
+        with c_r2:
+            st.markdown("##### 📌 Active Tasks")
+            df_rems = pd.read_sql_query("SELECT id, title, due_date, priority, status FROM reminders WHERE user_name = ? AND status = 'PENDING' ORDER BY due_date ASC", conn, params=(user_name,))
+            if not df_rems.empty:
+                for _, r in df_rems.iterrows():
+                    rc1, rc2 = st.columns([0.8, 0.2])
+                    rc1.write(f"**[{r['priority']}]** {r['title']} *(Due: {r['due_date']})*")
+                    if rc2.button("Done", key=f"rem_{r['id']}"):
+                        cursor.execute("UPDATE reminders SET status = 'COMPLETED' WHERE id = ?", (r['id'],))
+                        conn.commit()
+                        st.rerun()
+            else:
+                st.info("No active pending reminders.")
 
-    # --- MENU 13: SCHEDULE ---
+    # --- MENU 12: SCHEDULE ---
     elif selected_menu == "📅 Schedule":
-        st.subheader("📅 Site Events & Schedule Planner")
+        st.subheader("📅 Site Events & Delivery Schedule")
         
-        with st.form("add_schedule_form"):
-            sch_title = st.text_input("Event Title")
-            sch_date = st.date_input("Event Date", datetime.now())
+        with st.form("sch_form"):
+            st.markdown("##### ➕ Schedule Event / Delivery")
+            s_title = st.text_input("Event / Delivery Title")
+            s_date = st.date_input("Event Date", datetime.now()).strftime("%Y-%m-%d")
             col_t1, col_t2 = st.columns(2)
-            sch_start = col_t1.time_input("Start Time", time(8, 0))
-            sch_end = col_t2.time_input("End Time", time(17, 0))
-            sch_loc = st.text_input("Location / Site Area")
-            sch_notes = st.text_area("Notes / Scope")
+            s_start = col_t1.time_input("Start Time", time(8, 0)).strftime("%H:%M")
+            s_end = col_t2.time_input("End Time", time(17, 0)).strftime("%H:%M")
+            s_loc = st.text_input("Location / Gate Details")
+            s_notes = st.text_area("Notes / Specifications")
 
-            if st.form_submit_button("Save Event"):
+            if st.form_submit_button("Add to Schedule"):
                 cursor.execute("""
                     INSERT INTO schedules (user_name, title, event_date, start_time, end_time, location_details, notes, timestamp)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (user_name, sch_title, sch_date.strftime("%Y-%m-%d"), str(sch_start), str(sch_end), sch_loc, sch_notes, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                """, (user_name, s_title, s_date, s_start, s_end, s_loc, s_notes, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                 conn.commit()
                 st.success("Event scheduled!")
                 st.rerun()
 
         st.markdown("---")
-        df_sch = pd.read_sql_query("SELECT title, event_date, start_time, end_time, location_details, notes FROM schedules WHERE user_name = ? ORDER BY event_date ASC", conn, params=(user_name,))
+        st.markdown("##### 📅 Upcoming Scheduled Events")
+        df_sch = pd.read_sql_query("SELECT title, event_date, start_time, end_time, location_details, notes FROM schedules WHERE event_date >= DATE('now') ORDER BY event_date ASC, start_time ASC", conn)
+        
         if not df_sch.empty:
             st.dataframe(df_sch, use_container_width=True)
         else:
-            st.info("No scheduled events.")
+            st.info("No upcoming events scheduled.")
