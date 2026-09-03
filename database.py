@@ -130,9 +130,10 @@ def init_db():
         if "remarks" not in mi_cols:
             cursor.execute("ALTER TABLE master_items ADD COLUMN remarks TEXT;")
 
-        # Ensure task column exists on reminders
+        # Ensure task, due_date, assigned_to, status exist on reminders
         cursor.execute("PRAGMA table_info(reminders);")
         rem_cols = [col["name"] for col in cursor.fetchall()]
+
         if "task" not in rem_cols:
             if "description" in rem_cols:
                 cursor.execute("ALTER TABLE reminders RENAME COLUMN description TO task;")
@@ -141,8 +142,17 @@ def init_db():
             else:
                 cursor.execute("ALTER TABLE reminders ADD COLUMN task TEXT;")
 
+        if "due_date" not in rem_cols:
+            cursor.execute("ALTER TABLE reminders ADD COLUMN due_date TEXT;")
+
+        if "assigned_to" not in rem_cols:
+            cursor.execute("ALTER TABLE reminders ADD COLUMN assigned_to TEXT;")
+
+        if "status" not in rem_cols:
+            cursor.execute("ALTER TABLE reminders ADD COLUMN status TEXT DEFAULT 'OPEN';")
+
         conn.commit()
 
 if __name__ == "__main__":
     init_db()
-    print("Database and UPLOAD_DIR initialized successfully.")
+    print("Database auto-migration complete.")
