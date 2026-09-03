@@ -21,7 +21,7 @@ def get_db():
         conn.close()
 
 def init_db():
-    """Initializes all required database tables and default admin credentials."""
+    """Initializes database tables, runs column migrations, and ensures default admin credentials."""
     with get_db() as conn:
         cursor = conn.cursor()
 
@@ -47,6 +47,12 @@ def init_db():
                 remarks TEXT
             )
         """)
+
+        # AUTO-MIGRATION: Ensure 'remarks' column exists on legacy master_items tables
+        cursor.execute("PRAGMA table_info(master_items)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if "remarks" not in columns:
+            cursor.execute("ALTER TABLE master_items ADD COLUMN remarks TEXT")
 
         # 3. Transactions Table (Stock IN / OUT Ledger)
         cursor.execute("""
