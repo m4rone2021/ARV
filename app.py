@@ -2,107 +2,163 @@
 import streamlit as st
 from database import init_db, get_db
 
-# Import views
-from views.manage_items import render_master_catalog
+# Views
+from views.dashboard import render_dashboard
+from views.master_catalog import render_master_catalog
 from views.stock_in import render_stock_in
 from views.stock_out import render_stock_out
-from views.schedules import render_schedules
+from views.physical_inventory import render_physical_inventory
+from views.schedules_deliveries import render_schedules_deliveries
+from views.reminders_tasks import render_reminders_tasks
+from views.reports import render_reports
+from views.user_management import render_user_management
 
-# Page configuration
+# Page Configuration
 st.set_page_config(
-    page_title="ARV Inventory System",
+    page_title="Inventory Management System",
     page_icon="📦",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Initialize Database on launch
-init_db()
+def init_session_state():
+    """Initialize session state variables for authentication."""
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if "username" not in st.session_state:
+        st.session_state.username = ""
+    if "user_role" not in st.session_state:
+        st.session_state.user_role = ""
 
-# -------------------------------------------------------------
-# SESSION STATE SETUP
-# -------------------------------------------------------------
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-if "user_name" not in st.session_state:
-    st.session_state.user_name = ""
-if "user_role" not in st.session_state:
-    st.session_state.user_role = ""
-
-# -------------------------------------------------------------
-# AUTHENTICATION SCREEN
-# -------------------------------------------------------------
-if not st.session_state.authenticated:
-    st.title("🔐 ARV Inventory Management System")
-    st.caption("Please log in to access the system.")
+def login_screen():
+    """Render login form."""
+    st.markdown("<h1 style='text-align: center;'>📦 Inventory System Login</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray;'>Sign in to access stock monitoring and warehouse workflows.</p>", unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.form("login_form"):
-            st.subheader("User Login")
-            username = st.text_input("Username").strip()
-            password = st.text_input("Password", type="password").strip()
-            login_btn = st.form_submit_button("Login", use_container_width=True)
+            username_input = st.text_input("Username").strip()
+            password_input = st.text_input("Password", type="password").strip()
+            submit_button = st.form_submit_button("Sign In", use_container_width=True)
 
-            if login_btn:
-                if not username or not password:
+            if submit_button:
+                if not username_input or not password_input:
                     st.error("⚠️ Please enter both username and password.")
                 else:
                     try:
                         with get_db() as conn:
                             cursor = conn.cursor()
                             cursor.execute(
-                                "SELECT username, role FROM users WHERE username = ? AND password = ?", 
-                                (username, password)
+                                "SELECT username, role FROM users WHERE username = ? AND password = ?",
+                                (username_input, password_input)
                             )
                             user = cursor.fetchone()
-                            
+
                             if user:
                                 st.session_state.authenticated = True
-                                st.session_state.user_name = user["username"]
+                                st.session_state.username = user["username"]
                                 st.session_state.user_role = user["role"]
                                 st.success("Login successful!")
                                 st.rerun()
                             else:
-                                st.error("❌ Invalid Username or Password.")
+                                st.error("❌ Invalid username or password.")
                     except Exception as e:
-                        st.error(f"Error during login: {e}")
+                        st.error(f"Database error during login: {e}")
 
-# -------------------------------------------------------------
-# MAIN APPLICATION INTERFACE
-# -------------------------------------------------------------
-else:
-    # Sidebar Navigation
-    st.sidebar.title("📦 ARV Inventory")
-    st.sidebar.markdown(f"**Logged in as:** `{st.session_state.user_name}`")
+def get_pending_discrepancies_count():
+    """Fetch total pending inventory discrepancy count for Admin alert."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM discrepancies WHERE status = 'PENDING'")
+            result = cursor.fetchone()
+            return result[0] if result else 0
+    except Exception:
+        return 0
+
+def render_sidebar():
+    """Render the application navigation sidebar and user profile."""
+    st.sidebar.title("📦 Inventory Portal")
+    st.sidebar.markdown(f"**User:** `{st.session_state.username}`")
     st.sidebar.markdown(f"**Role:** `{st.session_state.user_role}`")
+
+    # Admin Alert Badge for Pending Discrepancies
+    if st.session_state.user_role == "Admin":
+        pending_count = get_pending_discrepancies_count()
+        if pending_count > 0:
+            st.sidebar.warning(f"🔔 **{pending_count} Discrepancy(s)** awaiting Admin resolution!")
+
     st.sidebar.divider()
 
-    menu_options = [
-        "Manage Catalog",
-        "Stock In",
-        "Stock Out",
-        "Schedules & Deliveries"
-    ]
+    # Dynamic navigation based on role
+    if st.session_state.user_role == "Admin":
+        nav_options = [
+            "📊 Dashboard",
+            "🗂️ Master Catalog",
+            "📥 Stock In",
+            "📤 Stock Out",
+            "📋 Physical Inventory & Approval",
+            "🚚 Schedules & Deliveries",
+            "📝 Reminders & Tasks",
+            "📈 Reports & Analytics",
+            "👥 User Management"
+        ]
+    else:
+        nav_options = [
+            "📊 Dashboard",
+            "🗂️ Master Catalog",
+            "📥 Stock In",
+            "📤 Stock Out",
+            "📋 Physical Inventory & Approval",
+            "🚚 Schedules & Deliveries",
+            "📝 Reminders & Tasks",
+            "📈 Reports & Analytics"
+        ]
 
-    page = st.sidebar.radio("Navigation Menu", menu_options)
+    selected_page = st.sidebar.radio("Navigation", nav_options)
 
     st.sidebar.divider()
     if st.sidebar.button("🚪 Logout", use_container_width=True):
         st.session_state.authenticated = False
-        st.session_state.user_name = ""
+        st.session_state.username = ""
         st.session_state.user_role = ""
         st.rerun()
 
-    # Route Page Views
-    if page == "Manage Catalog":
-        render_master_catalog(st.session_state.user_name, st.session_state.user_role)
-        
-    elif page == "Stock In":
-        render_stock_in(st.session_state.user_name, st.session_state.user_role)
-        
-    elif page == "Stock Out":
-        render_stock_out(st.session_state.user_name, st.session_state.user_role)
-        
-    elif page == "Schedules & Deliveries":
-        render_schedules(st.session_state.user_name, st.session_state.user_role)
+    return selected_page
+
+def main():
+    # Ensure tables exist
+    init_db()
+
+    # Initialize session
+    init_session_state()
+
+    # Render login or main dashboard
+    if not st.session_state.authenticated:
+        login_screen()
+    else:
+        selected_page = render_sidebar()
+
+        # Page Router
+        if selected_page == "📊 Dashboard":
+            render_dashboard(st.session_state.username, st.session_state.user_role)
+        elif selected_page == "🗂️ Master Catalog":
+            render_master_catalog(st.session_state.username, st.session_state.user_role)
+        elif selected_page == "📥 Stock In":
+            render_stock_in(st.session_state.username, st.session_state.user_role)
+        elif selected_page == "📤 Stock Out":
+            render_stock_out(st.session_state.username, st.session_state.user_role)
+        elif selected_page == "📋 Physical Inventory & Approval":
+            render_physical_inventory(st.session_state.username, st.session_state.user_role)
+        elif selected_page == "🚚 Schedules & Deliveries":
+            render_schedules_deliveries(st.session_state.username, st.session_state.user_role)
+        elif selected_page == "📝 Reminders & Tasks":
+            render_reminders_tasks(st.session_state.username, st.session_state.user_role)
+        elif selected_page == "📈 Reports & Analytics":
+            render_reports(st.session_state.username, st.session_state.user_role)
+        elif selected_page == "👥 User Management":
+            render_user_management(st.session_state.username, st.session_state.user_role)
+
+if __name__ == "__main__":
+    main()
