@@ -112,6 +112,16 @@ def init_db():
 
         conn.commit()
 
+def login_user(username, password):
+    """Authenticates a user against the database."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT username, role FROM users WHERE username = ? AND password = ?",
+            (username, password)
+        )
+        return cursor.fetchone()
+
 if __name__ == "__main__":
     init_db()
     print("Database initialized successfully.")
