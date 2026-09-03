@@ -1,142 +1,92 @@
 # views/stock_in.py
+import os
 import sqlite3
 import pandas as pd
 import streamlit as st
-from datetime import datetime
-from database import get_db
+from database import get_db, init_db
 
-def ensure_transactions_schema():
-    """Checks and automatically adds any missing columns to the transactions table."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(transactions)")
-        existing_cols = [row[1] for row in cursor.fetchall()]
-
-        required_cols = {
-            "driver_details": "TEXT",
-            "issued_to": "TEXT",
-            "project_name": "TEXT",
-            "purpose": "TEXT",
-            "remarks": "TEXT",
-            "photo_path": "TEXT",
-            "edit_status": "TEXT DEFAULT 'ACTIVE'"
-        }
-
-        for col_name, col_type in required_cols.items():
-            if col_name not in existing_cols:
-                try:
-                    cursor.execute(f"ALTER TABLE transactions ADD COLUMN {col_name} {col_type}")
-                except sqlite3.OperationalError:
-                    pass  # Column already added by concurrent request
-        conn.commit()
+# Fallback for UPLOAD_DIR if not exported
+try:
+    from database import UPLOAD_DIR
+except ImportError:
+    UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 def render_stock_in(user_name, user_role):
-    # Guarantee table and columns exist on startup
-    ensure_transactions_schema()
+    st.title("📥 Stock IN Receive Log")
+    st.caption("Record site material receipts, deliveries, and stock replenishment.")
 
-    st.title("📥 Stock IN - Receive Inventory")
-    st.caption("Record incoming materials, stock deliveries, and supplier receipts.")
+    # Ensure database schema exists
+    init_db()
 
-    # 1. Fetch Master Items for the dropdown
-    with get_db() as conn:
-        df_items = pd.read_sql_query("SELECT id, item_name, unit, current_stock FROM master_items ORDER BY item_name ASC", conn)
-
-    if df_items.empty:
-        st.warning("⚠️ No master items found. Please add items in 'Manage Master Items' first before receiving stock.")
+    # Load master items to stock in
+    try:
+        with get_db() as conn:
+            items_df = pd.read_sql_query("SELECT item_name, category, unit, current_stock FROM master_items ORDER BY item_name ASC", conn)
+    except Exception as e:
+        st.error(f"Failed to fetch master items: {e}")
         return
 
-    item_options = df_items["item_name"].tolist()
+    if items_df.empty:
+        st.warning("⚠️ No master items found in the database. Please add items in **Manage Master Items** first.")
+        return
 
-    # 2. Stock IN Entry Form
     with st.form("stock_in_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
 
         with col1:
-            selected_item = st.selectbox("Select Material / Item", item_options)
+            selected_item = st.selectbox("Select Master Item*", items_df["item_name"].tolist())
             
-            # Show current stock for the selected item
-            item_row = df_items[df_items["item_name"] == selected_item].iloc[0]
-            st.info(f"Current Available Stock: **{item_row['current_stock']} {item_row['unit']}**")
+            # Fetch details for the selected item
+            item_info = items_df[items_df["item_name"] == selected_item].iloc[0]
+            current_stock = item_info["current_stock"]
+            unit = item_info["unit"]
+            category = item_info["category"]
 
-            qty_in = st.number_input(f"Quantity Received ({item_row['unit']})", min_value=0.01, step=1.0, format="%.2f")
-            driver_details = st.text_input("Transporter / Driver / Truck Details", placeholder="e.g., Plate # ABC-1234, Driver: John")
+            st.info(f"Category: **{category}** | Current Balance: **{current_stock} {unit}**")
+
+            quantity = st.number_input(f"Received Quantity ({unit})*", min_value=0.1, value=1.0, step=1.0)
 
         with col2:
-            project_name = st.text_input("Site / Destination Project", placeholder="e.g., Main Campus Building A")
-            purpose = st.text_input("Purpose / Reference PO", placeholder="e.g., PO # 98452 Delivery")
-            remarks = st.text_area("Delivery Remarks / Notes", placeholder="e.g., Received in good condition, 50 bags per pallet.")
+            supplier_source = st.text_input("Supplier / Source / DR No.*", placeholder="e.g., ABC Hardware, DR #10293")
+            remarks = st.text_input("Remarks / Notes", placeholder="e.g., Batch code, Storage bay A-3")
+            uploaded_file = st.file_uploader("Attach Delivery Receipt / Invoice (Optional)", type=["png", "jpg", "jpeg", "pdf"])
 
-        submit_btn = st.form_submit_button("📥 Confirm & Save Received Stock")
+        submit_btn = st.form_submit_button("📥 Log Stock IN Receipt", use_container_width=True)
 
         if submit_btn:
-            if qty_in <= 0:
-                st.error("Please enter a valid quantity greater than zero.")
+            if not supplier_source.strip():
+                st.error("⚠️ 'Supplier / Source / DR No.' is required.")
             else:
+                attachment_path = None
+                
+                # Handle File Upload
+                if uploaded_file is not None:
+                    file_filename = f"IN_{selected_item.replace(' ', '_')}_{uploaded_file.name}"
+                    save_path = os.path.join(UPLOAD_DIR, file_filename)
+                    with open(save_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    attachment_path = file_filename
+
                 try:
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    
+                    new_stock = current_stock + quantity
+                    combined_remarks = f"Supplier/DR: {supplier_source.strip()} | {remarks.strip()}".strip(" |")
+
                     with get_db() as conn:
                         cursor = conn.cursor()
+                        # Update master stock limit
+                        cursor.execute("UPDATE master_items SET current_stock = ? WHERE item_name = ?", (new_stock, selected_item))
                         
-                        # Update master stock balance
-                        cursor.execute(
-                            "UPDATE master_items SET current_stock = current_stock + ? WHERE item_name = ?",
-                            (qty_in, selected_item)
-                        )
-
-                        # Insert entry into transactions ledger
+                        # Log IN transaction entry
                         cursor.execute("""
-                            INSERT INTO transactions (
-                                timestamp, item_name, type, quantity, user_name, user_role,
-                                driver_details, project_name, purpose, remarks, edit_status
-                            ) VALUES (?, ?, 'IN', ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-                        """, (
-                            now_str, selected_item, qty_in, user_name, user_role,
-                            driver_details.strip(), project_name.strip(), purpose.strip(), remarks.strip()
-                        ))
-
+                            INSERT INTO transactions (type, item_name, category, unit, quantity, user_name, remarks, attachment)
+                            VALUES ('IN', ?, ?, ?, ?, ?, ?, ?)
+                        """, (selected_item, category, unit, quantity, user_name, combined_remarks, attachment_path))
+                        
                         conn.commit()
 
-                    st.toast(f"✅ Successfully added {qty_in} {item_row['unit']} to {selected_item}!", icon="📥")
-                    st.success(f"Stock IN logged for **{selected_item}** (+{qty_in} {item_row['unit']}).")
+                    st.success(f"✅ Added {quantity} {unit} to '{selected_item}'. New stock level: {new_stock} {unit}.")
                     st.rerun()
 
-                except sqlite3.OperationalError:
-                    st.error("Database is currently locked or busy. Please try again in a moment.")
-
-    # 3. Recent Delivery Logs Table (Fail-safe Query)
-    st.divider()
-    st.subheader("📑 Recent Incoming Material Deliveries Log")
-    
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 
-                    timestamp, 
-                    item_name, 
-                    quantity, 
-                    driver_details, 
-                    project_name, 
-                    purpose, 
-                    user_name, 
-                    remarks 
-                FROM transactions 
-                WHERE type = 'IN' 
-                ORDER BY id DESC LIMIT 10
-            """)
-            rows = cursor.fetchall()
-
-        if rows:
-            df_recent_in = pd.DataFrame(rows, columns=[
-                "Date & Time", "Item Name", "Qty Received", "Transporter / Driver",
-                "Destination / Site", "Purpose / PO", "Logged By", "Remarks"
-            ])
-            st.dataframe(df_recent_in, use_container_width=True, hide_index=True)
-        else:
-            st.info("No incoming deliveries recorded yet.")
-            
-    except sqlite3.OperationalError as e:
-        st.warning("Notice: Initializing transaction log table...")
-        ensure_transactions_schema()
-        st.rerun()
+                except Exception as e:
+                    st.error(f"Error executing database stock increment: {e}")
