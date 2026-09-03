@@ -3,7 +3,7 @@ import streamlit as st
 from database import init_db, get_db
 
 # Import views
-from views.manage_items import render_master_catalog
+from views.manage_items import render_manage_items
 from views.stock_in import render_stock_in
 from views.stock_out import render_stock_out
 from views.schedules import render_schedules
@@ -96,7 +96,7 @@ else:
 
     # Route Page Views
     if page == "Manage Items":
-        render_master_catalog(st.session_state.user_name, st.session_state.user_role)
+        render_manage_items(st.session_state.user_name, st.session_state.user_role)
         
     elif page == "Stock In":
         render_stock_in(st.session_state.user_name, st.session_state.user_role)
