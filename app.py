@@ -1,129 +1,111 @@
-# database.py
-import sqlite3
-import os
-import bcrypt
-from contextlib import contextmanager
+# app.py
+import streamlit as st
+from database import init_db, login_user
+from views.dashboard import render_dashboard
+from views.stock_in import render_stock_in
+from views.stock_out import render_stock_out
+from views.low_stock import render_low_stock
+from views.edit_void import render_edit_void
+from views.master_items import render_master_items
+from views.audit_log import render_audit_log
+from views.manage_users import render_manage_users
+from views.reminders import render_reminders
+from views.schedules import render_schedules
 
-DB_FILE = "inventory_system.db"
-UPLOAD_DIR = "uploaded_proofs"
+# Set Streamlit page layout
+st.set_page_config(
+    page_title="Inventory Management System",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+# Initialize database tables & default admin accounts
+init_db()
 
-@contextmanager
-def get_db():
-    """Context manager for thread-safe SQLite database connections with timeout."""
-    conn = sqlite3.connect(DB_FILE, timeout=20.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
+# Session State Initialization
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "user_name" not in st.session_state:
+    st.session_state.user_name = None
+if "user_role" not in st.session_state:
+    st.session_state.user_role = None
 
-def hash_password(password: str) -> str:
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+# --- AUTHENTICATION SCREEN ---
+if not st.session_state.authenticated:
+    st.title("🔐 Inventory Management System")
+    st.subheader("Sign In")
 
-def verify_password(plain_password: str, stored_password: str) -> bool:
-    if not stored_password:
-        return False
-    if stored_password.startswith(("$2a$", "$2b$", "$2y$")):
-        try:
-            return bcrypt.checkpw(plain_password.encode('utf-8'), stored_password.encode('utf-8'))
-        except (ValueError, TypeError):
-            return False
-    return plain_password == stored_password
+    col1, _ = st.columns([1, 1])
+    with col1:
+        with st.form("login_form"):
+            username_input = st.text_input("Username")
+            password_input = st.text_input("Password", type="password")
+            submit_login = st.form_submit_button("Sign In")
 
-def init_db():
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL;")
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                role TEXT NOT NULL
-            )
-        """)
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS master_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_name TEXT UNIQUE NOT NULL,
-                category TEXT NOT NULL,
-                unit TEXT NOT NULL,
-                current_stock REAL DEFAULT 0,
-                min_threshold REAL DEFAULT 0
-            )
-        """)
+            if submit_login:
+                user = login_user(username_input.strip(), password_input.strip())
+                if user:
+                    st.session_state.authenticated = True
+                    st.session_state.user_name = user["username"]
+                    st.session_state.user_role = user["role"]
+                    st.toast(f"Welcome back, {user['username']}!", icon="👋")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                item_name TEXT NOT NULL,
-                type TEXT NOT NULL,
-                quantity REAL NOT NULL,
-                user_name TEXT NOT NULL,
-                user_role TEXT NOT NULL,
-                driver_details TEXT,
-                issued_to TEXT,
-                project_name TEXT,
-                purpose TEXT,
-                remarks TEXT,
-                photo_path TEXT,
-                edit_status TEXT DEFAULT 'NORMAL'
-            )
-        """)
+# --- MAIN APPLICATION DASHBOARD ---
+else:
+    # Sidebar Profile & Logout
+    st.sidebar.title("📌 Navigation")
+    st.sidebar.markdown(f"**Logged in as:** `{st.session_state.user_name}`")
+    st.sidebar.markdown(f"**Role:** `{st.session_state.user_role}`")
+    
+    if st.sidebar.button("🚪 Logout", key="logout_btn"):
+        st.session_state.authenticated = False
+        st.session_state.user_name = None
+        st.session_state.user_role = None
+        st.rerun()
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS reminders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_name TEXT NOT NULL,
-                title TEXT NOT NULL,
-                due_date TEXT NOT NULL,
-                priority TEXT NOT NULL,
-                status TEXT DEFAULT 'PENDING',
-                timestamp TEXT NOT NULL
-            )
-        """)
+    st.sidebar.divider()
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS schedules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_name TEXT NOT NULL,
-                title TEXT NOT NULL,
-                event_date TEXT NOT NULL,
-                start_time TEXT NOT NULL,
-                end_time TEXT NOT NULL,
-                location_details TEXT,
-                notes TEXT,
-                timestamp TEXT NOT NULL
-            )
-        """)
-        
-        cursor.execute("SELECT COUNT(*) FROM users")
-        if cursor.fetchone()[0] == 0:
-            hashed_admin = hash_password("admin123")
-            hashed_super = hash_password("super123")
-            cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", ('admin', hashed_admin, 'Head Office'))
-            cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", ('supervisor', hashed_super, 'Materials Supervisor'))
-        
-        conn.commit()
+    # Sidebar Navigation Menu
+    nav_options = [
+        "📊 Dashboard",
+        "📥 Stock IN",
+        "📤 Stock OUT",
+        "⚠️ Low Stock Alerts",
+        "📝 Edit / Void Entries",
+        "➕ Manage Master Items",
+        "📜 Audit Log Ledger",
+        "📌 Reminders & Tasks",
+        "📅 Schedules & Calendar"
+    ]
 
-def login_user(username, password):
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT username, password, role FROM users WHERE username = ?", (username,))
-        user = cursor.fetchone()
-        
-        if user and verify_password(password, user["password"]):
-            if not user["password"].startswith(("$2a$", "$2b$", "$2y$")):
-                new_hash = hash_password(password)
-                cursor.execute("UPDATE users SET password = ? WHERE username = ?", (new_hash, username))
-                conn.commit()
-            return {"username": user["username"], "role": user["role"]}
-            
-    return None
+    # Include User Management for Head Office role
+    if st.session_state.user_role == "Head Office":
+        nav_options.append("👤 Manage Users")
+
+    choice = st.sidebar.radio("Select View:", nav_options)
+
+    # Route navigation choices to modules
+    if choice == "📊 Dashboard":
+        render_dashboard()
+    elif choice == "📥 Stock IN":
+        render_stock_in(st.session_state.user_name, st.session_state.user_role)
+    elif choice == "📤 Stock OUT":
+        render_stock_out(st.session_state.user_name, st.session_state.user_role)
+    elif choice == "⚠️ Low Stock Alerts":
+        render_low_stock()
+    elif choice == "📝 Edit / Void Entries":
+        render_edit_void(st.session_state.user_name, st.session_state.user_role)
+    elif choice == "➕ Manage Master Items":
+        render_master_items()
+    elif choice == "📜 Audit Log Ledger":
+        render_audit_log()
+    elif choice == "📌 Reminders & Tasks":
+        render_reminders(st.session_state.user_name)
+    elif choice == "📅 Schedules & Calendar":
+        render_schedules(st.session_state.user_name)
+    elif choice == "👤 Manage Users":
+        render_manage_users()
