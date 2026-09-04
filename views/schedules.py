@@ -138,6 +138,10 @@ def render_schedules(user_name, user_role):
     init_db()
     ensure_schedule_columns()
 
+    # Initialize delivery cart session state
+    if "delivery_cart" not in st.session_state:
+        st.session_state.delivery_cart = []
+
     tab_overview, tab_add = st.tabs([
         "📅 Dispatch Overview", 
         "➕ Schedule Stock Out Delivery"
@@ -252,7 +256,13 @@ def render_schedules(user_name, user_role):
 
                 stock_in_shop = float(item_info["current_stock"])
                 stock_reserved = float(item_info["reserved_stock"])
-                stock_available = float(item_info["available_stock"])
+                
+                # Account for items already staged in the delivery cart
+                staged_qty = sum(
+                    item["quantity"] for item in st.session_state.delivery_cart 
+                    if item["item_name"] == selected_item_name
+                )
+                stock_available = float(item_info["available_stock"]) - staged_qty
                 unit_name = str(item_info["unit"])
 
                 # Metric visualizer
@@ -263,7 +273,8 @@ def render_schedules(user_name, user_role):
 
                 st.divider()
 
-                with st.form("add_delivery_form", clear_on_submit=True):
+                # Add Item Form
+                with st.form("add_delivery_item_form", clear_on_submit=True):
                     col1, col2 = st.columns(2)
                     with col1:
                         requested_by = st.text_input("Requested By*", placeholder="e.g., Engr. John Doe").strip()
@@ -276,47 +287,110 @@ def render_schedules(user_name, user_role):
                         status = st.selectbox("Initial Status", ["Pending", "In Transit"])
 
                     driver_name_initial = st.text_input("Assigned Driver Name (Optional)", placeholder="e.g., John Doe").strip()
-                    is_priority = st.checkbox("🔥 Mark as High Priority Delivery", help="High priority stock out deliveries appear prominently at the top of dispatches.")
+                    is_priority = st.checkbox("🔥 Mark as High Priority Delivery")
                     notes = st.text_input("Notes / Delivery Instructions", placeholder="e.g., Deliver via 10-wheeler truck; contact site engineer upon arrival")
                     
-                    submit_btn = st.form_submit_button("📅 Schedule Stock Out & Reserve Inventory", use_container_width=True)
+                    add_to_cart_btn = st.form_submit_button("🛒 Add Item to Batch Delivery Queue", use_container_width=True)
 
-                    if submit_btn:
+                    if add_to_cart_btn:
                         if not requested_by or not destination or not project or quantity is None:
                             st.error("⚠️ Requested By, Destination, Project, and Quantity are required fields.")
                         elif quantity > stock_available:
                             st.error(f"❌ Cannot reserve stock! Requested Quantity ({quantity} {unit_name}) exceeds Available Stock ({stock_available} {unit_name}).")
                         else:
+                            st.session_state.delivery_cart.append({
+                                "item_name": selected_item_name,
+                                "unit": unit_name,
+                                "requested_by": requested_by,
+                                "destination": destination,
+                                "project": project,
+                                "quantity": float(quantity),
+                                "scheduled_date": str(scheduled_date),
+                                "status": status,
+                                "driver_name": driver_name_initial,
+                                "is_priority": 1 if is_priority else 0,
+                                "notes": notes.strip()
+                            })
+                            st.success(f"Added **{selected_item_name}** ({quantity} {unit_name}) to the dispatch staging queue!")
+                            st.rerun()
+
+                # -------------------------------------------------------------
+                # STAGING QUEUE & FINAL CONFIRMATION SECTION
+                # -------------------------------------------------------------
+                if st.session_state.delivery_cart:
+                    st.divider()
+                    st.markdown(f"### 📋 Delivery Confirmation Queue ({len(st.session_state.delivery_cart)} items staged)")
+                    st.caption("Review, edit, or clear items before submitting and reserving inventory.")
+
+                    cart_df = pd.DataFrame(st.session_state.delivery_cart)
+                    
+                    # Editable confirmation table
+                    edited_cart_df = st.data_editor(
+                        cart_df,
+                        column_config={
+                            "item_name": st.column_config.TextColumn("Item", disabled=True),
+                            "unit": st.column_config.TextColumn("Unit", disabled=True),
+                            "requested_by": st.column_config.TextColumn("Requested By"),
+                            "destination": st.column_config.TextColumn("Destination"),
+                            "project": st.column_config.TextColumn("Project"),
+                            "quantity": st.column_config.NumberColumn("Quantity", min_value=0.01, format="%.2f"),
+                            "scheduled_date": st.column_config.TextColumn("Scheduled Date"),
+                            "status": st.column_config.SelectboxColumn("Status", options=["Pending", "In Transit"]),
+                            "driver_name": st.column_config.TextColumn("Driver Name"),
+                            "is_priority": st.column_config.CheckboxColumn("High Priority"),
+                            "notes": st.column_config.TextColumn("Notes")
+                        },
+                        use_container_width=True,
+                        num_rows="dynamic",
+                        key="cart_editor"
+                    )
+
+                    col_confirm, col_clear = st.columns([3, 1])
+
+                    with col_clear:
+                        if st.button("🗑️ Clear Queue", use_container_width=True):
+                            st.session_state.delivery_cart = []
+                            st.rerun()
+
+                    with col_confirm:
+                        if st.button("📅 Confirm & Schedule Stock Out Delivery", type="primary", use_container_width=True):
                             try:
-                                with get_db() as conn_add:
-                                    cursor = conn_add.cursor()
-                                    
-                                    priority_val = 1 if is_priority else 0
+                                updated_cart = edited_cart_df.to_dict("records")
+                                if not updated_cart:
+                                    st.warning("⚠️ No items remaining in the delivery queue.")
+                                else:
+                                    with get_db() as conn_add:
+                                        cursor = conn_add.cursor()
+                                        
+                                        for row in updated_cart:
+                                            # 1. Insert Delivery Schedule
+                                            cursor.execute("""
+                                                INSERT INTO deliveries (
+                                                    item_name, supplier, requested_by, destination, project, 
+                                                    expected_quantity, unit, expected_date, status, notes, is_priority, driver_name
+                                                )
+                                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            """, (
+                                                row["item_name"], row["destination"], row["requested_by"], 
+                                                row["destination"], row["project"], row["quantity"], 
+                                                row["unit"], row["scheduled_date"], row["status"], 
+                                                row["notes"], row["is_priority"], row["driver_name"]
+                                            ))
 
-                                    # 1. Save Stock Out Delivery Record
-                                    cursor.execute("""
-                                        INSERT INTO deliveries (
-                                            item_name, supplier, requested_by, destination, project, 
-                                            expected_quantity, unit, expected_date, status, notes, is_priority, driver_name
-                                        )
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (
-                                        selected_item_name, destination, requested_by, destination, project,
-                                        quantity, unit_name, str(scheduled_date), status, notes.strip(), priority_val, driver_name_initial
-                                    ))
+                                            # 2. Reserve inventory on master catalog
+                                            cursor.execute("""
+                                                UPDATE master_items
+                                                SET reserved_stock = COALESCE(reserved_stock, 0) + ?
+                                                WHERE item_name = ?
+                                            """, (row["quantity"], row["item_name"]))
 
-                                    # 2. Increase Reserved Stock on Master Item
-                                    cursor.execute("""
-                                        UPDATE master_items
-                                        SET reserved_stock = COALESCE(reserved_stock, 0) + ?
-                                        WHERE item_name = ?
-                                    """, (quantity, selected_item_name))
+                                        conn_add.commit()
 
-                                    conn_add.commit()
-                                    st.success(f"✅ Stock Out for **{selected_item_name}** scheduled to **{destination}** ({project}) and {quantity} {unit_name} reserved!")
+                                    st.session_state.delivery_cart = []
+                                    st.success("✅ Delivery schedule successfully submitted and inventory reserved!")
                                     st.rerun()
                             except Exception as e:
-                                st.error(f"Failed to create schedule: {e}")
+                                st.error(f"Failed to submit delivery schedules: {e}")
             else:
                 st.warning("⚠️ No master items found. Please add items to the Master Catalog first.")
 
