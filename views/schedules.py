@@ -275,6 +275,7 @@ def render_schedules(user_name, user_role):
                 """, conn_items)
 
             if not df_master.empty:
+                # If dispatch header exists, lock those values for the whole batch
                 has_active_batch = bool(st.session_state.delivery_cart)
                 header_data = st.session_state.current_dispatch_header or {}
 
@@ -300,64 +301,87 @@ def render_schedules(user_name, user_role):
 
                 st.divider()
 
+                if has_active_batch:
+                    st.info(f"🔒 **Dispatch Order Details Locked:** Adding items to active dispatch for **{header_data.get('requested_by')}** -> **{header_data.get('destination')}** ({header_data.get('project')})")
+
                 # Add Item Form
                 with st.form("add_dispatch_item_form", clear_on_submit=True):
-                    if has_active_batch:
-                        st.info(f"🔒 **Dispatch Order Locked:** Adding additional items to batch for **{header_data.get('requested_by')}** ➡️ **{header_data.get('destination')}** ({header_data.get('project')})")
-                    else:
-                        st.markdown("##### 📄 1. Dispatch Order Details")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            input_requested_by = st.text_input("Requested By*", placeholder="e.g., Engr. John Doe")
-                            input_destination = st.text_input("Destination / Site Location*", placeholder="e.g., Block 4 Site")
-                            input_project = st.text_input("Project Name / Code*", placeholder="e.g., Bridge Construction Phase 1")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        requested_by = st.text_input(
+                            "Requested By*", 
+                            value=header_data.get("requested_by", ""),
+                            disabled=has_active_batch,
+                            placeholder="e.g., Engr. John Doe"
+                        ).strip()
                         
-                        with col2:
-                            input_scheduled_date = st.date_input("Scheduled Delivery Date", value=datetime.today())
-                            input_status = st.selectbox("Initial Status", ["Pending", "In Transit"])
+                        destination = st.text_input(
+                            "Destination / Site Location*", 
+                            value=header_data.get("destination", ""),
+                            disabled=has_active_batch,
+                            placeholder="e.g., Block 4 Site"
+                        ).strip()
+                        
+                        project = st.text_input(
+                            "Project Name / Code*", 
+                            value=header_data.get("project", ""),
+                            disabled=has_active_batch,
+                            placeholder="e.g., Bridge Construction Phase 1"
+                        ).strip()
+                    
+                    with col2:
+                        quantity = st.number_input(f"Quantity to Reserve ({unit_name})*", min_value=0.01, value=None, placeholder="0.0")
+                        
+                        scheduled_date = st.date_input(
+                            "Scheduled Delivery Date", 
+                            value=header_data.get("scheduled_date", datetime.today()),
+                            disabled=has_active_batch
+                        )
+                        
+                        status = st.selectbox(
+                            "Initial Status", 
+                            ["Pending", "In Transit"],
+                            index=0 if header_data.get("status") == "Pending" else (1 if header_data.get("status") == "In Transit" else 0),
+                            disabled=has_active_batch
+                        )
 
-                        input_driver = st.text_input("Assigned Driver Name (Optional)", placeholder="e.g., John Doe")
-                        input_priority = st.checkbox("🔥 Mark as High Priority Delivery")
-                        st.divider()
-
-                    st.markdown(f"##### 📦 2. Item Entry: {selected_item_name}")
-                    quantity = st.number_input(f"Quantity to Reserve ({unit_name})*", min_value=0.01, value=None, placeholder="0.0")
+                    driver_name_initial = st.text_input(
+                        "Assigned Driver Name (Optional)", 
+                        value=header_data.get("driver_name", ""),
+                        disabled=has_active_batch,
+                        placeholder="e.g., John Doe"
+                    ).strip()
+                    
+                    is_priority = st.checkbox(
+                        "🔥 Mark as High Priority Delivery", 
+                        value=header_data.get("is_priority", False),
+                        disabled=has_active_batch
+                    )
+                    
                     item_notes = st.text_input("Item Specific Notes / Instructions", placeholder="e.g., Handle with care, stack 5 layers max")
                     
-                    add_to_cart_btn = st.form_submit_button("🛒 Add Item to Batch Queue", use_container_width=True)
+                    add_to_cart_btn = st.form_submit_button("🛒 Add Item to This Dispatch Order", use_container_width=True)
 
                     if add_to_cart_btn:
-                        if not has_active_batch:
-                            req_val = input_requested_by.strip()
-                            dest_val = input_destination.strip()
-                            proj_val = input_project.strip()
-                            sched_val = input_scheduled_date
-                            stat_val = input_status
-                            driver_val = input_driver.strip()
-                            prio_val = input_priority
-                        else:
-                            req_val = header_data.get("requested_by")
-                            dest_val = header_data.get("destination")
-                            proj_val = header_data.get("project")
-                            sched_val = header_data.get("scheduled_date")
-                            stat_val = header_data.get("status")
-                            driver_val = header_data.get("driver_name")
-                            prio_val = header_data.get("is_priority")
+                        req_val = header_data.get("requested_by", requested_by)
+                        dest_val = header_data.get("destination", destination)
+                        proj_val = header_data.get("project", project)
 
                         if not req_val or not dest_val or not proj_val or quantity is None:
                             st.error("⚠️ Requested By, Destination, Project, and Quantity are required fields.")
                         elif quantity > stock_available:
                             st.error(f"❌ Cannot reserve stock! Requested Quantity ({quantity} {unit_name}) exceeds Available Stock ({stock_available} {unit_name}).")
                         else:
+                            # Set dispatch header info if first item
                             if not has_active_batch:
                                 st.session_state.current_dispatch_header = {
-                                    "requested_by": req_val,
-                                    "destination": dest_val,
-                                    "project": proj_val,
-                                    "scheduled_date": sched_val,
-                                    "status": stat_val,
-                                    "driver_name": driver_val,
-                                    "is_priority": prio_val
+                                    "requested_by": requested_by,
+                                    "destination": destination,
+                                    "project": project,
+                                    "scheduled_date": scheduled_date,
+                                    "status": status,
+                                    "driver_name": driver_name_initial,
+                                    "is_priority": is_priority
                                 }
 
                             st.session_state.delivery_cart.append({
