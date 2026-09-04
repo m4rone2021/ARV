@@ -1,4 +1,3 @@
-# views/schedules.py
 import sqlite3
 import pandas as pd
 import streamlit as st
@@ -28,6 +27,110 @@ def ensure_schedule_columns():
     except Exception as e:
         st.error(f"Error initializing delivery schema: {e}")
 
+def render_delivery_card(row):
+    """Reusable function to render individual delivery item expansion and status update form."""
+    prio_badge = "🔥 HIGH PRIORITY | " if row['is_priority'] == 1 else ""
+    project_info = f" ({row['project']})" if row['project'] else ""
+    header_label = f"{prio_badge}📦 {row['item_name']} - {row['scheduled_date']} [{row['status']}] -> {row['destination']}{project_info}"
+    
+    with st.expander(header_label):
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(f"**Requested By:** {row['requested_by'] if row['requested_by'] else 'N/A'}")
+        c1.markdown(f"**Destination:** {row['destination']}")
+        
+        c2.markdown(f"**Project:** {row['project'] if row['project'] else 'N/A'}")
+        c2.markdown(f"**Quantity:** {row['quantity']} {row['unit']}")
+        
+        c3.markdown(f"**Priority:** {'🔴 **HIGH**' if row['is_priority'] == 1 else '🟢 Normal'}")
+        c3.markdown(f"**Status:** `{row['status']}`")
+
+        if row["driver_name"]:
+            st.markdown(f"🚛 **Driver Name:** {row['driver_name']}")
+
+        if row["notes"]:
+            st.caption(f"**Notes:** {row['notes']}")
+
+        st.divider()
+
+        status_options = ["Pending", "In Transit", "Completed", "Cancelled"]
+        current_idx = status_options.index(row["status"]) if row["status"] in status_options else 0
+
+        new_status = st.selectbox(
+            "Update Status", 
+            status_options, 
+            index=current_idx,
+            key=f"status_select_{row['id']}"
+        )
+
+        # Additional fields conditional on selecting "Completed"
+        driver_input = row["driver_name"]
+        add_notes_input = ""
+
+        if new_status == "Completed":
+            st.markdown("##### 📝 Completion Details")
+            col_driver, col_notes = st.columns(2)
+            with col_driver:
+                driver_input = st.text_input(
+                    "Driver Name*", 
+                    value=row["driver_name"], 
+                    placeholder="e.g., John Doe",
+                    key=f"driver_input_{row['id']}"
+                ).strip()
+            with col_notes:
+                add_notes_input = st.text_input(
+                    "Additional Completion Notes", 
+                    placeholder="e.g., Received by site supervisor; gate pass #1024",
+                    key=f"add_notes_{row['id']}"
+                ).strip()
+
+        if new_status != row["status"] or (new_status == "Completed" and driver_input != row["driver_name"]):
+            if st.button("Save Changes", key=f"btn_status_{row['id']}", use_container_width=True):
+                if new_status == "Completed" and not driver_input:
+                    st.error("⚠️ Please specify the Driver Name before marking the dispatch as Completed.")
+                else:
+                    try:
+                        with get_db() as conn_update:
+                            cursor = conn_update.cursor()
+                            old_status = row["status"]
+                            qty = float(row["quantity"])
+                            item_name = row["item_name"]
+
+                            # Combine notes if extra completion notes were added
+                            existing_notes = str(row['notes']).strip() if row['notes'] else ""
+                            final_notes = existing_notes
+                            if add_notes_input:
+                                final_notes = f"{existing_notes} [Completed Note: {add_notes_input}]".strip()
+
+                            # Update Delivery Record Status, Driver, and Notes
+                            cursor.execute("""
+                                UPDATE deliveries 
+                                SET status = ?, driver_name = ?, notes = ? 
+                                WHERE id = ?
+                            """, (new_status, driver_input, final_notes, row['id']))
+
+                            # Adjust Stock based on Status Transitions
+                            if old_status in ["Pending", "In Transit"]:
+                                if new_status == "Completed":
+                                    cursor.execute("""
+                                        UPDATE master_items 
+                                        SET current_stock = current_stock - ?,
+                                            reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
+                                        WHERE item_name = ?
+                                    """, (qty, qty, item_name))
+
+                                elif new_status == "Cancelled":
+                                    cursor.execute("""
+                                        UPDATE master_items 
+                                        SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
+                                        WHERE item_name = ?
+                                    """, (qty, item_name))
+
+                            conn_update.commit()
+                            st.success(f"Status updated to {new_status} and inventory adjusted accordingly!")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error updating delivery status: {e}")
+
 def render_schedules(user_name, user_role):
     st.title("🚚 Stock Out Delivery Schedules")
     st.caption("Schedule outbound material dispatches, reserve shop stock, and track project deliveries.")
@@ -44,7 +147,7 @@ def render_schedules(user_name, user_role):
     # TAB 1: OVERVIEW & STATUS MANAGEMENT
     # -------------------------------------------------------------
     with tab_overview:
-        st.subheader("Upcoming & Active Dispatches")
+        st.subheader("Dispatches Overview")
         try:
             with get_db() as conn:
                 query = """
@@ -91,108 +194,37 @@ def render_schedules(user_name, user_role):
 
                 st.divider()
 
-                for idx, row in filtered_df.iterrows():
-                    prio_badge = "🔥 HIGH PRIORITY | " if row['is_priority'] == 1 else ""
-                    project_info = f" ({row['project']})" if row['project'] else ""
-                    header_label = f"{prio_badge}📦 {row['item_name']} - {row['scheduled_date']} [{row['status']}] -> {row['destination']}{project_info}"
+                # Separate Active vs Completed/Cancelled DataFrames
+                active_df = filtered_df[filtered_df["status"].isin(["Pending", "In Transit"])]
+                completed_df = filtered_df[filtered_df["status"].isin(["Completed", "Cancelled"])]
+
+                # Split Screen into 2 Columns
+                col_active, col_completed = st.columns(2)
+
+                # --- COLUMN 1: Active Deliveries ---
+                with col_active:
+                    st.markdown(f"### 🚚 Active Deliveries ({len(active_df)})")
+                    st.caption("Pending or In Transit Dispatches")
+                    st.divider()
                     
-                    with st.expander(header_label):
-                        c1, c2, c3 = st.columns(3)
-                        c1.markdown(f"**Requested By:** {row['requested_by'] if row['requested_by'] else 'N/A'}")
-                        c1.markdown(f"**Destination:** {row['destination']}")
-                        
-                        c2.markdown(f"**Project:** {row['project'] if row['project'] else 'N/A'}")
-                        c2.markdown(f"**Quantity:** {row['quantity']} {row['unit']}")
-                        
-                        c3.markdown(f"**Priority:** {'🔴 **HIGH**' if row['is_priority'] == 1 else '🟢 Normal'}")
-                        c3.markdown(f"**Status:** `{row['status']}`")
+                    if not active_df.empty:
+                        for idx, row in active_df.iterrows():
+                            render_delivery_card(row)
+                    else:
+                        st.info("No active deliveries found.")
 
-                        if row["driver_name"]:
-                            st.markdown(f"🚛 **Driver Name:** {row['driver_name']}")
+                # --- COLUMN 2: Completed & Cancelled Deliveries ---
+                with col_completed:
+                    st.markdown(f"### ✅ Completed & History ({len(completed_df)})")
+                    st.caption("Finished or Cancelled Dispatches")
+                    st.divider()
 
-                        if row["notes"]:
-                            st.caption(f"**Notes:** {row['notes']}")
+                    if not completed_df.empty:
+                        for idx, row in completed_df.iterrows():
+                            render_delivery_card(row)
+                    else:
+                        st.info("No completed or cancelled deliveries found.")
 
-                        st.divider()
-
-                        status_options = ["Pending", "In Transit", "Completed", "Cancelled"]
-                        current_idx = status_options.index(row["status"]) if row["status"] in status_options else 0
-
-                        new_status = st.selectbox(
-                            "Update Status", 
-                            status_options, 
-                            index=current_idx,
-                            key=f"status_select_{row['id']}"
-                        )
-
-                        # Additional fields conditional on selecting "Completed"
-                        driver_input = row["driver_name"]
-                        add_notes_input = ""
-
-                        if new_status == "Completed":
-                            st.markdown("##### 📝 Completion Details")
-                            col_driver, col_notes = st.columns(2)
-                            with col_driver:
-                                driver_input = st.text_input(
-                                    "Driver Name*", 
-                                    value=row["driver_name"], 
-                                    placeholder="e.g., John Doe",
-                                    key=f"driver_input_{row['id']}"
-                                ).strip()
-                            with col_notes:
-                                add_notes_input = st.text_input(
-                                    "Additional Completion Notes", 
-                                    placeholder="e.g., Received by site supervisor; gate pass #1024",
-                                    key=f"add_notes_{row['id']}"
-                                ).strip()
-
-                        if new_status != row["status"] or (new_status == "Completed" and driver_input != row["driver_name"]):
-                            if st.button("Save Changes", key=f"btn_status_{row['id']}", use_container_width=True):
-                                if new_status == "Completed" and not driver_input:
-                                    st.error("⚠️ Please specify the Driver Name before marking the dispatch as Completed.")
-                                else:
-                                    try:
-                                        with get_db() as conn_update:
-                                            cursor = conn_update.cursor()
-                                            old_status = row["status"]
-                                            qty = float(row["quantity"])
-                                            item_name = row["item_name"]
-
-                                            # Combine notes if extra completion notes were added
-                                            existing_notes = str(row['notes']).strip() if row['notes'] else ""
-                                            final_notes = existing_notes
-                                            if add_notes_input:
-                                                final_notes = f"{existing_notes} [Completed Note: {add_notes_input}]".strip()
-
-                                            # Update Delivery Record Status, Driver, and Notes
-                                            cursor.execute("""
-                                                UPDATE deliveries 
-                                                SET status = ?, driver_name = ?, notes = ? 
-                                                WHERE id = ?
-                                            """, (new_status, driver_input, final_notes, row['id']))
-
-                                            # Adjust Stock based on Status Transitions
-                                            if old_status in ["Pending", "In Transit"]:
-                                                if new_status == "Completed":
-                                                    cursor.execute("""
-                                                        UPDATE master_items 
-                                                        SET current_stock = current_stock - ?,
-                                                            reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
-                                                        WHERE item_name = ?
-                                                    """, (qty, qty, item_name))
-
-                                                elif new_status == "Cancelled":
-                                                    cursor.execute("""
-                                                        UPDATE master_items 
-                                                        SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
-                                                        WHERE item_name = ?
-                                                    """, (qty, item_name))
-
-                                            conn_update.commit()
-                                            st.success(f"Status updated to {new_status} and inventory adjusted accordingly!")
-                                            st.rerun()
-                                    except Exception as e:
-                                        st.error(f"Error updating delivery status: {e}")
             else:
                 st.info("No delivery dispatches scheduled yet.")
         except Exception as e:
