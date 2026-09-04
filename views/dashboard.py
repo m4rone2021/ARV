@@ -199,7 +199,7 @@ def render_dashboard(user_name, user_role):
     st.divider()
 
     # -------------------------------------------------------------
-    # 3. CURRENT STOCKS AVAILABLE TABLE
+    # 3. CURRENT STOCKS AVAILABLE BY CATEGORY
     # -------------------------------------------------------------
     st.subheader("📋 Current Stock Levels Overview")
 
@@ -219,26 +219,34 @@ def render_dashboard(user_name, user_role):
             filtered_df = filtered_df[filtered_df["item_name"].str.contains(dash_search.strip(), case=False, na=False)]
 
         if not filtered_df.empty:
-            display_df = filtered_df.rename(columns={
-                "id": "ID",
-                "item_name": "Item Description",
-                "category": "Category",
-                "unit": "Unit",
-                "current_stock": "Available Stock",
-                "min_threshold": "Safety Limit"
-            })
+            # Group items by Category and render with Bold Headers
+            grouped_categories = filtered_df["category"].unique()
 
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Available Stock": st.column_config.NumberColumn(
-                        "Available Stock",
-                        format="%.2f"
-                    )
-                }
-            )
+            for cat in sorted(grouped_categories):
+                cat_items = filtered_df[filtered_df["category"] == cat]
+                
+                # Bold Category Header with Item Count
+                st.markdown(f"### **📁 {cat}** `({len(cat_items)} items)`")
+
+                display_df = cat_items[["id", "item_name", "unit", "current_stock", "min_threshold"]].rename(columns={
+                    "id": "ID",
+                    "item_name": "Item Description",
+                    "unit": "Unit",
+                    "current_stock": "Available Stock",
+                    "min_threshold": "Safety Limit"
+                })
+
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Available Stock": st.column_config.NumberColumn(
+                            "Available Stock",
+                            format="%.2f"
+                        )
+                    }
+                )
         else:
             st.info("No matching stock items found.")
     else:
