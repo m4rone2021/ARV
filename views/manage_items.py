@@ -34,7 +34,7 @@ def get_all_categories():
 
 def render_manage_items(user_name, user_role):
     st.title("📦 Master Item Catalog")
-    st.caption("View and maintain the master list of site inventory items and stock thresholds.")
+    st.caption("View and maintain master site inventory, reserved allocations, and available stock levels.")
 
     init_db()
 
@@ -60,7 +60,7 @@ def render_manage_items(user_name, user_role):
     # TAB 1: VIEW CATALOG (All Users)
     # -------------------------------------------------------------
     with tab_view:
-        st.subheader("Inventory Items")
+        st.subheader("Inventory Items & Stock Breakdown")
 
         col_search, col_cat = st.columns([2, 1])
         with col_search:
@@ -70,7 +70,21 @@ def render_manage_items(user_name, user_role):
             selected_cat = st.selectbox("Filter Category", cat_list)
 
         try:
-            query = "SELECT id, item_name, category, unit, current_stock, min_threshold, remarks FROM master_items WHERE 1=1"
+            # Query calculating Available Stock dynamically
+            query = """
+                SELECT 
+                    id, 
+                    item_name, 
+                    category, 
+                    unit, 
+                    current_stock AS stock_in_shop,
+                    COALESCE(reserved_stock, 0) AS reserved_stock,
+                    (current_stock - COALESCE(reserved_stock, 0)) AS available_stock,
+                    min_threshold, 
+                    remarks 
+                FROM master_items 
+                WHERE 1=1
+            """
             params = []
 
             if search_query.strip():
@@ -92,7 +106,9 @@ def render_manage_items(user_name, user_role):
                     "item_name": "Item Name",
                     "category": "Category",
                     "unit": "Unit",
-                    "current_stock": "Current Stock",
+                    "stock_in_shop": "Stock In Shop (Total)",
+                    "reserved_stock": "Reserved Stock",
+                    "available_stock": "Available Stock",
                     "min_threshold": "Min Threshold",
                     "remarks": "Remarks"
                 })
@@ -123,14 +139,13 @@ def render_manage_items(user_name, user_role):
                     unit = st.selectbox("Unit of Measure*", options=UNIT_OPTIONS)
 
                 with col2:
-                    initial_stock = st.number_input("Initial Stock Quantity*", min_value=0.0, step=1.0, value=None, placeholder="0.0")
+                    initial_stock = st.number_input("Initial Stock Quantity (In Shop)*", min_value=0.0, step=1.0, value=None, placeholder="0.0")
                     min_threshold = st.number_input("Low Stock Threshold Alert*", min_value=0.0, step=1.0, value=None, placeholder="0.0")
                     remarks = st.text_input("Remarks / Notes (Optional)")
 
                 submit_add = st.form_submit_button("💾 Save Item to Catalog", use_container_width=True)
 
                 if submit_add:
-                    # If custom input is typed, use it; otherwise use the selected dropdown option
                     if new_category.strip():
                         final_category = new_category.strip()
                     else:
@@ -139,7 +154,6 @@ def render_manage_items(user_name, user_role):
                     clean_name = item_name.strip()
                     clean_unit = unit.strip()
 
-                    # Require all required fields
                     if not clean_name or not final_category or not clean_unit or initial_stock is None or min_threshold is None:
                         st.error("⚠️ All fields marked with * are required.")
                     else:
@@ -147,8 +161,8 @@ def render_manage_items(user_name, user_role):
                             with get_db() as conn:
                                 cursor = conn.cursor()
                                 cursor.execute("""
-                                    INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold, remarks)
-                                    VALUES (?, ?, ?, ?, ?, ?)
+                                    INSERT INTO master_items (item_name, category, unit, current_stock, reserved_stock, min_threshold, remarks)
+                                    VALUES (?, ?, ?, ?, 0.0, ?, ?)
                                 """, (clean_name, final_category, clean_unit, initial_stock, min_threshold, remarks.strip()))
                                 conn.commit()
                                 st.success(f"✅ Master item **{clean_name}** added successfully under category **{final_category}**.")
@@ -166,7 +180,11 @@ def render_manage_items(user_name, user_role):
 
             try:
                 with get_db() as conn:
-                    df_all = pd.read_sql_query("SELECT * FROM master_items ORDER BY item_name ASC", conn)
+                    df_all = pd.read_sql_query("""
+                        SELECT id, item_name, category, unit, current_stock, 
+                               COALESCE(reserved_stock, 0) AS reserved_stock, min_threshold, remarks 
+                        FROM master_items ORDER BY item_name ASC
+                    """, conn)
 
                 if not df_all.empty:
                     item_options = df_all["item_name"].tolist()
@@ -174,7 +192,6 @@ def render_manage_items(user_name, user_role):
 
                     selected_row = df_all[df_all["item_name"] == selected_item_name].iloc[0]
 
-                    # Ensure current category is available in select options
                     current_cat = str(selected_row["category"]).strip()
                     edit_cat_options = list(available_categories)
                     if current_cat and current_cat not in edit_cat_options:
@@ -182,7 +199,6 @@ def render_manage_items(user_name, user_role):
                         edit_cat_options.sort()
                     default_cat_index = edit_cat_options.index(current_cat) if current_cat in edit_cat_options else 0
 
-                    # Ensure current unit is available in select options
                     current_unit = str(selected_row["unit"]).strip()
                     edit_unit_options = list(UNIT_OPTIONS)
                     if current_unit and current_unit not in edit_unit_options:
@@ -197,9 +213,10 @@ def render_manage_items(user_name, user_role):
                             edit_category = st.selectbox("Select Category*", options=edit_cat_options, index=default_cat_index)
                             edit_new_category = st.text_input("Or Change to New Category (Optional)", placeholder="Type to create new category...")
                             edit_unit = st.selectbox("Unit*", options=edit_unit_options, index=default_unit_index)
-                            edit_stock = st.number_input("Current Stock*", min_value=0.0, value=float(selected_row["current_stock"]))
+                            edit_stock = st.number_input("Stock In Shop (Total)*", min_value=0.0, value=float(selected_row["current_stock"]))
 
                         with col2:
+                            st.text_input("Reserved Stock (Read-Only)", value=f"{selected_row['reserved_stock']} {selected_row['unit']}", disabled=True)
                             edit_threshold = st.number_input("Min Threshold Alert*", min_value=0.0, value=float(selected_row["min_threshold"]))
                             edit_remarks = st.text_input("Remarks", value=selected_row["remarks"] if selected_row["remarks"] else "")
 
@@ -212,7 +229,9 @@ def render_manage_items(user_name, user_role):
                                 final_edit_cat = edit_category.strip()
 
                             if not final_edit_cat or edit_stock is None or edit_threshold is None:
-                                st.error("⚠️ Category, Current Stock, and Min Threshold Alert cannot be empty.")
+                                st.error("⚠️ Category, Stock In Shop, and Min Threshold Alert cannot be empty.")
+                            elif edit_stock < float(selected_row["reserved_stock"]):
+                                st.error(f"❌ Stock in Shop cannot be less than Reserved Stock ({selected_row['reserved_stock']} {selected_row['unit']}).")
                             else:
                                 try:
                                     with get_db() as conn:
