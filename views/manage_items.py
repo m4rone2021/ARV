@@ -18,6 +18,8 @@ DEFAULT_CATEGORIES = [
 # Standard unit options
 UNIT_OPTIONS = ["liters", "bags", "packs", "pcs", "sheets", "rolls"]
 
+ADD_CUSTOM_CAT_OPTION = "➕ Add Custom Category..."
+
 def get_all_categories():
     """Fetch distinct categories existing in DB combined with default choices."""
     categories = list(DEFAULT_CATEGORIES)
@@ -118,11 +120,18 @@ def render_manage_items(user_name, user_role):
 
                 with col1:
                     item_name = st.text_input("Item Name*")
-                    category = st.selectbox("Category*", options=available_categories)
+                    
+                    # Category Selection with option to add custom
+                    add_cat_options = available_categories + [ADD_CUSTOM_CAT_OPTION]
+                    selected_cat_option = st.selectbox("Category*", options=add_cat_options)
+                    
+                    custom_category = ""
+                    if selected_cat_option == ADD_CUSTOM_CAT_OPTION:
+                        custom_category = st.text_input("New Category Name*", placeholder="Enter new category...")
+
                     unit = st.selectbox("Unit of Measure*", options=UNIT_OPTIONS)
 
                 with col2:
-                    # setting value=None lets user touch/click to type without clearing 0.00 first
                     initial_stock = st.number_input("Initial Stock Quantity*", min_value=0.0, step=1.0, value=None, placeholder="0.0")
                     min_threshold = st.number_input("Low Stock Threshold Alert*", min_value=0.0, step=1.0, value=None, placeholder="0.0")
                     remarks = st.text_input("Remarks / Notes (Optional)")
@@ -130,12 +139,17 @@ def render_manage_items(user_name, user_role):
                 submit_add = st.form_submit_button("💾 Save Item to Catalog", use_container_width=True)
 
                 if submit_add:
+                    # Determine target category value
+                    if selected_cat_option == ADD_CUSTOM_CAT_OPTION:
+                        final_category = custom_category.strip()
+                    else:
+                        final_category = selected_cat_option.strip()
+
                     clean_name = item_name.strip()
-                    clean_cat = category.strip()
                     clean_unit = unit.strip()
 
                     # Require all fields except remarks
-                    if not clean_name or not clean_cat or not clean_unit or initial_stock is None or min_threshold is None:
+                    if not clean_name or not final_category or not clean_unit or initial_stock is None or min_threshold is None:
                         st.error("⚠️ All fields are required except Remarks/Notes.")
                     else:
                         try:
@@ -144,9 +158,9 @@ def render_manage_items(user_name, user_role):
                                 cursor.execute("""
                                     INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold, remarks)
                                     VALUES (?, ?, ?, ?, ?, ?)
-                                """, (clean_name, clean_cat, clean_unit, initial_stock, min_threshold, remarks.strip()))
+                                """, (clean_name, final_category, clean_unit, initial_stock, min_threshold, remarks.strip()))
                                 conn.commit()
-                                st.success(f"✅ Master item **{clean_name}** added successfully.")
+                                st.success(f"✅ Master item **{clean_name}** added successfully under category **{final_category}**.")
                                 st.rerun()
                         except sqlite3.IntegrityError:
                             st.error(f"⚠️ An item named **{clean_name}** already exists in the catalog.")
@@ -175,6 +189,8 @@ def render_manage_items(user_name, user_role):
                     if current_cat and current_cat not in edit_cat_options:
                         edit_cat_options.append(current_cat)
                         edit_cat_options.sort()
+                    
+                    edit_cat_options.append(ADD_CUSTOM_CAT_OPTION)
                     default_cat_index = edit_cat_options.index(current_cat) if current_cat in edit_cat_options else 0
 
                     # Ensure current unit is available in select options
@@ -189,7 +205,12 @@ def render_manage_items(user_name, user_role):
                         col1, col2 = st.columns(2)
 
                         with col1:
-                            edit_category = st.selectbox("Category*", options=edit_cat_options, index=default_cat_index)
+                            edit_cat_selected = st.selectbox("Category*", options=edit_cat_options, index=default_cat_index)
+                            
+                            edit_custom_cat = ""
+                            if edit_cat_selected == ADD_CUSTOM_CAT_OPTION:
+                                edit_custom_cat = st.text_input("New Category Name*", placeholder="Enter new category...")
+
                             edit_unit = st.selectbox("Unit*", options=edit_unit_options, index=default_unit_index)
                             edit_stock = st.number_input("Current Stock*", min_value=0.0, value=float(selected_row["current_stock"]))
 
@@ -200,8 +221,13 @@ def render_manage_items(user_name, user_role):
                         submit_edit = st.form_submit_button("🔄 Update Master Item", use_container_width=True)
 
                         if submit_edit:
-                            if edit_stock is None or edit_threshold is None:
-                                st.error("⚠️ Current Stock and Min Threshold Alert cannot be empty.")
+                            if edit_cat_selected == ADD_CUSTOM_CAT_OPTION:
+                                final_edit_cat = edit_custom_cat.strip()
+                            else:
+                                final_edit_cat = edit_cat_selected.strip()
+
+                            if not final_edit_cat or edit_stock is None or edit_threshold is None:
+                                st.error("⚠️ Category, Current Stock, and Min Threshold Alert cannot be empty.")
                             else:
                                 try:
                                     with get_db() as conn:
@@ -210,7 +236,7 @@ def render_manage_items(user_name, user_role):
                                             UPDATE master_items
                                             SET category = ?, unit = ?, current_stock = ?, min_threshold = ?, remarks = ?
                                             WHERE item_name = ?
-                                        """, (edit_category.strip(), edit_unit.strip(), edit_stock, edit_threshold, edit_remarks.strip(), selected_item_name))
+                                        """, (final_edit_cat, edit_unit.strip(), edit_stock, edit_threshold, edit_remarks.strip(), selected_item_name))
                                         conn.commit()
                                         st.success(f"✅ Item **{selected_item_name}** updated successfully.")
                                         st.rerun()
