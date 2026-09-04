@@ -56,7 +56,6 @@ def render_dispatch_card(dispatch_id, items_df):
         st.divider()
         st.markdown("##### 📦 Items Included in this Dispatch:")
         
-        # Display table of items under this dispatch
         disp_table = items_df[['item_name', 'quantity', 'unit', 'notes']].rename(columns={
             'item_name': 'Item Name',
             'quantity': 'Quantity',
@@ -77,7 +76,6 @@ def render_dispatch_card(dispatch_id, items_df):
             key=f"status_select_{dispatch_id}_{first_row['id']}"
         )
 
-        # Additional fields conditional on selecting "Completed"
         driver_input = first_row["driver_name"]
         add_notes_input = ""
 
@@ -118,14 +116,12 @@ def render_dispatch_card(dispatch_id, items_df):
                                 if add_notes_input:
                                     final_notes = f"{existing_notes} [Completed Note: {add_notes_input}]".strip()
 
-                                # Update Delivery Record
                                 cursor.execute("""
                                     UPDATE deliveries 
                                     SET status = ?, driver_name = ?, notes = ? 
                                     WHERE id = ?
                                 """, (new_status, driver_input, final_notes, item_id))
 
-                                # Adjust Stock based on Status Transitions
                                 if old_status in ["Pending", "In Transit"]:
                                     if new_status == "Completed":
                                         cursor.execute("""
@@ -155,7 +151,6 @@ def render_schedules(user_name, user_role):
     init_db()
     ensure_schedule_columns()
 
-    # Initialize delivery cart session state
     if "delivery_cart" not in st.session_state:
         st.session_state.delivery_cart = []
     
@@ -221,13 +216,11 @@ def render_schedules(user_name, user_role):
 
                 st.divider()
 
-                # Separate Active vs Completed/Cancelled DataFrames
                 active_df = filtered_df[filtered_df["status"].isin(["Pending", "In Transit"])]
                 completed_df = filtered_df[filtered_df["status"].isin(["Completed", "Cancelled"])]
 
                 col_active, col_completed = st.columns(2)
 
-                # --- COLUMN 1: Active Deliveries ---
                 with col_active:
                     active_dispatches = active_df.groupby("dispatch_id", sort=False)
                     st.markdown(f"### 🚚 Active Dispatches ({len(active_dispatches)})")
@@ -240,7 +233,6 @@ def render_schedules(user_name, user_role):
                     else:
                         st.info("No active dispatches found.")
 
-                # --- COLUMN 2: Completed & Cancelled Deliveries ---
                 with col_completed:
                     completed_dispatches = completed_df.groupby("dispatch_id", sort=False)
                     st.markdown(f"### ✅ Completed & History ({len(completed_dispatches)})")
@@ -275,113 +267,89 @@ def render_schedules(user_name, user_role):
                 """, conn_items)
 
             if not df_master.empty:
-                # If dispatch header exists, lock those values for the whole batch
                 has_active_batch = bool(st.session_state.delivery_cart)
                 header_data = st.session_state.current_dispatch_header or {}
 
-                selected_item_name = st.selectbox("Select Item to Add to Dispatch*", df_master["item_name"].tolist())
-                item_info = df_master[df_master["item_name"] == selected_item_name].iloc[0]
-
-                stock_in_shop = float(item_info["current_stock"])
-                stock_reserved = float(item_info["reserved_stock"])
-                
-                # Account for items already staged in this current dispatch batch
-                staged_qty = sum(
-                    item["quantity"] for item in st.session_state.delivery_cart 
-                    if item["item_name"] == selected_item_name
-                )
-                stock_available = float(item_info["available_stock"]) - staged_qty
-                unit_name = str(item_info["unit"])
-
-                # Metric visualizer
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Stock In Shop (Total)", f"{stock_in_shop:,.2f} {unit_name}")
-                m2.metric("Reserved Stock", f"{stock_reserved:,.2f} {unit_name}")
-                m3.metric("Available Stock", f"{stock_available:,.2f} {unit_name}")
-
-                st.divider()
-
+                # Display active batch banner if set
                 if has_active_batch:
-                    st.info(f"🔒 **Dispatch Order Details Locked:** Adding items to active dispatch for **{header_data.get('requested_by')}** -> **{header_data.get('destination')}** ({header_data.get('project')})")
+                    st.info(f"🔒 **Dispatch Order Locked:** Adding items to active dispatch for **{header_data.get('requested_by')}** ➡️ **{header_data.get('destination')}** ({header_data.get('project')})")
 
-                # Add Item Form
+                # Single unified form for dispatch details + item selection
                 with st.form("add_dispatch_item_form", clear_on_submit=True):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        requested_by = st.text_input(
-                            "Requested By*", 
-                            value=header_data.get("requested_by", ""),
-                            disabled=has_active_batch,
-                            placeholder="e.g., Engr. John Doe"
-                        ).strip()
+                    if not has_active_batch:
+                        st.markdown("##### 📄 1. Dispatch Order Details")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            input_requested_by = st.text_input("Requested By*", placeholder="e.g., Engr. John Doe")
+                            input_destination = st.text_input("Destination / Site Location*", placeholder="e.g., Block 4 Site")
+                            input_project = st.text_input("Project Name / Code*", placeholder="e.g., Bridge Construction Phase 1")
                         
-                        destination = st.text_input(
-                            "Destination / Site Location*", 
-                            value=header_data.get("destination", ""),
-                            disabled=has_active_batch,
-                            placeholder="e.g., Block 4 Site"
-                        ).strip()
-                        
-                        project = st.text_input(
-                            "Project Name / Code*", 
-                            value=header_data.get("project", ""),
-                            disabled=has_active_batch,
-                            placeholder="e.g., Bridge Construction Phase 1"
-                        ).strip()
-                    
-                    with col2:
-                        quantity = st.number_input(f"Quantity to Reserve ({unit_name})*", min_value=0.01, value=None, placeholder="0.0")
-                        
-                        scheduled_date = st.date_input(
-                            "Scheduled Delivery Date", 
-                            value=header_data.get("scheduled_date", datetime.today()),
-                            disabled=has_active_batch
-                        )
-                        
-                        status = st.selectbox(
-                            "Initial Status", 
-                            ["Pending", "In Transit"],
-                            index=0 if header_data.get("status") == "Pending" else (1 if header_data.get("status") == "In Transit" else 0),
-                            disabled=has_active_batch
-                        )
+                        with col2:
+                            input_scheduled_date = st.date_input("Scheduled Delivery Date", value=datetime.today())
+                            input_status = st.selectbox("Initial Status", ["Pending", "In Transit"])
 
-                    driver_name_initial = st.text_input(
-                        "Assigned Driver Name (Optional)", 
-                        value=header_data.get("driver_name", ""),
-                        disabled=has_active_batch,
-                        placeholder="e.g., John Doe"
-                    ).strip()
+                        input_driver = st.text_input("Assigned Driver Name (Optional)", placeholder="e.g., John Doe")
+                        input_priority = st.checkbox("🔥 Mark as High Priority Delivery")
+                        st.divider()
+
+                    st.markdown("##### 📦 2. Select Item & Quantity to Dispatch")
                     
-                    is_priority = st.checkbox(
-                        "🔥 Mark as High Priority Delivery", 
-                        value=header_data.get("is_priority", False),
-                        disabled=has_active_batch
+                    selected_item_name = st.selectbox("Select Item*", df_master["item_name"].tolist())
+                    
+                    # Fetch stock info dynamically based on current form context
+                    item_info = df_master[df_master["item_name"] == selected_item_name].iloc[0]
+                    stock_in_shop = float(item_info["current_stock"])
+                    stock_reserved = float(item_info["reserved_stock"])
+                    
+                    staged_qty = sum(
+                        item["quantity"] for item in st.session_state.delivery_cart 
+                        if item["item_name"] == selected_item_name
                     )
+                    stock_available = float(item_info["available_stock"]) - staged_qty
+                    unit_name = str(item_info["unit"])
+
+                    st.caption(f"📊 Available Stock in Shop for **{selected_item_name}**: `{stock_available:,.2f} {unit_name}` (Total: `{stock_in_shop:,.2f}`, Reserved: `{stock_reserved:,.2f}`)")
+
+                    col_qty, col_notes = st.columns([1, 2])
+                    with col_qty:
+                        quantity = st.number_input(f"Quantity ({unit_name})*", min_value=0.01, value=None, placeholder="0.0")
+                    with col_notes:
+                        item_notes = st.text_input("Item Specific Notes / Instructions", placeholder="e.g., Handle with care, stack 5 layers max")
                     
-                    item_notes = st.text_input("Item Specific Notes / Instructions", placeholder="e.g., Handle with care, stack 5 layers max")
-                    
-                    add_to_cart_btn = st.form_submit_button("🛒 Add Item to This Dispatch Order", use_container_width=True)
+                    add_to_cart_btn = st.form_submit_button("🛒 Add Item to Dispatch Order", use_container_width=True)
 
                     if add_to_cart_btn:
-                        req_val = header_data.get("requested_by", requested_by)
-                        dest_val = header_data.get("destination", destination)
-                        proj_val = header_data.get("project", project)
+                        if not has_active_batch:
+                            req_val = input_requested_by.strip()
+                            dest_val = input_destination.strip()
+                            proj_val = input_project.strip()
+                            sched_val = input_scheduled_date
+                            stat_val = input_status
+                            driver_val = input_driver.strip()
+                            prio_val = input_priority
+                        else:
+                            req_val = header_data.get("requested_by")
+                            dest_val = header_data.get("destination")
+                            proj_val = header_data.get("project")
+                            sched_val = header_data.get("scheduled_date")
+                            stat_val = header_data.get("status")
+                            driver_val = header_data.get("driver_name")
+                            prio_val = header_data.get("is_priority")
 
                         if not req_val or not dest_val or not proj_val or quantity is None:
                             st.error("⚠️ Requested By, Destination, Project, and Quantity are required fields.")
                         elif quantity > stock_available:
                             st.error(f"❌ Cannot reserve stock! Requested Quantity ({quantity} {unit_name}) exceeds Available Stock ({stock_available} {unit_name}).")
                         else:
-                            # Set dispatch header info if first item
                             if not has_active_batch:
                                 st.session_state.current_dispatch_header = {
-                                    "requested_by": requested_by,
-                                    "destination": destination,
-                                    "project": project,
-                                    "scheduled_date": scheduled_date,
-                                    "status": status,
-                                    "driver_name": driver_name_initial,
-                                    "is_priority": is_priority
+                                    "requested_by": req_val,
+                                    "destination": dest_val,
+                                    "project": proj_val,
+                                    "scheduled_date": sched_val,
+                                    "status": stat_val,
+                                    "driver_name": driver_val,
+                                    "is_priority": prio_val
                                 }
 
                             st.session_state.delivery_cart.append({
@@ -403,7 +371,6 @@ def render_schedules(user_name, user_role):
 
                     cart_df = pd.DataFrame(st.session_state.delivery_cart)
                     
-                    # Editable confirmation table
                     edited_cart_df = st.data_editor(
                         cart_df,
                         column_config={
@@ -432,7 +399,6 @@ def render_schedules(user_name, user_role):
                                 if not updated_cart:
                                     st.warning("⚠️ No items remaining in the dispatch queue.")
                                 else:
-                                    # Generate unique dispatch ID for this batch
                                     dispatch_code = f"DISP-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:4].upper()}"
                                     h = st.session_state.current_dispatch_header
 
@@ -440,7 +406,6 @@ def render_schedules(user_name, user_role):
                                         cursor = conn_add.cursor()
                                         
                                         for row in updated_cart:
-                                            # 1. Insert Delivery Schedule
                                             cursor.execute("""
                                                 INSERT INTO deliveries (
                                                     dispatch_id, item_name, supplier, requested_by, destination, project, 
@@ -454,7 +419,6 @@ def render_schedules(user_name, user_role):
                                                 row["notes"], 1 if h["is_priority"] else 0, h["driver_name"]
                                             ))
 
-                                            # 2. Reserve inventory on master catalog
                                             cursor.execute("""
                                                 UPDATE master_items
                                                 SET reserved_stock = COALESCE(reserved_stock, 0) + ?
