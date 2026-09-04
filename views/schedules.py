@@ -1,4 +1,3 @@
-# views/schedules.py
 import pandas as pd
 import streamlit as st
 from database import get_db, init_db
@@ -19,11 +18,15 @@ def render_schedules(user_name, user_role):
         st.subheader("Upcoming & Active Deliveries")
         try:
             with get_db() as conn:
-                df = pd.read_sql_query("""
-                    SELECT id, item_name, supplier_or_destination, quantity, unit, scheduled_date, status, notes
-                    FROM deliveries
-                    ORDER BY scheduled_date ASC
-                """, conn)
+                # Updated SQL query mapping database columns to match view fields
+                query = """
+                    SELECT id, item_name, supplier AS supplier_or_destination, 
+                           expected_quantity AS quantity, unit, 
+                           expected_date AS scheduled_date, status, notes 
+                    FROM deliveries 
+                    ORDER BY expected_date ASC
+                """
+                df = pd.read_sql_query(query, conn)
 
             if not df.empty:
                 col_status, col_search = st.columns([1, 2])
@@ -56,7 +59,7 @@ def render_schedules(user_name, user_role):
                         new_status = st.selectbox(
                             "Update Status", 
                             ["Pending", "In Transit", "Completed", "Cancelled"], 
-                            index=["Pending", "In Transit", "Completed", "Cancelled"].index(row["status"]),
+                            index=["Pending", "In Transit", "Completed", "Cancelled"].index(row["status"]) if row["status"] in ["Pending", "In Transit", "Completed", "Cancelled"] else 0,
                             key=f"status_select_{row['id']}"
                         )
 
@@ -100,10 +103,11 @@ def render_schedules(user_name, user_role):
                     try:
                         with get_db() as conn_add:
                             cursor = conn_add.cursor()
+                            # Updated INSERT query matching actual database.py column names
                             cursor.execute("""
-                                INSERT INTO deliveries (item_name, supplier_or_destination, quantity, unit, scheduled_date, status, notes, created_by)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (item_name, supplier_dest, quantity, unit, str(scheduled_date), status, notes, user_name))
+                                INSERT INTO deliveries (item_name, supplier, expected_quantity, unit, expected_date, status, notes)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (item_name, supplier_dest, quantity, unit, str(scheduled_date), status, notes))
                             conn_add.commit()
                             st.success(f"✅ Delivery for **{item_name}** scheduled successfully!")
                             st.rerun()
