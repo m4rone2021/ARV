@@ -1,9 +1,13 @@
-# database.py
 import sqlite3
 import os
+import hashlib
 from contextlib import contextmanager
 
 DB_FILE = "inventory.db"
+
+def hash_password(password: str) -> str:
+    """Hashes passwords using SHA-256 for secure database storage."""
+    return hashlib.sha256(password.encode()).hexdigest()
 
 @contextmanager
 def get_db():
@@ -15,14 +19,10 @@ def get_db():
     finally:
         conn.close()
 
-# database.py
-
 def init_db():
     """Initializes database tables and default admin credentials."""
     with get_db() as conn:
         cursor = conn.cursor()
-
-        # ... (Keep existing CREATE TABLE statements) ...
 
         # Users Table
         cursor.execute("""
@@ -34,25 +34,26 @@ def init_db():
             )
         """)
 
-        # FORCE update admin password to admin123
+        # Default admin password hashed
+        admin_hashed = hash_password('admin123')
+
+        # Update or create default admin
         cursor.execute("SELECT id FROM users WHERE username = 'admin'")
         existing_admin = cursor.fetchone()
 
         if existing_admin:
             cursor.execute("""
                 UPDATE users 
-                SET password = 'admin123', role = 'Admin' 
+                SET password = ?, role = 'Admin' 
                 WHERE username = 'admin'
-            """)
+            """, (admin_hashed,))
         else:
             cursor.execute("""
                 INSERT INTO users (username, password, role) 
-                VALUES ('admin', 'admin123', 'Admin')
-            """)
+                VALUES ('admin', ?, 'Admin')
+            """, (admin_hashed,))
 
-        conn.commit()
-
-        # 2. Master Items Catalog
+        # Master Items Catalog
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS master_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,12 +66,12 @@ def init_db():
             )
         """)
 
-        # 3. Transactions Log (Stock In / Stock Out / Audit Adjustments)
+        # Transactions Log
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                type TEXT NOT NULL, -- STOCK IN, STOCK OUT, RECONCILIATION
+                type TEXT NOT NULL,
                 item_name TEXT NOT NULL,
                 quantity REAL NOT NULL,
                 unit TEXT NOT NULL,
@@ -79,7 +80,7 @@ def init_db():
             )
         """)
 
-        # 4. Physical Inventory Discrepancies Table (Approval Workflow)
+        # Physical Inventory Discrepancies
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS discrepancies (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,14 +92,14 @@ def init_db():
                 unit TEXT NOT NULL,
                 submitted_by TEXT NOT NULL,
                 submission_notes TEXT,
-                status TEXT DEFAULT 'PENDING', -- PENDING, APPROVED, REJECTED
+                status TEXT DEFAULT 'PENDING',
                 resolved_by TEXT,
                 resolved_timestamp DATETIME,
                 resolution_notes TEXT
             )
         """)
 
-        # 5. Schedules & Deliveries Table
+        # Deliveries Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS deliveries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,40 +108,33 @@ def init_db():
                 unit TEXT NOT NULL,
                 supplier TEXT,
                 expected_date DATE NOT NULL,
-                status TEXT DEFAULT 'PENDING', -- PENDING, RECEIVED, CANCELLED
+                status TEXT DEFAULT 'PENDING',
                 notes TEXT
             )
         """)
 
-        # 6. Reminders & Tasks Table
+        # Tasks Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_description TEXT NOT NULL,
                 assigned_to TEXT NOT NULL,
                 due_date DATE,
-                status TEXT DEFAULT 'OPEN', -- OPEN, COMPLETED
+                status TEXT DEFAULT 'OPEN',
                 created_by TEXT NOT NULL
             )
         """)
 
-        # Seed initial default Admin user if users table is empty
-        cursor.execute("SELECT COUNT(*) FROM users")
-        if cursor.fetchone()[0] == 0:
-            cursor.execute("""
-                INSERT INTO users (username, password, role)
-                VALUES ('admin', 'admin123', 'Admin')
-            """)
-
         conn.commit()
 
 def login_user(username, password):
-    """Authenticates a user against the database."""
+    """Authenticates a user against the database using hashed passwords."""
+    hashed = hash_password(password)
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT username, role FROM users WHERE username = ? AND password = ?",
-            (username, password)
+            (username, hashed)
         )
         return cursor.fetchone()
 
