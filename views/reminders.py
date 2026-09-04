@@ -43,7 +43,7 @@ def render_reminders(user_name, user_role):
     with tab_tasks:
         st.subheader("Site Tasks Overview")
 
-        filter_status = st.selectbox("Filter Status", ["All", "OPEN", "COMPLETED", "CANCELLED"], key="rem_filter_status")
+        filter_status = st.selectbox("Filter Status", ["All", "OPEN", "PENDING", "COMPLETED", "CANCELLED"], key="rem_filter_status")
 
         query = f"SELECT id, due_date, {task_col} AS task, assigned_to, status FROM reminders WHERE 1=1"
         params = []
@@ -69,33 +69,53 @@ def render_reminders(user_name, user_role):
                 st.dataframe(df_display, use_container_width=True, hide_index=True)
 
                 st.divider()
-                st.subheader("🔄 Update Task Status")
+                st.subheader("🔄 Update Task Status or Reschedule")
 
                 with st.form("update_reminder_form"):
                     col1, col2 = st.columns(2)
+                    
                     with col1:
-                        open_tasks = df[df["status"] == "OPEN"] if "status" in df.columns else df
-                        if not open_tasks.empty:
-                            task_options = [f"#{row['id']} - {row['task']} (Due: {row['due_date']})" for _, row in open_tasks.iterrows()]
-                            selected_task = st.selectbox("Select Task", task_options)
+                        # Select active tasks (excluding COMPLETED and CANCELLED by default for updates)
+                        active_tasks = df[~df["status"].isin(["COMPLETED", "CANCELLED"])] if "status" in df.columns else df
+                        if not active_tasks.empty:
+                            task_options = [f"#{row['id']} - {row['task']} (Due: {row['due_date']}) [{row['status']}]" for _, row in active_tasks.iterrows()]
+                            selected_task = st.selectbox("Select Task to Update", task_options)
                         else:
-                            st.info("No open tasks available to update.")
+                            st.info("No active tasks available to update.")
                             selected_task = None
 
                     with col2:
-                        new_status = st.selectbox("Set Status", ["COMPLETED", "CANCELLED"])
+                        action_type = st.selectbox("Action / New Status", ["PENDING", "COMPLETED", "CANCELLED", "MOVE DUE DATE"])
+                        
+                        # Conditional date selector when "MOVE DUE DATE" is selected
+                        new_due_date = None
+                        if action_type == "MOVE DUE DATE":
+                            new_due_date = st.date_input("Select New Due Date")
 
-                    submit_update = st.form_submit_button("Update Task Status", use_container_width=True)
+                    submit_update = st.form_submit_button("Submit Task Update", use_container_width=True)
 
                     if submit_update and selected_task:
                         task_id = int(selected_task.split("#")[1].split(" ")[0])
                         try:
                             with get_db() as conn:
                                 cursor = conn.cursor()
-                                cursor.execute("UPDATE reminders SET status = ? WHERE id = ?", (new_status, task_id))
+                                
+                                if action_type == "MOVE DUE DATE":
+                                    cursor.execute(
+                                        "UPDATE reminders SET due_date = ?, status = 'OPEN' WHERE id = ?",
+                                        (str(new_due_date), task_id)
+                                    )
+                                    st.success(f"✅ Task #{task_id} rescheduled to **{new_due_date}**.")
+                                else:
+                                    cursor.execute(
+                                        "UPDATE reminders SET status = ? WHERE id = ?",
+                                        (action_type, task_id)
+                                    )
+                                    st.success(f"✅ Task #{task_id} status updated to '**{action_type}**'.")
+                                
                                 conn.commit()
-                                st.success(f"✅ Task #{task_id} marked as '{new_status}'.")
                                 st.rerun()
+
                         except Exception as e:
                             st.error(f"Failed to update task: {e}")
             else:
