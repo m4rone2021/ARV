@@ -19,7 +19,6 @@ def ensure_reminders_table():
                 priority TEXT DEFAULT 'NORMAL'
             )
         """)
-        # Schema migration: Add priority column if missing in older database tables
         cursor.execute("PRAGMA table_info(reminders)")
         cols = [col[1] for col in cursor.fetchall()]
         if "priority" not in cols:
@@ -49,7 +48,13 @@ def calculate_days_left(due_date_str):
 
 def render_reminders(user_name, user_role):
     st.title("📝 Reminders & Tasks")
-    st.caption("Track site tasks, equipment inspections, inventory audits, and follow-ups.")
+    
+    # Indicate view mode based on role
+    is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
+    if is_admin:
+        st.caption(f"👑 **Admin Mode** ({user_name}): Viewing and managing **all** site tasks.")
+    else:
+        st.caption(f"👤 **User Mode** ({user_name}): Viewing tasks assigned specifically to you.")
 
     init_db()
     ensure_reminders_table()
@@ -70,8 +75,15 @@ def render_reminders(user_name, user_role):
     with tab_tasks:
         try:
             with get_db() as conn:
-                query = f"SELECT id, due_date, {task_col} AS task, assigned_to, status, priority FROM reminders"
-                df = pd.read_sql_query(query, conn)
+                # Role-based query filtering
+                if is_admin:
+                    query = f"SELECT id, due_date, {task_col} AS task, assigned_to, status, priority FROM reminders"
+                    params = []
+                else:
+                    query = f"SELECT id, due_date, {task_col} AS task, assigned_to, status, priority FROM reminders WHERE LOWER(assigned_to) = LOWER(?)"
+                    params = [user_name.strip()]
+
+                df = pd.read_sql_query(query, conn, params=params)
 
             if not df.empty:
                 # Calculate Days Left and Status Badge for sorting
@@ -83,10 +95,9 @@ def render_reminders(user_name, user_role):
                 open_df = df[df["status"].isin(["OPEN", "PENDING"])].copy()
                 closed_df = df[df["status"].isin(["COMPLETED", "CANCELLED"])].copy()
 
-                # SECTION 1: OPEN / ACTIVE TASKS (Sorted by days left ascending)
+                # SECTION 1: OPEN / ACTIVE TASKS
                 st.subheader("🟡 Open & Pending Tasks")
                 if not open_df.empty:
-                    # Primary Sort: Days Left ASC (Most Urgent First), Secondary Sort: Priority
                     open_df = open_df.sort_values(
                         by=["days_left_num", "priority"],
                         ascending=[True, False]
@@ -170,7 +181,7 @@ def render_reminders(user_name, user_role):
                             except Exception as e:
                                 st.error(f"Failed to update task: {e}")
                 else:
-                    st.info("No open or pending tasks currently logged.")
+                    st.info("No open or pending tasks currently assigned to you." if not is_admin else "No open or pending tasks in the system.")
 
                 st.divider()
 
@@ -187,10 +198,10 @@ def render_reminders(user_name, user_role):
                     })
                     st.dataframe(df_closed_display, use_container_width=True, hide_index=True)
                 else:
-                    st.info("No completed or cancelled tasks in history.")
+                    st.info("No completed or cancelled tasks found.")
 
             else:
-                st.info("No task reminders found in the database.")
+                st.info("No tasks found for your user account." if not is_admin else "No task reminders found in the database.")
 
         except Exception as e:
             st.error(f"Error loading tasks: {e}")
@@ -227,7 +238,7 @@ def render_reminders(user_name, user_role):
                                 VALUES (?, ?, ?, 'OPEN', ?)
                             """, (str(due_date), task_desc.strip(), assigned_to.strip(), priority_val))
                             conn.commit()
-                            st.success(f"✅ Created new task: **{task_desc.strip()}** ({'🚨 HIGH PRIORITY' if is_high_priority else 'Normal Priority'}).")
+                            st.success(f"✅ Created new task for **{assigned_to.strip()}**: **{task_desc.strip()}**.")
                             st.rerun()
                     except Exception as e:
                         st.error(f"Failed to save task: {e}")
