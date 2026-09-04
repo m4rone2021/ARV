@@ -1,5 +1,6 @@
 # views/reminders.py
 import sqlite3
+from datetime import datetime, date
 import pandas as pd
 import streamlit as st
 from database import get_db, init_db
@@ -26,6 +27,26 @@ def ensure_reminders_table():
             
         conn.commit()
 
+def calculate_days_left(due_date_str):
+    """Calculate days remaining from today until the due date."""
+    if not due_date_str:
+        return 9999, "No Date"
+    try:
+        due_dt = datetime.strptime(str(due_date_str).strip(), "%Y-%m-%d").date()
+        today = date.today()
+        days_diff = (due_dt - today).days
+
+        if days_diff < 0:
+            return days_diff, f"🔴 OVERDUE ({abs(days_diff)}d ago)"
+        elif days_diff == 0:
+            return days_diff, "🟠 DUE TODAY"
+        elif days_diff == 1:
+            return days_diff, "🟡 1 day left"
+        else:
+            return days_diff, f"🟢 {days_diff} days left"
+    except Exception:
+        return 9999, "Invalid Date"
+
 def render_reminders(user_name, user_role):
     st.title("📝 Reminders & Tasks")
     st.caption("Track site tasks, equipment inspections, inventory audits, and follow-ups.")
@@ -49,23 +70,34 @@ def render_reminders(user_name, user_role):
     with tab_tasks:
         try:
             with get_db() as conn:
-                query = f"SELECT id, due_date, {task_col} AS task, assigned_to, status, priority FROM reminders ORDER BY CASE WHEN priority = 'HIGH' THEN 0 ELSE 1 END, due_date ASC, id DESC"
+                query = f"SELECT id, due_date, {task_col} AS task, assigned_to, status, priority FROM reminders"
                 df = pd.read_sql_query(query, conn)
 
             if not df.empty:
+                # Calculate Days Left and Status Badge for sorting
+                days_left_data = df["due_date"].apply(calculate_days_left)
+                df["days_left_num"] = [d[0] for d in days_left_data]
+                df["days_left_str"] = [d[1] for d in days_left_data]
+
                 # Separate active/open tasks from completed/cancelled tasks
                 open_df = df[df["status"].isin(["OPEN", "PENDING"])].copy()
                 closed_df = df[df["status"].isin(["COMPLETED", "CANCELLED"])].copy()
 
-                # SECTION 1: OPEN / ACTIVE TASKS
+                # SECTION 1: OPEN / ACTIVE TASKS (Sorted by days left ascending)
                 st.subheader("🟡 Open & Pending Tasks")
                 if not open_df.empty:
-                    # Add visual badge for display table
+                    # Primary Sort: Days Left ASC (Most Urgent First), Secondary Sort: Priority
+                    open_df = open_df.sort_values(
+                        by=["days_left_num", "priority"],
+                        ascending=[True, False]
+                    )
+
                     open_df["Priority Display"] = open_df["priority"].apply(lambda x: "🚨 HIGH" if x == "HIGH" else "NORMAL")
 
-                    df_open_display = open_df[["id", "due_date", "Priority Display", "task", "assigned_to", "status"]].rename(columns={
+                    df_open_display = open_df[["id", "due_date", "days_left_str", "Priority Display", "task", "assigned_to", "status"]].rename(columns={
                         "id": "ID",
                         "due_date": "Due Date",
+                        "days_left_str": "Days Left",
                         "Priority Display": "Priority",
                         "task": "Task Description",
                         "assigned_to": "Assigned To",
@@ -80,7 +112,7 @@ def render_reminders(user_name, user_role):
                         
                         with col1:
                             task_options = [
-                                f"#{row['id']} {'[🚨 HIGH]' if row['priority'] == 'HIGH' else ''} - {row['task']} (Due: {row['due_date']}) [{row['status']}]"
+                                f"#{row['id']} [{'🚨 HIGH' if row['priority'] == 'HIGH' else 'NORMAL'}] - {row['task']} ({row['days_left_str']})"
                                 for _, row in open_df.iterrows()
                             ]
                             selected_task = st.selectbox("Select Task to Update", task_options)
@@ -145,6 +177,7 @@ def render_reminders(user_name, user_role):
                 # SECTION 2: COMPLETED & CANCELLED TASKS
                 st.subheader("✅ Completed & Cancelled History")
                 if not closed_df.empty:
+                    closed_df = closed_df.sort_values(by="id", ascending=False)
                     df_closed_display = closed_df[["id", "due_date", "task", "assigned_to", "status"]].rename(columns={
                         "id": "ID",
                         "due_date": "Due Date",
