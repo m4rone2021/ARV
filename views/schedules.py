@@ -1,29 +1,8 @@
 # views/schedules.py
 import sqlite3
-from datetime import datetime, date
 import pandas as pd
 import streamlit as st
 from database import get_db, init_db
-
-def calculate_days_left(due_date_str):
-    """Calculate days remaining from today until the delivery due date."""
-    if not due_date_str:
-        return 9999, "No Due Date"
-    try:
-        due_dt = datetime.strptime(str(due_date_str).strip(), "%Y-%m-%d").date()
-        today = date.today()
-        days_diff = (due_dt - today).days
-
-        if days_diff < 0:
-            return days_diff, f"🔴 OVERDUE ({abs(days_diff)}d ago)"
-        elif days_diff == 0:
-            return days_diff, "🟠 DUE TODAY"
-        elif days_diff == 1:
-            return days_diff, "🟡 1 day left"
-        else:
-            return days_diff, f"🟢 {days_diff} days left"
-    except Exception:
-        return 9999, "Invalid Date"
 
 def ensure_schedule_columns():
     """Ensure Stock Out fields exist on the deliveries table."""
@@ -37,7 +16,8 @@ def ensure_schedule_columns():
                 "requested_by": "TEXT",
                 "destination": "TEXT",
                 "project": "TEXT",
-                "is_priority": "INTEGER DEFAULT 0"
+                "is_priority": "INTEGER DEFAULT 0",
+                "driver_name": "TEXT"
             }
 
             for col_name, col_type in new_cols.items():
@@ -74,43 +54,28 @@ def render_schedules(user_name, user_role):
                            COALESCE(project, '') AS project,
                            expected_quantity AS quantity, unit, 
                            expected_date AS scheduled_date, status, notes,
-                           COALESCE(is_priority, 0) AS is_priority
+                           COALESCE(is_priority, 0) AS is_priority,
+                           COALESCE(driver_name, '') AS driver_name
                     FROM deliveries 
+                    ORDER BY is_priority DESC, expected_date ASC
                 """
                 df = pd.read_sql_query(query, conn)
 
             if not df.empty:
-                # Calculate Days Remaining & Overdue status
-                days_left_results = df["scheduled_date"].apply(calculate_days_left)
-                df["days_diff"] = [res[0] for res in days_left_results]
-                df["time_status"] = [res[1] for res in days_left_results]
-
-                # Priority Sorting: 
-                # 1. Active Pending/In Transit items ordered by closest due date
-                # 2. High priority
-                df = df.sort_values(
-                    by=["days_diff", "is_priority"], 
-                    ascending=[True, False]
-                )
-
                 col_status, col_prio, col_search = st.columns([1, 1, 2])
                 with col_status:
-                    status_filter = st.selectbox("Filter Status", ["All Active", "Pending", "In Transit", "Completed", "Cancelled"])
+                    status_filter = st.selectbox("Filter Status", ["All", "Pending", "In Transit", "Completed", "Cancelled"])
                 with col_prio:
-                    prio_filter = st.selectbox("Priority / Timeline Filter", ["All", "High Priority Only", "Overdue Dispatches Only", "Normal Only"])
+                    prio_filter = st.selectbox("Priority Filter", ["All", "High Priority Only", "Normal Only"])
                 with col_search:
-                    search_query = st.text_input("🔍 Search Item / Requested By / Destination / Project", placeholder="e.g., Cement, Main Site, Engr. Alex...")
+                    search_query = st.text_input("🔍 Search Item / Requested By / Destination / Driver", placeholder="e.g., Cement, Main Site, Driver John...")
 
                 filtered_df = df.copy()
-                if status_filter == "All Active":
-                    filtered_df = filtered_df[filtered_df["status"].isin(["Pending", "In Transit"])]
-                elif status_filter != "All":
+                if status_filter != "All":
                     filtered_df = filtered_df[filtered_df["status"] == status_filter]
                 
                 if prio_filter == "High Priority Only":
                     filtered_df = filtered_df[filtered_df["is_priority"] == 1]
-                elif prio_filter == "Overdue Dispatches Only":
-                    filtered_df = filtered_df[(filtered_df["days_diff"] < 0) & (filtered_df["status"].isin(["Pending", "In Transit"]))]
                 elif prio_filter == "Normal Only":
                     filtered_df = filtered_df[filtered_df["is_priority"] == 0]
 
@@ -120,7 +85,8 @@ def render_schedules(user_name, user_role):
                         filtered_df["item_name"].str.lower().str.contains(q, na=False) |
                         filtered_df["requested_by"].str.lower().str.contains(q, na=False) |
                         filtered_df["destination"].str.lower().str.contains(q, na=False) |
-                        filtered_df["project"].str.lower().str.contains(q, na=False)
+                        filtered_df["project"].str.lower().str.contains(q, na=False) |
+                        filtered_df["driver_name"].str.lower().str.contains(q, na=False)
                     ]
 
                 st.divider()
@@ -128,9 +94,7 @@ def render_schedules(user_name, user_role):
                 for idx, row in filtered_df.iterrows():
                     prio_badge = "🔥 HIGH PRIORITY | " if row['is_priority'] == 1 else ""
                     project_info = f" ({row['project']})" if row['project'] else ""
-                    time_badge = f" | {row['time_status']}" if row['status'] in ["Pending", "In Transit"] else ""
-
-                    header_label = f"{prio_badge}📦 {row['item_name']} - Due: {row['scheduled_date']}{time_badge} [{row['status']}] -> {row['destination']}{project_info}"
+                    header_label = f"{prio_badge}📦 {row['item_name']} - {row['scheduled_date']} [{row['status']}] -> {row['destination']}{project_info}"
                     
                     with st.expander(header_label):
                         c1, c2, c3 = st.columns(3)
@@ -140,110 +104,95 @@ def render_schedules(user_name, user_role):
                         c2.markdown(f"**Project:** {row['project'] if row['project'] else 'N/A'}")
                         c2.markdown(f"**Quantity:** {row['quantity']} {row['unit']}")
                         
-                        c3.markdown(f"**Due Date:** `{row['scheduled_date']}`")
-                        c3.markdown(f"**Timeline Status:** {row['time_status']}")
                         c3.markdown(f"**Priority:** {'🔴 **HIGH**' if row['is_priority'] == 1 else '🟢 Normal'}")
+                        c3.markdown(f"**Status:** `{row['status']}`")
+
+                        if row["driver_name"]:
+                            st.markdown(f"🚛 **Driver Name:** {row['driver_name']}")
 
                         if row["notes"]:
                             st.caption(f"**Notes:** {row['notes']}")
 
                         st.divider()
 
-                        # --- STATUS & RESCHEDULE ACTIONS ---
-                        action_col1, action_col2 = st.columns(2)
+                        status_options = ["Pending", "In Transit", "Completed", "Cancelled"]
+                        current_idx = status_options.index(row["status"]) if row["status"] in status_options else 0
 
-                        # Status Update Column
-                        with action_col1:
-                            st.markdown("##### ⚙️ Update Status")
-                            status_options = ["Pending", "In Transit", "Completed", "Cancelled"]
-                            current_idx = status_options.index(row["status"]) if row["status"] in status_options else 0
+                        new_status = st.selectbox(
+                            "Update Status", 
+                            status_options, 
+                            index=current_idx,
+                            key=f"status_select_{row['id']}"
+                        )
 
-                            col_sel, col_btn = st.columns([2, 1])
-                            with col_sel:
-                                new_status = st.selectbox(
-                                    "Status", 
-                                    status_options, 
-                                    index=current_idx,
-                                    key=f"status_select_{row['id']}"
-                                )
+                        # Additional fields conditional on selecting "Completed"
+                        driver_input = row["driver_name"]
+                        add_notes_input = ""
 
-                            if new_status != row["status"]:
-                                with col_btn:
-                                    st.write("") # Spacing
-                                    if st.button("Save Status", key=f"btn_status_{row['id']}"):
-                                        try:
-                                            with get_db() as conn_update:
-                                                cursor = conn_update.cursor()
-                                                old_status = row["status"]
-                                                qty = float(row["quantity"])
-                                                item_name = row["item_name"]
+                        if new_status == "Completed":
+                            st.markdown("##### 📝 Completion Details")
+                            col_driver, col_notes = st.columns(2)
+                            with col_driver:
+                                driver_input = st.text_input(
+                                    "Driver Name*", 
+                                    value=row["driver_name"], 
+                                    placeholder="e.g., John Doe",
+                                    key=f"driver_input_{row['id']}"
+                                ).strip()
+                            with col_notes:
+                                add_notes_input = st.text_input(
+                                    "Additional Completion Notes", 
+                                    placeholder="e.g., Received by site supervisor; gate pass #1024",
+                                    key=f"add_notes_{row['id']}"
+                                ).strip()
 
-                                                cursor.execute("UPDATE deliveries SET status = ? WHERE id = ?", (new_status, row['id']))
+                        if new_status != row["status"] or (new_status == "Completed" and driver_input != row["driver_name"]):
+                            if st.button("Save Changes", key=f"btn_status_{row['id']}", use_container_width=True):
+                                if new_status == "Completed" and not driver_input:
+                                    st.error("⚠️ Please specify the Driver Name before marking the dispatch as Completed.")
+                                else:
+                                    try:
+                                        with get_db() as conn_update:
+                                            cursor = conn_update.cursor()
+                                            old_status = row["status"]
+                                            qty = float(row["quantity"])
+                                            item_name = row["item_name"]
 
-                                                if old_status in ["Pending", "In Transit"]:
-                                                    if new_status == "Completed":
-                                                        cursor.execute("""
-                                                            UPDATE master_items 
-                                                            SET current_stock = current_stock - ?,
-                                                                reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
-                                                            WHERE item_name = ?
-                                                        """, (qty, qty, item_name))
+                                            # Combine notes if extra completion notes were added
+                                            existing_notes = str(row['notes']).strip() if row['notes'] else ""
+                                            final_notes = existing_notes
+                                            if add_notes_input:
+                                                final_notes = f"{existing_notes} [Completed Note: {add_notes_input}]".strip()
 
-                                                    elif new_status == "Cancelled":
-                                                        cursor.execute("""
-                                                            UPDATE master_items 
-                                                            SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
-                                                            WHERE item_name = ?
-                                                        """, (qty, item_name))
+                                            # Update Delivery Record Status, Driver, and Notes
+                                            cursor.execute("""
+                                                UPDATE deliveries 
+                                                SET status = ?, driver_name = ?, notes = ? 
+                                                WHERE id = ?
+                                            """, (new_status, driver_input, final_notes, row['id']))
 
-                                                conn_update.commit()
-                                                st.success(f"Status updated to {new_status}!")
-                                                st.rerun()
-                                        except Exception as e:
-                                            st.error(f"Error updating delivery status: {e}")
+                                            # Adjust Stock based on Status Transitions
+                                            if old_status in ["Pending", "In Transit"]:
+                                                if new_status == "Completed":
+                                                    cursor.execute("""
+                                                        UPDATE master_items 
+                                                        SET current_stock = current_stock - ?,
+                                                            reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
+                                                        WHERE item_name = ?
+                                                    """, (qty, qty, item_name))
 
-                        # Reschedule Delivery Column
-                        with action_col2:
-                            st.markdown("##### 🗓️ Reschedule Delivery")
-                            try:
-                                curr_date = datetime.strptime(str(row['scheduled_date']).strip(), "%Y-%m-%d").date()
-                            except Exception:
-                                curr_date = date.today()
+                                                elif new_status == "Cancelled":
+                                                    cursor.execute("""
+                                                        UPDATE master_items 
+                                                        SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
+                                                        WHERE item_name = ?
+                                                    """, (qty, item_name))
 
-                            col_date, col_resched_btn = st.columns([2, 1])
-                            with col_date:
-                                new_date = st.date_input(
-                                    "New Delivery Date", 
-                                    value=curr_date, 
-                                    key=f"resched_date_{row['id']}"
-                                )
-                            
-                            if new_date != curr_date:
-                                with col_resched_btn:
-                                    st.write("") # Spacing
-                                    if st.button("Save New Date", key=f"btn_resched_{row['id']}"):
-                                        try:
-                                            with get_db() as conn_resched:
-                                                cursor = conn_resched.cursor()
-                                                
-                                                # Append reschedule log to notes
-                                                today_str = date.today().strftime("%Y-%m-%d")
-                                                resched_log = f"[Rescheduled from {curr_date} to {new_date} on {today_str} by {user_name}]"
-                                                existing_notes = str(row['notes']).strip() if row['notes'] else ""
-                                                updated_notes = f"{existing_notes} {resched_log}".strip()
-
-                                                cursor.execute("""
-                                                    UPDATE deliveries 
-                                                    SET expected_date = ?, notes = ? 
-                                                    WHERE id = ?
-                                                """, (str(new_date), updated_notes, row['id']))
-
-                                                conn_resched.commit()
-                                                st.success(f"Delivery rescheduled to {new_date}!")
-                                                st.rerun()
-                                        except Exception as e:
-                                            st.error(f"Error rescheduling delivery: {e}")
-
+                                            conn_update.commit()
+                                            st.success(f"Status updated to {new_status} and inventory adjusted accordingly!")
+                                            st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error updating delivery status: {e}")
             else:
                 st.info("No delivery dispatches scheduled yet.")
         except Exception as e:
@@ -294,6 +243,7 @@ def render_schedules(user_name, user_role):
                         scheduled_date = st.date_input("Scheduled Delivery Date")
                         status = st.selectbox("Initial Status", ["Pending", "In Transit"])
 
+                    driver_name_initial = st.text_input("Assigned Driver Name (Optional)", placeholder="e.g., John Doe").strip()
                     is_priority = st.checkbox("🔥 Mark as High Priority Delivery", help="High priority stock out deliveries appear prominently at the top of dispatches.")
                     notes = st.text_input("Notes / Delivery Instructions", placeholder="e.g., Deliver via 10-wheeler truck; contact site engineer upon arrival")
                     
@@ -315,12 +265,12 @@ def render_schedules(user_name, user_role):
                                     cursor.execute("""
                                         INSERT INTO deliveries (
                                             item_name, supplier, requested_by, destination, project, 
-                                            expected_quantity, unit, expected_date, status, notes, is_priority
+                                            expected_quantity, unit, expected_date, status, notes, is_priority, driver_name
                                         )
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                     """, (
                                         selected_item_name, destination, requested_by, destination, project,
-                                        quantity, unit_name, str(scheduled_date), status, notes.strip(), priority_val
+                                        quantity, unit_name, str(scheduled_date), status, notes.strip(), priority_val, driver_name_initial
                                     ))
 
                                     # 2. Increase Reserved Stock on Master Item
