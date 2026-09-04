@@ -4,6 +4,31 @@ import pandas as pd
 import streamlit as st
 from database import get_db, init_db
 
+# Predefined standard list of categories for the drop-down select inputs
+DEFAULT_CATEGORIES = [
+    "Fuel & Oils",
+    "Construction Materials",
+    "Steel / Rebar",
+    "Nails & Fasteners",
+    "Cutting & Grinding Consumables",
+    "Welding Supplies & PPE",
+    "General Site Supplies"
+]
+
+def get_all_categories():
+    """Fetch distinct categories existing in DB combined with default choices."""
+    categories = list(DEFAULT_CATEGORIES)
+    try:
+        with get_db() as conn:
+            df = pd.read_sql_query("SELECT DISTINCT category FROM master_items", conn)
+            existing_cats = df["category"].dropna().str.strip().tolist()
+            for cat in existing_cats:
+                if cat and cat not in categories:
+                    categories.append(cat)
+    except Exception:
+        pass
+    return sorted(list(set(categories)))
+
 def render_manage_items(user_name, user_role):
     st.title("📦 Master Item Catalog")
     st.caption("View and maintain the master list of site inventory items and stock thresholds.")
@@ -25,6 +50,9 @@ def render_manage_items(user_name, user_role):
         tab_view, = st.tabs(["📋 View Catalog"])
         st.info("ℹ️ Read-Only Mode: Only Administrators can create, edit, or delete master items.")
 
+    # Fetch fresh category choices for dropdowns
+    available_categories = get_all_categories()
+
     # -------------------------------------------------------------
     # TAB 1: VIEW CATALOG (All Users)
     # -------------------------------------------------------------
@@ -35,13 +63,7 @@ def render_manage_items(user_name, user_role):
         with col_search:
             search_query = st.text_input("Search Item Name", placeholder="Type item name...")
         with col_cat:
-            try:
-                with get_db() as conn:
-                    categories_df = pd.read_sql_query("SELECT DISTINCT category FROM master_items", conn)
-                cat_list = ["All"] + categories_df["category"].dropna().tolist()
-            except Exception:
-                cat_list = ["All"]
-            
+            cat_list = ["All"] + available_categories
             selected_cat = st.selectbox("Filter Category", cat_list)
 
         try:
@@ -93,7 +115,7 @@ def render_manage_items(user_name, user_role):
 
                 with col1:
                     item_name = st.text_input("Item Name*")
-                    category = st.text_input("Category*", placeholder="e.g., Aggregates, Cement, Fuel")
+                    category = st.selectbox("Category*", options=available_categories)
                     unit = st.text_input("Unit of Measure*", placeholder="e.g., bags, liters, cu.m")
 
                 with col2:
@@ -142,11 +164,19 @@ def render_manage_items(user_name, user_role):
 
                     selected_row = df_all[df_all["item_name"] == selected_item_name].iloc[0]
 
+                    current_cat = str(selected_row["category"]).strip()
+                    edit_cat_options = list(available_categories)
+                    if current_cat and current_cat not in edit_cat_options:
+                        edit_cat_options.append(current_cat)
+                        edit_cat_options.sort()
+
+                    default_cat_index = edit_cat_options.index(current_cat) if current_cat in edit_cat_options else 0
+
                     with st.form("edit_item_form"):
                         col1, col2 = st.columns(2)
 
                         with col1:
-                            edit_category = st.text_input("Category", value=selected_row["category"])
+                            edit_category = st.selectbox("Category", options=edit_cat_options, index=default_cat_index)
                             edit_unit = st.text_input("Unit", value=selected_row["unit"])
                             edit_stock = st.number_input("Current Stock", min_value=0.0, value=float(selected_row["current_stock"]))
 
