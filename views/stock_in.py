@@ -70,23 +70,31 @@ def render_stock_in(user_name, user_role):
 
                 try:
                     new_stock = current_stock + quantity
-                    combined_remarks = f"Supplier/DR: {supplier_source.strip()} | {remarks.strip()}".strip(" |")
+                    
+                    # Combine supplier, remarks, and attachment info into the single 'notes' column
+                    notes_list = [f"Supplier/DR: {supplier_source.strip()}"]
+                    if remarks.strip():
+                        notes_list.append(f"Remarks: {remarks.strip()}")
+                    if attachment_path:
+                        notes_list.append(f"Attachment: {attachment_path}")
+                    
+                    full_notes = " | ".join(notes_list)
 
                     with get_db() as conn:
                         cursor = conn.cursor()
                         # Update master stock limit
                         cursor.execute("UPDATE master_items SET current_stock = ? WHERE item_name = ?", (new_stock, selected_item))
                         
-                        # Log IN transaction entry
+                        # Log IN transaction entry matching the transactions schema
                         cursor.execute("""
-                            INSERT INTO transactions (type, item_name, category, unit, quantity, user_name, remarks, attachment)
-                            VALUES ('IN', ?, ?, ?, ?, ?, ?, ?)
-                        """, (selected_item, category, unit, quantity, user_name, combined_remarks, attachment_path))
+                            INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
+                            VALUES ('STOCK IN', ?, ?, ?, ?, ?)
+                        """, (selected_item, quantity, unit, user_name, full_notes))
                         
                         conn.commit()
 
                     st.success(f"✅ Added {quantity} {unit} to '{selected_item}'. New stock level: {new_stock} {unit}.")
                     st.rerun()
-
+                
                 except Exception as e:
                     st.error(f"Error executing database stock increment: {e}")
