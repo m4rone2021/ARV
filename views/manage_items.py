@@ -15,6 +15,9 @@ DEFAULT_CATEGORIES = [
     "General Site Supplies"
 ]
 
+# Standard unit options
+UNIT_OPTIONS = ["liters", "bags", "packs", "pcs", "sheets", "rolls"]
+
 def get_all_categories():
     """Fetch distinct categories existing in DB combined with default choices."""
     categories = list(DEFAULT_CATEGORIES)
@@ -116,12 +119,13 @@ def render_manage_items(user_name, user_role):
                 with col1:
                     item_name = st.text_input("Item Name*")
                     category = st.selectbox("Category*", options=available_categories)
-                    unit = st.text_input("Unit of Measure*", placeholder="e.g., bags, liters, cu.m")
+                    unit = st.selectbox("Unit of Measure*", options=UNIT_OPTIONS)
 
                 with col2:
-                    initial_stock = st.number_input("Initial Stock Quantity", min_value=0.0, step=1.0, value=0.0)
-                    min_threshold = st.number_input("Low Stock Threshold Alert", min_value=0.0, step=1.0, value=10.0)
-                    remarks = st.text_input("Remarks / Notes")
+                    # setting value=None lets user touch/click to type without clearing 0.00 first
+                    initial_stock = st.number_input("Initial Stock Quantity*", min_value=0.0, step=1.0, value=None, placeholder="0.0")
+                    min_threshold = st.number_input("Low Stock Threshold Alert*", min_value=0.0, step=1.0, value=None, placeholder="0.0")
+                    remarks = st.text_input("Remarks / Notes (Optional)")
 
                 submit_add = st.form_submit_button("💾 Save Item to Catalog", use_container_width=True)
 
@@ -130,8 +134,9 @@ def render_manage_items(user_name, user_role):
                     clean_cat = category.strip()
                     clean_unit = unit.strip()
 
-                    if not clean_name or not clean_cat or not clean_unit:
-                        st.error("⚠️ Item Name, Category, and Unit of Measure are required.")
+                    # Require all fields except remarks
+                    if not clean_name or not clean_cat or not clean_unit or initial_stock is None or min_threshold is None:
+                        st.error("⚠️ All fields are required except Remarks/Notes.")
                     else:
                         try:
                             with get_db() as conn:
@@ -164,42 +169,53 @@ def render_manage_items(user_name, user_role):
 
                     selected_row = df_all[df_all["item_name"] == selected_item_name].iloc[0]
 
+                    # Ensure current category is available in select options
                     current_cat = str(selected_row["category"]).strip()
                     edit_cat_options = list(available_categories)
                     if current_cat and current_cat not in edit_cat_options:
                         edit_cat_options.append(current_cat)
                         edit_cat_options.sort()
-
                     default_cat_index = edit_cat_options.index(current_cat) if current_cat in edit_cat_options else 0
+
+                    # Ensure current unit is available in select options
+                    current_unit = str(selected_row["unit"]).strip()
+                    edit_unit_options = list(UNIT_OPTIONS)
+                    if current_unit and current_unit not in edit_unit_options:
+                        edit_unit_options.append(current_unit)
+                        edit_unit_options.sort()
+                    default_unit_index = edit_unit_options.index(current_unit) if current_unit in edit_unit_options else 0
 
                     with st.form("edit_item_form"):
                         col1, col2 = st.columns(2)
 
                         with col1:
-                            edit_category = st.selectbox("Category", options=edit_cat_options, index=default_cat_index)
-                            edit_unit = st.text_input("Unit", value=selected_row["unit"])
-                            edit_stock = st.number_input("Current Stock", min_value=0.0, value=float(selected_row["current_stock"]))
+                            edit_category = st.selectbox("Category*", options=edit_cat_options, index=default_cat_index)
+                            edit_unit = st.selectbox("Unit*", options=edit_unit_options, index=default_unit_index)
+                            edit_stock = st.number_input("Current Stock*", min_value=0.0, value=float(selected_row["current_stock"]))
 
                         with col2:
-                            edit_threshold = st.number_input("Min Threshold Alert", min_value=0.0, value=float(selected_row["min_threshold"]))
+                            edit_threshold = st.number_input("Min Threshold Alert*", min_value=0.0, value=float(selected_row["min_threshold"]))
                             edit_remarks = st.text_input("Remarks", value=selected_row["remarks"] if selected_row["remarks"] else "")
 
                         submit_edit = st.form_submit_button("🔄 Update Master Item", use_container_width=True)
 
                         if submit_edit:
-                            try:
-                                with get_db() as conn:
-                                    cursor = conn.cursor()
-                                    cursor.execute("""
-                                        UPDATE master_items
-                                        SET category = ?, unit = ?, current_stock = ?, min_threshold = ?, remarks = ?
-                                        WHERE item_name = ?
-                                    """, (edit_category.strip(), edit_unit.strip(), edit_stock, edit_threshold, edit_remarks.strip(), selected_item_name))
-                                    conn.commit()
-                                    st.success(f"✅ Item **{selected_item_name}** updated successfully.")
-                                    st.rerun()
-                            except Exception as e:
-                                st.error(f"Failed to update item: {e}")
+                            if edit_stock is None or edit_threshold is None:
+                                st.error("⚠️ Current Stock and Min Threshold Alert cannot be empty.")
+                            else:
+                                try:
+                                    with get_db() as conn:
+                                        cursor = conn.cursor()
+                                        cursor.execute("""
+                                            UPDATE master_items
+                                            SET category = ?, unit = ?, current_stock = ?, min_threshold = ?, remarks = ?
+                                            WHERE item_name = ?
+                                        """, (edit_category.strip(), edit_unit.strip(), edit_stock, edit_threshold, edit_remarks.strip(), selected_item_name))
+                                        conn.commit()
+                                        st.success(f"✅ Item **{selected_item_name}** updated successfully.")
+                                        st.rerun()
+                                except Exception as e:
+                                    st.error(f"Failed to update item: {e}")
                 else:
                     st.info("No items available to edit.")
 
