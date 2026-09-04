@@ -30,7 +30,7 @@ def render_dashboard(user_name, user_role):
     st.title("📊 Executive Dashboard")
     
     is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
-    st.caption("Real-time summary of current stock levels, reserved stock, category distributions, and task reminders.")
+    st.caption("Real-time summary of current stock levels, reserved stock, item distributions, and task reminders.")
 
     init_db()
 
@@ -143,43 +143,57 @@ def render_dashboard(user_name, user_role):
     st.divider()
 
     # -------------------------------------------------------------
-    # 2. CATEGORY BREAKDOWN CHART & OPEN TASKS / REMINDERS
+    # 2. PER-ITEM STOCK BREAKDOWN CHART & OPEN TASKS / REMINDERS
     # -------------------------------------------------------------
     chart_col, alert_col = st.columns([3, 2])
 
     with chart_col:
-        st.subheader("📦 Stock Breakdown by Site Category")
+        st.subheader("📦 Stock Breakdown per Item")
         if not df.empty:
-            cat_summary = df.groupby("category")[["current_stock", "reserved_stock"]].sum().reset_index()
-            cat_summary["Available Stock"] = cat_summary["current_stock"] - cat_summary["reserved_stock"]
-            
-            # Melt for stacked bar chart visualization
-            chart_df = pd.melt(
-                cat_summary, 
-                id_vars=["category"], 
-                value_vars=["Available Stock", "reserved_stock"],
-                var_name="Stock Type", 
-                value_name="Quantity"
+            # Dropdown filter specifically for the item chart
+            chart_cat_filter = st.selectbox(
+                "Filter Chart Category", 
+                ["All Categories"] + categories, 
+                key="item_chart_cat_filter"
             )
-            chart_df["Stock Type"] = chart_df["Stock Type"].replace({"reserved_stock": "Reserved Stock"})
 
-            fig = px.bar(
-                chart_df, 
-                x="category", 
-                y="Quantity", 
-                color="Stock Type",
-                labels={"category": "Site Category", "Quantity": "Total Units"},
-                text_auto=".1f",
-                color_discrete_map={"Available Stock": "#00CC96", "Reserved Stock": "#EF553B"}
-            )
-            fig.update_layout(
-                barmode="stack", 
-                xaxis_tickangle=-30, 
-                height=350, 
-                margin=dict(l=20, r=20, t=20, b=50),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            chart_source = df.copy()
+            if chart_cat_filter != "All Categories":
+                chart_source = chart_source[chart_source["category"] == chart_cat_filter]
+
+            if not chart_source.empty:
+                chart_source["Available Stock"] = chart_source["current_stock"] - chart_source["reserved_stock"]
+                
+                # Melt for stacked bar chart visualization per item
+                chart_df = pd.melt(
+                    chart_source, 
+                    id_vars=["item_name", "category"], 
+                    value_vars=["Available Stock", "reserved_stock"],
+                    var_name="Stock Type", 
+                    value_name="Quantity"
+                )
+                chart_df["Stock Type"] = chart_df["Stock Type"].replace({"reserved_stock": "Reserved Stock"})
+
+                fig = px.bar(
+                    chart_df, 
+                    x="item_name", 
+                    y="Quantity", 
+                    color="Stock Type",
+                    hover_data=["category"],
+                    labels={"item_name": "Item Description", "Quantity": "Units"},
+                    text_auto=".1f",
+                    color_discrete_map={"Available Stock": "#00CC96", "Reserved Stock": "#EF553B"}
+                )
+                fig.update_layout(
+                    barmode="stack", 
+                    xaxis_tickangle=-45, 
+                    height=380, 
+                    margin=dict(l=20, r=20, t=20, b=60),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No items found for the selected category filter.")
         else:
             st.info("ℹ️ No items currently registered in the Master Catalog.")
 
