@@ -2,7 +2,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 import uuid
-from datetime import datetime
+from datetime import datetime, date
 from database import get_db, init_db
 
 def ensure_schedule_columns():
@@ -30,6 +30,31 @@ def ensure_schedule_columns():
     except Exception as e:
         st.error(f"Error initializing delivery schema: {e}")
 
+def get_due_status_label(scheduled_date_str):
+    """Calculate remaining days, today status, or overdue status."""
+    if not scheduled_date_str:
+        return "No Date Set"
+    
+    try:
+        if isinstance(scheduled_date_str, (datetime, date)):
+            target_date = scheduled_date_str
+            if isinstance(target_date, datetime):
+                target_date = target_date.date()
+        else:
+            target_date = datetime.strptime(str(scheduled_date_str).split()[0], "%Y-%m-%d").date()
+            
+        today = date.today()
+        days_left = (target_date - today).days
+
+        if days_left == 0:
+            return "📅 Due Today"
+        elif days_left < 0:
+            return f"⚠️ Overdue ({abs(days_left)} days)"
+        else:
+            return f"⏳ In {days_left} days"
+    except Exception:
+        return f"📅 {scheduled_date_str}"
+
 def render_dispatch_card(dispatch_id, items_df):
     """Render a single unified dispatch card containing multiple items."""
     first_row = items_df.iloc[0]
@@ -37,21 +62,29 @@ def render_dispatch_card(dispatch_id, items_df):
     prio_badge = "🔥 HIGH PRIORITY | " if first_row['is_priority'] == 1 else ""
     req_info = f"Requested by: {first_row['requested_by']}" if first_row['requested_by'] else "Requested by: N/A"
     project_info = f" | Project: {first_row['project']}" if first_row['project'] else ""
-    disp_label = f"{dispatch_id}" if dispatch_id else "Legacy Order"
+    
+    due_status = get_due_status_label(first_row['scheduled_date'])
 
-    # Header displaying Priority Badge, Requester, Project Name, and Destination
-    header_label = f"{prio_badge}🚛 [{disp_label}] {req_info}{project_info} ➔ {first_row['destination']} [{first_row['status']}] ({first_row['scheduled_date']})"
+    # Header displaying Priority Badge, Requester, Project Name, Destination, Status, and Due Status (Dispatch number removed)
+    header_label = f"{prio_badge}🚛 {req_info}{project_info} ➔ {first_row['destination']} [{first_row['status']}] ({due_status})"
 
     with st.expander(header_label):
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
+        
+        # Extracted requested date if present in df, fallback to N/A
+        requested_date_val = first_row.get('created_at', first_row.get('requested_date', 'N/A'))
+        
         c1.markdown(f"**Requested By:** {first_row['requested_by'] if first_row['requested_by'] else 'N/A'}")
         c1.markdown(f"**Destination:** {first_row['destination']}")
 
         c2.markdown(f"**Project:** {first_row['project'] if first_row['project'] else 'N/A'}")
         c2.markdown(f"**Total Items in Dispatch:** `{len(items_df)}`")
 
-        c3.markdown(f"**Priority:** {'🔴 **HIGH**' if first_row['is_priority'] == 1 else '🟢 Normal'}")
-        c3.markdown(f"**Status:** `{first_row['status']}`")
+        c3.markdown(f"**Requested Date:** `{requested_date_val}`")
+        c3.markdown(f"**Scheduled Date:** `{first_row['scheduled_date']}`")
+
+        c4.markdown(f"**Priority:** {'🔴 **HIGH**' if first_row['is_priority'] == 1 else '🟢 Normal'}")
+        c4.markdown(f"**Status:** `{first_row['status']}`")
 
         if first_row["driver_name"]:
             st.markdown(f"🚛 **Driver Name:** {first_row['driver_name']}")
