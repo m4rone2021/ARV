@@ -30,7 +30,7 @@ def render_dashboard(user_name, user_role):
     st.title("📊 Executive Dashboard")
     
     is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
-    st.caption("Real-time summary of current stock levels, category distributions, and task reminders.")
+    st.caption("Real-time summary of current stock levels, reserved stock, category distributions, and task reminders.")
 
     init_db()
 
@@ -47,13 +47,22 @@ def render_dashboard(user_name, user_role):
     # Fetch master items and reminders from database
     try:
         with get_db() as conn:
-            # 1. Fetch master inventory items
+            # 1. Fetch master inventory items (including reserved_stock)
             df = pd.read_sql_query("""
-                SELECT id, item_name, category, unit, current_stock, min_threshold 
+                SELECT id, item_name, category, unit, 
+                       COALESCE(current_stock, 0.0) AS current_stock, 
+                       COALESCE(reserved_stock, 0.0) AS reserved_stock, 
+                       min_threshold 
                 FROM master_items 
                 ORDER BY category ASC, item_name ASC
             """, conn)
             
+            # Calculate Effective Available Stock
+            if not df.empty:
+                df["effective_stock"] = df["current_stock"] - df["reserved_stock"]
+            else:
+                df["effective_stock"] = 0.0
+
             # 2. Fetch active reminders/tasks (Role Filtered)
             cursor = conn.cursor()
             cursor.execute("PRAGMA table_info(reminders)")
@@ -92,9 +101,10 @@ def render_dashboard(user_name, user_role):
 
     # Calculate Inventory Metrics
     total_items = len(df)
-    low_stock_df = df[df["current_stock"] <= df["min_threshold"]] if not df.empty else pd.DataFrame()
+    low_stock_df = df[df["effective_stock"] <= df["min_threshold"]] if not df.empty else pd.DataFrame()
     low_stock_count = len(low_stock_df)
     total_units_stocked = df["current_stock"].sum() if not df.empty else 0.0
+    total_units_reserved = df["reserved_stock"].sum() if not df.empty else 0.0
 
     # Calculate Reminder Metrics
     open_tasks_count = len(reminders_df)
@@ -103,27 +113,30 @@ def render_dashboard(user_name, user_role):
     # -------------------------------------------------------------
     # 1. TOP METRICS CARDS
     # -------------------------------------------------------------
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
-        st.metric(label="📦 Unique Items in Catalog", value=f"{total_items:,}")
+        st.metric(label="📦 Unique Items", value=f"{total_items:,}")
 
     with col2:
+        st.metric(label="📊 Total Physical Stock", value=f"{total_units_stocked:,.1f}")
+
+    with col3:
+        st.metric(label="🔒 Reserved Stock", value=f"{total_units_reserved:,.1f}")
+
+    with col4:
         st.metric(
-            label="⚠️ Low Stock Items", 
+            label="⚠️ Low Stock Warnings", 
             value=f"{low_stock_count}", 
             delta=f"-{low_stock_count}" if low_stock_count > 0 else "Optimal",
             delta_color="inverse" if low_stock_count > 0 else "normal"
         )
 
-    with col3:
-        st.metric(label="📊 Total Quantity On-Hand", value=f"{total_units_stocked:,.1f}")
-
-    with col4:
+    with col5:
         st.metric(
-            label="📝 Your Open Tasks" if not is_admin else "📝 Total Open Tasks", 
+            label="📝 Open Tasks" if not is_admin else "📝 Total Tasks", 
             value=f"{open_tasks_count}",
-            delta=f"🚨 {high_priority_count} High Priority" if high_priority_count > 0 else "All Normal",
+            delta=f"🚨 {high_priority_count} High" if high_priority_count > 0 else "All Normal",
             delta_color="inverse" if high_priority_count > 0 else "normal"
         )
 
@@ -135,20 +148,37 @@ def render_dashboard(user_name, user_role):
     chart_col, alert_col = st.columns([3, 2])
 
     with chart_col:
-        st.subheader("📦 Available Stock by Site Category")
+        st.subheader("📦 Stock Breakdown by Site Category")
         if not df.empty:
-            cat_summary = df.groupby("category")["current_stock"].sum().reset_index()
+            cat_summary = df.groupby("category")[["current_stock", "reserved_stock"]].sum().reset_index()
+            cat_summary["Available Stock"] = cat_summary["current_stock"] - cat_summary["reserved_stock"]
             
-            fig = px.bar(
+            # Melt for stacked bar chart visualization
+            chart_df = pd.melt(
                 cat_summary, 
-                x="category", 
-                y="current_stock", 
-                labels={"category": "Site Category", "current_stock": "Total Available Stock"},
-                text_auto=".1f",
-                color="category",
-                color_discrete_sequence=px.colors.qualitative.Bold
+                id_vars=["category"], 
+                value_vars=["Available Stock", "reserved_stock"],
+                var_name="Stock Type", 
+                value_name="Quantity"
             )
-            fig.update_layout(showlegend=False, xaxis_tickangle=-30, height=350, margin=dict(l=20, r=20, t=20, b=50))
+            chart_df["Stock Type"] = chart_df["Stock Type"].replace({"reserved_stock": "Reserved Stock"})
+
+            fig = px.bar(
+                chart_df, 
+                x="category", 
+                y="Quantity", 
+                color="Stock Type",
+                labels={"category": "Site Category", "Quantity": "Total Units"},
+                text_auto=".1f",
+                color_discrete_map={"Available Stock": "#00CC96", "Reserved Stock": "#EF553B"}
+            )
+            fig.update_layout(
+                barmode="stack", 
+                xaxis_tickangle=-30, 
+                height=350, 
+                margin=dict(l=20, r=20, t=20, b=50),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("ℹ️ No items currently registered in the Master Catalog.")
@@ -183,12 +213,14 @@ def render_dashboard(user_name, user_role):
         # Low Stock Section
         st.subheader("⚠️ Critical Low Stock Warnings")
         if not low_stock_df.empty:
-            st.warning(f"Attention: {low_stock_count} item(s) are at or below their safety threshold!")
+            st.warning(f"Attention: {low_stock_count} item(s) are at or below safety threshold based on effective stock!")
             
-            low_stock_display = low_stock_df[["item_name", "category", "current_stock", "unit", "min_threshold"]].rename(columns={
+            low_stock_display = low_stock_df[["item_name", "category", "current_stock", "reserved_stock", "effective_stock", "unit", "min_threshold"]].rename(columns={
                 "item_name": "Item Description",
                 "category": "Category",
-                "current_stock": "Current",
+                "current_stock": "Total Stock",
+                "reserved_stock": "Reserved",
+                "effective_stock": "Available",
                 "unit": "Unit",
                 "min_threshold": "Limit"
             })
@@ -228,11 +260,13 @@ def render_dashboard(user_name, user_role):
                 # Bold Category Header with Item Count
                 st.markdown(f"### **📁 {cat}** `({len(cat_items)} items)`")
 
-                display_df = cat_items[["id", "item_name", "unit", "current_stock", "min_threshold"]].rename(columns={
+                display_df = cat_items[["id", "item_name", "unit", "current_stock", "reserved_stock", "effective_stock", "min_threshold"]].rename(columns={
                     "id": "ID",
                     "item_name": "Item Description",
                     "unit": "Unit",
-                    "current_stock": "Available Stock",
+                    "current_stock": "Physical Stock",
+                    "reserved_stock": "Reserved Stock",
+                    "effective_stock": "Effective Available",
                     "min_threshold": "Safety Limit"
                 })
 
@@ -241,10 +275,9 @@ def render_dashboard(user_name, user_role):
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "Available Stock": st.column_config.NumberColumn(
-                            "Available Stock",
-                            format="%.2f"
-                        )
+                        "Physical Stock": st.column_config.NumberColumn("Physical Stock", format="%.2f"),
+                        "Reserved Stock": st.column_config.NumberColumn("Reserved Stock", format="%.2f"),
+                        "Effective Available": st.column_config.NumberColumn("Effective Available", format="%.2f")
                     }
                 )
         else:
