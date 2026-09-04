@@ -81,6 +81,7 @@ def render_app():
     from views.schedules import render_schedules
     from views.reminders import render_reminders
     from views.audit_log import render_audit_log
+    from views.user_management import render_user_management
 
     # Sidebar Header
     st.sidebar.markdown(f"### 👤 Logged in: **{st.session_state.user_name}**")
@@ -97,7 +98,12 @@ def render_app():
         "Schedules & Deliveries",
         "Reminders & Tasks",
         "Transaction Ledger"
+        "User Management"
     ]
+
+    # 2. ADD TO MENU (Restricted to Admin role)
+    if st.session_state.user_role == "Admin":
+        menu_options.append("User Management")
 
     choice = st.sidebar.radio("Main Menu", menu_options)
 
@@ -125,6 +131,8 @@ def render_app():
         render_reminders(st.session_state.user_name, st.session_state.user_role)
     elif choice == "Transaction Ledger":
         render_audit_log(st.session_state.user_name, st.session_state.user_role)
+    elif choice == "User Management":  # <-- 3. ROUTE TO VIEW
+        render_user_management(st.session_state.user_name, st.session_state.user_role)
 
 
 # Entry Point
