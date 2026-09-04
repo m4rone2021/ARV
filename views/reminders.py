@@ -41,85 +41,94 @@ def render_reminders(user_name, user_role):
     # TAB 1: TASK LIST & STATUS UPDATES
     # -------------------------------------------------------------
     with tab_tasks:
-        st.subheader("Site Tasks Overview")
-
-        filter_status = st.selectbox("Filter Status", ["All", "OPEN", "PENDING", "COMPLETED", "CANCELLED"], key="rem_filter_status")
-
-        query = f"SELECT id, due_date, {task_col} AS task, assigned_to, status FROM reminders WHERE 1=1"
-        params = []
-
-        if filter_status != "All" and "status" in columns:
-            query += " AND status = ?"
-            params.append(filter_status)
-
-        query += " ORDER BY due_date ASC, id DESC"
-
         try:
             with get_db() as conn:
-                df = pd.read_sql_query(query, conn, params=params)
+                query = f"SELECT id, due_date, {task_col} AS task, assigned_to, status FROM reminders ORDER BY due_date ASC, id DESC"
+                df = pd.read_sql_query(query, conn)
 
             if not df.empty:
-                df_display = df.rename(columns={
-                    "id": "ID",
-                    "due_date": "Due Date",
-                    "task": "Task Description",
-                    "assigned_to": "Assigned To",
-                    "status": "Status"
-                })
-                st.dataframe(df_display, use_container_width=True, hide_index=True)
+                # Separate active/open tasks from completed/cancelled tasks
+                open_df = df[df["status"].isin(["OPEN", "PENDING"])]
+                closed_df = df[df["status"].isin(["COMPLETED", "CANCELLED"])]
+
+                # SECTION 1: OPEN / ACTIVE TASKS
+                st.subheader("🟡 Open & Pending Tasks")
+                if not open_df.empty:
+                    df_open_display = open_df.rename(columns={
+                        "id": "ID",
+                        "due_date": "Due Date",
+                        "task": "Task Description",
+                        "assigned_to": "Assigned To",
+                        "status": "Status"
+                    })
+                    st.dataframe(df_open_display, use_container_width=True, hide_index=True)
+
+                    # UPDATE ACTION FORM FOR OPEN TASKS
+                    st.markdown("#### 🔄 Update Open Task")
+                    with st.form("update_open_task_form"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            task_options = [f"#{row['id']} - {row['task']} (Due: {row['due_date']}) [{row['status']}]" for _, row in open_df.iterrows()]
+                            selected_task = st.selectbox("Select Task to Update", task_options)
+
+                        with col2:
+                            action_type = st.selectbox("Action", ["MARK COMPLETED", "MOVE DUE DATE (RESCHEDULE)", "MARK PENDING", "CANCEL TASK"])
+                            
+                            new_due_date = None
+                            if action_type == "MOVE DUE DATE (RESCHEDULE)":
+                                new_due_date = st.date_input("Select New Target Date")
+
+                        submit_update = st.form_submit_button("Submit Update", use_container_width=True)
+
+                        if submit_update and selected_task:
+                            task_id = int(selected_task.split("#")[1].split(" ")[0])
+                            try:
+                                with get_db() as conn:
+                                    cursor = conn.cursor()
+                                    
+                                    if action_type == "MOVE DUE DATE (RESCHEDULE)":
+                                        cursor.execute(
+                                            "UPDATE reminders SET due_date = ?, status = 'OPEN' WHERE id = ?",
+                                            (str(new_due_date), task_id)
+                                        )
+                                        st.success(f"✅ Task #{task_id} rescheduled to **{new_due_date}**.")
+                                    elif action_type == "MARK COMPLETED":
+                                        cursor.execute("UPDATE reminders SET status = 'COMPLETED' WHERE id = ?", (task_id,))
+                                        st.success(f"✅ Task #{task_id} marked as **COMPLETED**.")
+                                    elif action_type == "MARK PENDING":
+                                        cursor.execute("UPDATE reminders SET status = 'PENDING' WHERE id = ?", (task_id,))
+                                        st.success(f"✅ Task #{task_id} marked as **PENDING**.")
+                                    elif action_type == "CANCEL TASK":
+                                        cursor.execute("UPDATE reminders SET status = 'CANCELLED' WHERE id = ?", (task_id,))
+                                        st.success(f"🚫 Task #{task_id} **CANCELLED**.")
+
+                                    conn.commit()
+                                    st.rerun()
+
+                            except Exception as e:
+                                st.error(f"Failed to update task: {e}")
+                else:
+                    st.info("No open or pending tasks currently logged.")
 
                 st.divider()
-                st.subheader("🔄 Update Task Status or Reschedule")
 
-                with st.form("update_reminder_form"):
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        # Select active tasks (excluding COMPLETED and CANCELLED by default for updates)
-                        active_tasks = df[~df["status"].isin(["COMPLETED", "CANCELLED"])] if "status" in df.columns else df
-                        if not active_tasks.empty:
-                            task_options = [f"#{row['id']} - {row['task']} (Due: {row['due_date']}) [{row['status']}]" for _, row in active_tasks.iterrows()]
-                            selected_task = st.selectbox("Select Task to Update", task_options)
-                        else:
-                            st.info("No active tasks available to update.")
-                            selected_task = None
+                # SECTION 2: COMPLETED & CANCELLED TASKS
+                st.subheader("✅ Completed & Cancelled History")
+                if not closed_df.empty:
+                    df_closed_display = closed_df.rename(columns={
+                        "id": "ID",
+                        "due_date": "Due Date",
+                        "task": "Task Description",
+                        "assigned_to": "Assigned To",
+                        "status": "Status"
+                    })
+                    st.dataframe(df_closed_display, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No completed or cancelled tasks in history.")
 
-                    with col2:
-                        action_type = st.selectbox("Action / New Status", ["PENDING", "COMPLETED", "CANCELLED", "MOVE DUE DATE"])
-                        
-                        # Conditional date selector when "MOVE DUE DATE" is selected
-                        new_due_date = None
-                        if action_type == "MOVE DUE DATE":
-                            new_due_date = st.date_input("Select New Due Date")
-
-                    submit_update = st.form_submit_button("Submit Task Update", use_container_width=True)
-
-                    if submit_update and selected_task:
-                        task_id = int(selected_task.split("#")[1].split(" ")[0])
-                        try:
-                            with get_db() as conn:
-                                cursor = conn.cursor()
-                                
-                                if action_type == "MOVE DUE DATE":
-                                    cursor.execute(
-                                        "UPDATE reminders SET due_date = ?, status = 'OPEN' WHERE id = ?",
-                                        (str(new_due_date), task_id)
-                                    )
-                                    st.success(f"✅ Task #{task_id} rescheduled to **{new_due_date}**.")
-                                else:
-                                    cursor.execute(
-                                        "UPDATE reminders SET status = ? WHERE id = ?",
-                                        (action_type, task_id)
-                                    )
-                                    st.success(f"✅ Task #{task_id} status updated to '**{action_type}**'.")
-                                
-                                conn.commit()
-                                st.rerun()
-
-                        except Exception as e:
-                            st.error(f"Failed to update task: {e}")
             else:
-                st.info("No task reminders found.")
+                st.info("No task reminders found in the database.")
 
         except Exception as e:
             st.error(f"Error loading tasks: {e}")
