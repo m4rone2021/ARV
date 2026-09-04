@@ -1,8 +1,29 @@
 # views/schedules.py
 import sqlite3
+from datetime import datetime, date
 import pandas as pd
 import streamlit as st
 from database import get_db, init_db
+
+def calculate_days_left(due_date_str):
+    """Calculate days remaining from today until the delivery due date."""
+    if not due_date_str:
+        return 9999, "No Due Date"
+    try:
+        due_dt = datetime.strptime(str(due_date_str).strip(), "%Y-%m-%d").date()
+        today = date.today()
+        days_diff = (due_dt - today).days
+
+        if days_diff < 0:
+            return days_diff, f"🔴 OVERDUE ({abs(days_diff)}d ago)"
+        elif days_diff == 0:
+            return days_diff, "🟠 DUE TODAY"
+        elif days_diff == 1:
+            return days_diff, "🟡 1 day left"
+        else:
+            return days_diff, f"🟢 {days_diff} days left"
+    except Exception:
+        return 9999, "Invalid Date"
 
 def ensure_schedule_columns():
     """Ensure Stock Out fields exist on the deliveries table."""
@@ -55,25 +76,42 @@ def render_schedules(user_name, user_role):
                            expected_date AS scheduled_date, status, notes,
                            COALESCE(is_priority, 0) AS is_priority
                     FROM deliveries 
-                    ORDER BY is_priority DESC, expected_date ASC
                 """
                 df = pd.read_sql_query(query, conn)
 
             if not df.empty:
+                # Calculate Days Remaining & Overdue status
+                days_left_results = df["scheduled_date"].apply(calculate_days_left)
+                df["days_diff"] = [res[0] for res in days_left_results]
+                df["time_status"] = [res[1] for res in days_left_results]
+
+                # Priority Sorting: 
+                # 1. Active Pending/In Transit Overdue items first
+                # 2. High priority
+                # 3. Closest due dates
+                df = df.sort_values(
+                    by=["days_diff", "is_priority"], 
+                    ascending=[True, False]
+                )
+
                 col_status, col_prio, col_search = st.columns([1, 1, 2])
                 with col_status:
-                    status_filter = st.selectbox("Filter Status", ["All", "Pending", "In Transit", "Completed", "Cancelled"])
+                    status_filter = st.selectbox("Filter Status", ["All Active", "Pending", "In Transit", "Completed", "Cancelled"])
                 with col_prio:
-                    prio_filter = st.selectbox("Priority Filter", ["All", "High Priority Only", "Normal Only"])
+                    prio_filter = st.selectbox("Priority / Timeline Filter", ["All", "High Priority Only", "Overdue Dispatches Only", "Normal Only"])
                 with col_search:
                     search_query = st.text_input("🔍 Search Item / Requested By / Destination / Project", placeholder="e.g., Cement, Main Site, Engr. Alex...")
 
                 filtered_df = df.copy()
-                if status_filter != "All":
+                if status_filter == "All Active":
+                    filtered_df = filtered_df[filtered_df["status"].isin(["Pending", "In Transit"])]
+                elif status_filter != "All":
                     filtered_df = filtered_df[filtered_df["status"] == status_filter]
                 
                 if prio_filter == "High Priority Only":
                     filtered_df = filtered_df[filtered_df["is_priority"] == 1]
+                elif prio_filter == "Overdue Dispatches Only":
+                    filtered_df = filtered_df[(filtered_df["days_diff"] < 0) & (filtered_df["status"].isin(["Pending", "In Transit"]))]
                 elif prio_filter == "Normal Only":
                     filtered_df = filtered_df[filtered_df["is_priority"] == 0]
 
@@ -91,7 +129,9 @@ def render_schedules(user_name, user_role):
                 for idx, row in filtered_df.iterrows():
                     prio_badge = "🔥 HIGH PRIORITY | " if row['is_priority'] == 1 else ""
                     project_info = f" ({row['project']})" if row['project'] else ""
-                    header_label = f"{prio_badge}📦 {row['item_name']} - {row['scheduled_date']} [{row['status']}] -> {row['destination']}{project_info}"
+                    time_badge = f" | {row['time_status']}" if row['status'] in ["Pending", "In Transit"] else ""
+
+                    header_label = f"{prio_badge}📦 {row['item_name']} - Due: {row['scheduled_date']}{time_badge} [{row['status']}] -> {row['destination']}{project_info}"
                     
                     with st.expander(header_label):
                         c1, c2, c3 = st.columns(3)
@@ -101,8 +141,9 @@ def render_schedules(user_name, user_role):
                         c2.markdown(f"**Project:** {row['project'] if row['project'] else 'N/A'}")
                         c2.markdown(f"**Quantity:** {row['quantity']} {row['unit']}")
                         
+                        c3.markdown(f"**Due Date:** `{row['scheduled_date']}`")
+                        c3.markdown(f"**Timeline Status:** {row['time_status']}")
                         c3.markdown(f"**Priority:** {'🔴 **HIGH**' if row['is_priority'] == 1 else '🟢 Normal'}")
-                        c3.markdown(f"**Status:** `{row['status']}`")
 
                         if row["notes"]:
                             st.caption(f"**Notes:** {row['notes']}")
