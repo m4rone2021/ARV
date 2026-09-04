@@ -20,7 +20,7 @@ def get_db():
         conn.close()
 
 def init_db():
-    """Initializes database tables and default admin credentials."""
+    """Initializes database tables, default admin credentials, and handles schema updates."""
     with get_db() as conn:
         cursor = conn.cursor()
 
@@ -61,10 +61,17 @@ def init_db():
                 category TEXT NOT NULL,
                 unit TEXT NOT NULL,
                 current_stock REAL DEFAULT 0.0,
+                reserved_stock REAL DEFAULT 0.0,
                 min_threshold REAL DEFAULT 10.0,
                 remarks TEXT
             )
         """)
+
+        # Schema Migration: Ensure reserved_stock column exists in master_items for existing DBs
+        cursor.execute("PRAGMA table_info(master_items)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'reserved_stock' not in columns:
+            cursor.execute("ALTER TABLE master_items ADD COLUMN reserved_stock REAL DEFAULT 0.0")
 
         # Transactions Log
         cursor.execute("""
