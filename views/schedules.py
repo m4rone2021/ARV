@@ -33,20 +33,23 @@ def ensure_schedule_columns():
 def render_dispatch_card(dispatch_id, items_df):
     """Render a single unified dispatch card containing multiple items."""
     first_row = items_df.iloc[0]
+    
     prio_badge = "🔥 HIGH PRIORITY | " if first_row['is_priority'] == 1 else ""
-    project_info = f" ({first_row['project']})" if first_row['project'] else ""
+    req_info = f"Requested by: {first_row['requested_by']}" if first_row['requested_by'] else "Requested by: N/A"
+    project_info = f" | Project: {first_row['project']}" if first_row['project'] else ""
     disp_label = f"{dispatch_id}" if dispatch_id else "Legacy Order"
-    
-    header_label = f"{prio_badge}🚛 [{disp_label}] {first_row['scheduled_date']} [{first_row['status']}] -> {first_row['destination']}{project_info}"
-    
+
+    # Header displaying Priority Badge, Requester, Project Name, and Destination
+    header_label = f"{prio_badge}🚛 [{disp_label}] {req_info}{project_info} ➔ {first_row['destination']} [{first_row['status']}] ({first_row['scheduled_date']})"
+
     with st.expander(header_label):
         c1, c2, c3 = st.columns(3)
         c1.markdown(f"**Requested By:** {first_row['requested_by'] if first_row['requested_by'] else 'N/A'}")
         c1.markdown(f"**Destination:** {first_row['destination']}")
-        
+
         c2.markdown(f"**Project:** {first_row['project'] if first_row['project'] else 'N/A'}")
         c2.markdown(f"**Total Items in Dispatch:** `{len(items_df)}`")
-        
+
         c3.markdown(f"**Priority:** {'🔴 **HIGH**' if first_row['is_priority'] == 1 else '🟢 Normal'}")
         c3.markdown(f"**Status:** `{first_row['status']}`")
 
@@ -55,7 +58,7 @@ def render_dispatch_card(dispatch_id, items_df):
 
         st.divider()
         st.markdown("##### 📦 Items Included in this Dispatch:")
-        
+
         disp_table = items_df[['item_name', 'quantity', 'unit', 'notes']].rename(columns={
             'item_name': 'Item Name',
             'quantity': 'Quantity',
@@ -153,7 +156,7 @@ def render_schedules(user_name, user_role):
 
     if "delivery_cart" not in st.session_state:
         st.session_state.delivery_cart = []
-    
+
     if "current_dispatch_header" not in st.session_state:
         st.session_state.current_dispatch_header = None
 
@@ -197,7 +200,7 @@ def render_schedules(user_name, user_role):
                 filtered_df = df.copy()
                 if status_filter != "All":
                     filtered_df = filtered_df[filtered_df["status"] == status_filter]
-                
+
                 if prio_filter == "High Priority Only":
                     filtered_df = filtered_df[filtered_df["is_priority"] == 1]
                 elif prio_filter == "Normal Only":
@@ -226,7 +229,7 @@ def render_schedules(user_name, user_role):
                     st.markdown(f"### 🚚 Active Dispatches ({len(active_dispatches)})")
                     st.caption("Pending or In Transit Dispatches")
                     st.divider()
-                    
+
                     if not active_df.empty:
                         for disp_id, group in active_dispatches:
                             render_dispatch_card(disp_id, group)
@@ -275,7 +278,7 @@ def render_schedules(user_name, user_role):
 
                 stock_in_shop = float(item_info["current_stock"])
                 stock_reserved = float(item_info["reserved_stock"])
-                
+
                 staged_qty = sum(
                     item["quantity"] for item in st.session_state.delivery_cart 
                     if item["item_name"] == selected_item_name
@@ -300,7 +303,7 @@ def render_schedules(user_name, user_role):
                             input_requested_by = st.text_input("Requested By*", placeholder="e.g., Engr. John Doe")
                             input_destination = st.text_input("Destination / Site Location*", placeholder="e.g., Block 4 Site")
                             input_project = st.text_input("Project Name / Code*", placeholder="e.g., Bridge Construction Phase 1")
-                        
+
                         with col2:
                             input_scheduled_date = st.date_input("Scheduled Delivery Date", value=datetime.today())
                             input_status = st.selectbox("Initial Status", ["Pending", "In Transit"])
@@ -312,7 +315,7 @@ def render_schedules(user_name, user_role):
                     st.markdown(f"##### 📦 2. Item Entry: {selected_item_name}")
                     quantity = st.number_input(f"Quantity to Reserve ({unit_name})*", min_value=0.01, value=None, placeholder="0.0")
                     item_notes = st.text_input("Item Specific Notes / Instructions", placeholder="e.g., Handle with care, stack 5 layers max")
-                    
+
                     add_to_cart_btn = st.form_submit_button("🛒 Add Item to Batch Queue", use_container_width=True)
 
                     if add_to_cart_btn:
@@ -367,7 +370,7 @@ def render_schedules(user_name, user_role):
                     st.caption("All items below belong to one single dispatch request. Confirm details before finalizing.")
 
                     cart_df = pd.DataFrame(st.session_state.delivery_cart)
-                    
+
                     edited_cart_df = st.data_editor(
                         cart_df,
                         column_config={
@@ -401,7 +404,7 @@ def render_schedules(user_name, user_role):
 
                                     with get_db() as conn_add:
                                         cursor = conn_add.cursor()
-                                        
+
                                         for row in updated_cart:
                                             cursor.execute("""
                                                 INSERT INTO deliveries (
