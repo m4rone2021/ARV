@@ -1,10 +1,12 @@
+# views/schedules.py
+import sqlite3
 import pandas as pd
 import streamlit as st
 from database import get_db, init_db
 
 def render_schedules(user_name, user_role):
     st.title("🚚 Schedules & Deliveries")
-    st.caption("Track incoming material shipments, dispatch schedules, and delivery statuses.")
+    st.caption("Track material shipments, dispatch schedules, and real-time reserved inventory.")
 
     init_db()
 
@@ -13,12 +15,13 @@ def render_schedules(user_name, user_role):
         "➕ Schedule New Delivery"
     ])
 
-    # OVERVIEW TAB
+    # -------------------------------------------------------------
+    # TAB 1: OVERVIEW & STATUS MANAGEMENT
+    # -------------------------------------------------------------
     with tab_overview:
         st.subheader("Upcoming & Active Deliveries")
         try:
             with get_db() as conn:
-                # Updated SQL query mapping database columns to match view fields
                 query = """
                     SELECT id, item_name, supplier AS supplier_or_destination, 
                            expected_quantity AS quantity, unit, 
@@ -56,10 +59,13 @@ def render_schedules(user_name, user_role):
                         if row["notes"]:
                             st.caption(f"**Notes:** {row['notes']}")
 
+                        status_options = ["Pending", "In Transit", "Completed", "Cancelled"]
+                        current_idx = status_options.index(row["status"]) if row["status"] in status_options else 0
+
                         new_status = st.selectbox(
                             "Update Status", 
-                            ["Pending", "In Transit", "Completed", "Cancelled"], 
-                            index=["Pending", "In Transit", "Completed", "Cancelled"].index(row["status"]) if row["status"] in ["Pending", "In Transit", "Completed", "Cancelled"] else 0,
+                            status_options, 
+                            index=current_idx,
                             key=f"status_select_{row['id']}"
                         )
 
@@ -68,9 +74,34 @@ def render_schedules(user_name, user_role):
                                 try:
                                     with get_db() as conn_update:
                                         cursor = conn_update.cursor()
+                                        old_status = row["status"]
+                                        qty = float(row["quantity"])
+                                        item_name = row["item_name"]
+
+                                        # Update Delivery Record
                                         cursor.execute("UPDATE deliveries SET status = ? WHERE id = ?", (new_status, row['id']))
+
+                                        # Adjust Stock based on Status Transitions
+                                        if old_status in ["Pending", "In Transit"]:
+                                            if new_status == "Completed":
+                                                # Deduct physical stock and release reservation
+                                                cursor.execute("""
+                                                    UPDATE master_items 
+                                                    SET current_stock = current_stock - ?,
+                                                        reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
+                                                    WHERE item_name = ?
+                                                """, (qty, qty, item_name))
+
+                                            elif new_status == "Cancelled":
+                                                # Release reservation back to available stock
+                                                cursor.execute("""
+                                                    UPDATE master_items 
+                                                    SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
+                                                    WHERE item_name = ?
+                                                """, (qty, item_name))
+
                                         conn_update.commit()
-                                        st.success("Status updated successfully!")
+                                        st.success(f"Status updated to {new_status} and stock adjusted accordingly!")
                                         st.rerun()
                                 except Exception as e:
                                     st.error(f"Error updating delivery status: {e}")
@@ -79,37 +110,81 @@ def render_schedules(user_name, user_role):
         except Exception as e:
             st.error(f"Error loading delivery schedules: {e}")
 
-    # NEW DELIVERY TAB
+    # -------------------------------------------------------------
+    # TAB 2: SCHEDULE NEW DELIVERY (RESERVE STOCK)
+    # -------------------------------------------------------------
     with tab_add:
-        st.subheader("Add Delivery Schedule")
-        with st.form("add_delivery_form"):
-            col1, col2 = st.columns(2)
-            with col1:
-                item_name = st.text_input("Item Name*", placeholder="e.g., Ready-Mix Concrete").strip()
-                supplier_dest = st.text_input("Supplier or Destination*", placeholder="e.g., Supplier ABC / Site B").strip()
-                scheduled_date = st.date_input("Scheduled Date")
-            with col2:
-                quantity = st.number_input("Quantity*", min_value=0.01, value=1.0, step=1.0)
-                unit = st.text_input("Unit*", placeholder="e.g., bags, cu.m, pcs").strip()
-                status = st.selectbox("Initial Status", ["Pending", "In Transit", "Completed"])
+        st.subheader("Add Delivery Schedule & Reserve Stock")
 
-            notes = st.text_input("Notes / Special Instructions", placeholder="e.g., Requires forklift unloader")
-            submit_btn = st.form_submit_button("📅 Schedule Delivery", use_container_width=True)
+        try:
+            with get_db() as conn_items:
+                df_master = pd.read_sql_query("""
+                    SELECT item_name, unit, current_stock, 
+                           COALESCE(reserved_stock, 0) AS reserved_stock,
+                           (current_stock - COALESCE(reserved_stock, 0)) AS available_stock
+                    FROM master_items 
+                    ORDER BY item_name ASC
+                """, conn_items)
 
-            if submit_btn:
-                if not item_name or not supplier_dest or not unit:
-                    st.error("⚠️ Item Name, Supplier/Destination, and Unit are required.")
-                else:
-                    try:
-                        with get_db() as conn_add:
-                            cursor = conn_add.cursor()
-                            # Updated INSERT query matching actual database.py column names
-                            cursor.execute("""
-                                INSERT INTO deliveries (item_name, supplier, expected_quantity, unit, expected_date, status, notes)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """, (item_name, supplier_dest, quantity, unit, str(scheduled_date), status, notes))
-                            conn_add.commit()
-                            st.success(f"✅ Delivery for **{item_name}** scheduled successfully!")
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to create schedule: {e}")
+            if not df_master.empty:
+                selected_item_name = st.selectbox("Select Master Item*", df_master["item_name"].tolist())
+                item_info = df_master[df_master["item_name"] == selected_item_name].iloc[0]
+
+                stock_in_shop = float(item_info["current_stock"])
+                stock_reserved = float(item_info["reserved_stock"])
+                stock_available = float(item_info["available_stock"])
+                unit_name = str(item_info["unit"])
+
+                # Metric visualizer
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Stock In Shop (Total)", f"{stock_in_shop:,.2f} {unit_name}")
+                m2.metric("Reserved Stock", f"{stock_reserved:,.2f} {unit_name}")
+                m3.metric("Available Stock", f"{stock_available:,.2f} {unit_name}")
+
+                st.divider()
+
+                with st.form("add_delivery_form", clear_on_submit=True):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        supplier_dest = st.text_input("Supplier or Destination*", placeholder="e.g., Block 4 Site").strip()
+                        scheduled_date = st.date_input("Scheduled Date")
+                    with col2:
+                        quantity = st.number_input("Quantity to Reserve*", min_value=0.01, value=None, placeholder="0.0")
+                        status = st.selectbox("Initial Status", ["Pending", "In Transit"])
+
+                    notes = st.text_input("Notes / Special Instructions", placeholder="e.g., Requires forklift unloader")
+                    submit_btn = st.form_submit_button("📅 Confirm Schedule & Reserve Stock", use_container_width=True)
+
+                    if submit_btn:
+                        if not supplier_dest or quantity is None:
+                            st.error("⚠️ Supplier/Destination and Quantity are required.")
+                        elif quantity > stock_available:
+                            st.error(f"❌ Cannot reserve stock! Quantity ({quantity}) exceeds Available Stock ({stock_available} {unit_name}).")
+                        else:
+                            try:
+                                with get_db() as conn_add:
+                                    cursor = conn_add.cursor()
+                                    
+                                    # 1. Save Delivery Record
+                                    cursor.execute("""
+                                        INSERT INTO deliveries (item_name, supplier, expected_quantity, unit, expected_date, status, notes)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                                    """, (selected_item_name, supplier_dest, quantity, unit_name, str(scheduled_date), status, notes.strip()))
+
+                                    # 2. Increase Reserved Stock on Master Item
+                                    cursor.execute("""
+                                        UPDATE master_items
+                                        SET reserved_stock = COALESCE(reserved_stock, 0) + ?
+                                        WHERE item_name = ?
+                                    """, (quantity, selected_item_name))
+
+                                    conn_add.commit()
+                                    st.success(f"✅ Delivery for **{selected_item_name}** scheduled and {quantity} {unit_name} reserved!")
+                                    st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to create schedule: {e}")
+            else:
+                st.warning("⚠️ No master items found. Please add items to the Master Catalog first.")
+
+        except Exception as e:
+            st.error(f"Error fetching catalog items: {e}")
