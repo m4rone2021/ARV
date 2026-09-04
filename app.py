@@ -98,7 +98,6 @@ def render_app():
         "Schedules & Deliveries",
         "Reminders & Tasks",
         "Transaction Ledger"
-        "User Management"
     ]
 
     # 2. ADD TO MENU (Restricted to Admin role)
