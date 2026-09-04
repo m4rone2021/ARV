@@ -28,6 +28,8 @@ def calculate_days_left(due_date_str):
 
 def render_dashboard(user_name, user_role):
     st.title("📊 Executive Dashboard")
+    
+    is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
     st.caption("Real-time summary of current stock levels, category distributions, and task reminders.")
 
     init_db()
@@ -52,7 +54,7 @@ def render_dashboard(user_name, user_role):
                 ORDER BY category ASC, item_name ASC
             """, conn)
             
-            # 2. Fetch active reminders/tasks
+            # 2. Fetch active reminders/tasks (Role Filtered)
             cursor = conn.cursor()
             cursor.execute("PRAGMA table_info(reminders)")
             rem_cols = [col[1] for col in cursor.fetchall()]
@@ -61,13 +63,24 @@ def render_dashboard(user_name, user_role):
                 task_col = "task" if "task" in rem_cols else ("description" if "description" in rem_cols else "reminder")
                 has_priority = "priority" in rem_cols
                 
-                query_rem = f"""
-                    SELECT id, due_date, {task_col} AS task, assigned_to, status
-                    {', priority' if has_priority else ''}
-                    FROM reminders
-                    WHERE status IN ('OPEN', 'PENDING')
-                """
-                reminders_df = pd.read_sql_query(query_rem, conn)
+                if is_admin:
+                    query_rem = f"""
+                        SELECT id, due_date, {task_col} AS task, assigned_to, status
+                        {', priority' if has_priority else ''}
+                        FROM reminders
+                        WHERE status IN ('OPEN', 'PENDING')
+                    """
+                    params_rem = []
+                else:
+                    query_rem = f"""
+                        SELECT id, due_date, {task_col} AS task, assigned_to, status
+                        {', priority' if has_priority else ''}
+                        FROM reminders
+                        WHERE status IN ('OPEN', 'PENDING') AND LOWER(assigned_to) = LOWER(?)
+                    """
+                    params_rem = [user_name.strip()]
+
+                reminders_df = pd.read_sql_query(query_rem, conn, params=params_rem)
                 if not has_priority:
                     reminders_df["priority"] = "NORMAL"
             else:
@@ -108,7 +121,7 @@ def render_dashboard(user_name, user_role):
 
     with col4:
         st.metric(
-            label="📝 Open Tasks", 
+            label="📝 Your Open Tasks" if not is_admin else "📝 Total Open Tasks", 
             value=f"{open_tasks_count}",
             delta=f"🚨 {high_priority_count} High Priority" if high_priority_count > 0 else "All Normal",
             delta_color="inverse" if high_priority_count > 0 else "normal"
@@ -141,14 +154,12 @@ def render_dashboard(user_name, user_role):
             st.info("ℹ️ No items currently registered in the Master Catalog.")
 
     with alert_col:
-        st.subheader("📌 Action Items & Reminders")
+        st.subheader("📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({user_name})")
         if not reminders_df.empty:
-            # Calculate days left and status formatting
             days_left_data = reminders_df["due_date"].apply(calculate_days_left)
             reminders_df["days_left_num"] = [d[0] for d in days_left_data]
             reminders_df["days_left_str"] = [d[1] for d in days_left_data]
 
-            # Sort by urgency and priority
             reminders_df = reminders_df.sort_values(
                 by=["days_left_num", "priority"],
                 ascending=[True, False]
@@ -165,7 +176,7 @@ def render_dashboard(user_name, user_role):
 
             st.dataframe(display_reminders, use_container_width=True, hide_index=True)
         else:
-            st.success("✅ No pending site tasks or reminders.")
+            st.success("✅ No pending tasks found.")
 
         st.divider()
 
