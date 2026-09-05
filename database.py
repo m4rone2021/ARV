@@ -64,11 +64,19 @@ def clean_private_key(key_str: str) -> str:
     """Sanitizes raw private key strings into valid multi-line PEM format."""
     if not key_str:
         return key_str
-    key_str = key_str.strip('\'"')
-    key_str = key_str.replace('\\n', '\n')
+
+    # Strip surrounding whitespace and accidental wrapping quotes
+    key_str = key_str.strip('\'" ')
+
+    # Convert literal '\n' characters into real newline breaks
+    if "\\n" in key_str:
+        key_str = key_str.replace("\\n", "\n")
+
+    # Ensure clean header boundary
     if "-----BEGIN PRIVATE KEY-----" in key_str and not key_str.startswith("-----BEGIN PRIVATE KEY-----"):
         key_str = "-----BEGIN PRIVATE KEY-----" + key_str.split("-----BEGIN PRIVATE KEY-----")[-1]
-    return key_str
+
+    return key_str.strip()
 
 
 def get_drive_service():
@@ -123,7 +131,7 @@ def get_drive_service():
             try:
                 creds = Credentials.from_authorized_user_file('token.json', SCOPES)
             except Exception as e:
-                print(f"[Drive Warning] Invalid or expired token.json deleted: {e}")
+                print(f"[Drive Warning] Invalid token.json deleted: {e}")
                 os.remove('token.json')
 
         if not creds or not creds.valid:
