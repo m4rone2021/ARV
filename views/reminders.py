@@ -1,11 +1,11 @@
 from datetime import datetime, date
 import pandas as pd
 import streamlit as st
-from database import get_db
+from database import get_db, backup_db_to_gdrive
 
 
 def ensure_reminders_table():
-    """Ensure the reminders table exists with required columns cleanly."""
+    """Ensure the reminders table exists and schema is compatible across modules."""
     try:
         with get_db() as conn:
             cursor = conn.cursor()
@@ -60,22 +60,24 @@ def calculate_days_left(due_date_str):
         return 9999, "Invalid Date"
 
 
-def render_reminders(user_name, user_role):
+def render_reminders(user_name: str = "", user_role: str = ""):
     st.title("📝 Reminders & Tasks")
 
-    # Table setup
+    # Fallback to session state if user details are omitted
+    active_user = user_name or st.session_state.get("username", "User")
+    active_role = user_role or st.session_state.get("role", "User")
+
     ensure_reminders_table()
 
-    # Access control evaluation
-    is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
+    is_admin = active_role.lower() in ["admin", "manager"]
 
     if is_admin:
         st.caption(
-            f"👑 **Admin Mode** ({user_name}): Viewing and managing **all** site tasks."
+            f"👑 **Admin Mode** ({active_user}): Viewing and managing **all** site tasks."
         )
     else:
         st.caption(
-            f"👤 **User Mode** ({user_name}): Viewing tasks assigned specifically to you."
+            f"👤 **User Mode** ({active_user}): Viewing tasks assigned specifically to you."
         )
 
     tab_tasks, tab_add = st.tabs(["📋 Task List", "➕ Create Task / Reminder"])
@@ -98,7 +100,7 @@ def render_reminders(user_name, user_role):
                         FROM reminders 
                         WHERE LOWER(assigned_to) = LOWER(?)
                     """
-                    params = [user_name.strip()]
+                    params = [active_user.strip()]
 
                 df = pd.read_sql_query(query, conn, params=params)
 
@@ -225,6 +227,10 @@ def render_reminders(user_name, user_role):
                                         )
 
                                     conn.commit()
+
+                                # Sync updated DB state to Google Drive
+                                backup_db_to_gdrive()
+
                                 st.success(f"Task #{task_id} updated successfully!")
                                 st.rerun()
 
@@ -291,7 +297,7 @@ def render_reminders(user_name, user_role):
             with col2:
                 assigned_to = st.text_input(
                     "Assigned Personnel / Team",
-                    value=user_name,
+                    value=active_user,
                     placeholder="e.g., Warehouse Team",
                 )
                 is_high_priority = st.checkbox("🚨 Mark as High Priority", value=False)
@@ -321,6 +327,10 @@ def render_reminders(user_name, user_role):
                                 ),
                             )
                             conn.commit()
+
+                        # Trigger automated database backup on task creation
+                        backup_db_to_gdrive()
+
                         st.success(
                             f"Task assigned to **{assigned_to.strip()}**: **{task_desc.strip()}**"
                         )
