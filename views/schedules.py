@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, date
 import pandas as pd
 import streamlit as st
-from database import get_db, init_db
+from database import get_db, init_db, backup_db_to_gdrive
 
 
 def ensure_schedule_columns():
@@ -65,7 +65,7 @@ def get_due_status_label(scheduled_date_str):
 
 
 def render_dispatch_card(dispatch_id, items_df):
-    """Render a single unified dispatch card containing multiple items with atomic updates."""
+    """Render a single unified dispatch card containing multiple items with atomic updates and Drive sync."""
     first_row = items_df.iloc[0]
 
     prio_badge = (
@@ -253,11 +253,15 @@ def render_dispatch_card(dispatch_id, items_df):
                                         )
 
                             conn_update.commit()
-                            st.toast(
-                                f"Dispatch status updated to {new_status}!",
-                                icon="✅",
-                            )
-                            st.rerun()
+
+                        # Trigger automated Google Drive backup sync after database update
+                        backup_db_to_gdrive()
+
+                        st.toast(
+                            f"Dispatch status updated to {new_status} and synced to Google Drive!",
+                            icon="✅",
+                        )
+                        st.rerun()
                     except Exception as e:
                         st.error(
                             f"Error updating dispatch status: {e}"
@@ -721,10 +725,13 @@ def render_schedules(user_name, user_role):
 
                                         conn_save.commit()
 
+                                    # Trigger automated Google Drive backup sync after database update
+                                    backup_db_to_gdrive()
+
                                     st.session_state.delivery_cart = []
                                     st.session_state.current_dispatch_header = None
                                     st.toast(
-                                        f"Dispatch {dispatch_code} successfully scheduled!",
+                                        f"Dispatch {dispatch_code} successfully scheduled and synced to Google Drive!",
                                         icon="🎉",
                                     )
                                     st.rerun()
@@ -737,5 +744,5 @@ def render_schedules(user_name, user_role):
             else:
                 st.info("No items found in master inventory.")
 
-        except Exception as e:
+        catch Exception as e:
             st.error(f"Error loading dispatch scheduling form: {e}")
