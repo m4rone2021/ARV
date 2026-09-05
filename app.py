@@ -1,5 +1,7 @@
 import sys
 import os
+import io
+import tempfile
 from pathlib import Path
 import streamlit as st
 
@@ -8,8 +10,15 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-# Core imports
-from database import init_db, login_user, backup_db_to_gdrive
+# Core database imports
+from database import (
+    init_db,
+    login_user,
+    backup_db_to_gdrive,
+    get_drive_service,
+    create_test_file_in_gdrive,
+    DB_FILE,
+)
 
 # Page Configuration
 st.set_page_config(
@@ -18,6 +27,52 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+# -----------------------------------------------------------------------------
+# GOOGLE DRIVE AUTOMATIC RESTORE ON STARTUP
+# -----------------------------------------------------------------------------
+def restore_latest_db_from_gdrive():
+    """Downloads the most recent database backup from Google Drive if local DB is missing/empty."""
+    if DB_FILE.exists() and DB_FILE.stat().st_size > 0:
+        return  # Local database exists and is valid
+
+    service, auth_type = get_drive_service()
+    if not service:
+        return
+
+    try:
+        folder_id = st.secrets.get("google_drive", {}).get("folder_id", None) if st and hasattr(st, "secrets") else None
+        query = f"'{folder_id}' in parents and name contains 'inventory_backup_' and trashed = false" if folder_id else "name contains 'inventory_backup_' and trashed = false"
+
+        results = service.files().list(
+            q=query,
+            orderBy="createdTime desc",
+            pageSize=1,
+            fields="files(id, name)"
+        ).execute()
+
+        files = results.get('files', [])
+        if files:
+            latest_file = files[0]
+            file_id = latest_file['id']
+            
+            from googleapiclient.http import MediaIoBaseDownload
+            request = service.files().get_media(fileId=file_id)
+            
+            with open(DB_FILE, 'wb') as f:
+                downloader = MediaIoBaseDownload(f, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+            print(f"[Drive Sync] Successfully restored {latest_file['name']} from Google Drive.")
+    except Exception as e:
+        print(f"[Drive Sync Error] Failed to restore database on startup: {e}")
+
+
+# Restore remote DB first, then initialize schema
+restore_latest_db_from_gdrive()
+init_db()
 
 # Initialize Session States
 if "logged_in" not in st.session_state:
@@ -38,9 +93,6 @@ if "categories" not in st.session_state:
         "Welding Supplies & PPE",
         "General Site Supplies",
     ]
-
-# Ensure DB & Tables exist on startup
-init_db()
 
 
 # -----------------------------------------------------------------------------
@@ -145,21 +197,11 @@ def render_app():
         if st.sidebar.button("🧪 Generate Test File in Drive", use_container_width=True):
             with st.spinner("Uploading test file to Google Drive..."):
                 try:
-                    from tests.setup_test_drive import get_drive_service, create_test_file
-                    
-                    # Unpack the (service, auth_type) tuple correctly
-                    drive_service, auth_label = get_drive_service()
-                    
-                    if drive_service:
-                        file_id = create_test_file(drive_service)
-                        if file_id:
-                            st.sidebar.success(f"✅ Success ({auth_label})! ID: {file_id[:8]}...")
-                        else:
-                            st.sidebar.error("❌ Failed to create file.")
+                    file_id = create_test_file_in_gdrive()
+                    if file_id:
+                        st.sidebar.success(f"✅ Success! ID: {file_id[:8]}...")
                     else:
-                        st.sidebar.error("❌ Drive Service authentication failed.")
-                except ModuleNotFoundError:
-                    st.sidebar.error("❌ Test module not found in '/tests/setup_test_drive.py'.")
+                        st.sidebar.error("❌ Failed to create file.")
                 except Exception as e:
                     st.sidebar.error(f"❌ Error: {e}")
                     
