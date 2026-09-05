@@ -20,6 +20,7 @@ __all__ = [
     "init_db",
     "login_user",
     "backup_db_to_gdrive",
+    "upload_file_to_gdrive",
     "get_drive_service",
     "create_test_file_in_gdrive",
     "get_db",
@@ -27,6 +28,7 @@ __all__ = [
     "add_stock_transaction",
     "resolve_discrepancy",
     "DB_FILE",
+    "UPLOAD_DIR",
 ]
 
 # -----------------------------------------------------------------------------
@@ -42,6 +44,10 @@ else:
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_FILE = DATA_DIR / "inventory.db"
+
+# Local uploads directory configuration
+UPLOAD_DIR = DATA_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def hash_password(password: str) -> str:
@@ -150,11 +156,11 @@ def get_drive_service():
         return None, None
 
 
-def create_test_file_in_gdrive():
-    """Creates a sample test document in Google Drive for verification."""
+def upload_file_to_gdrive(file_bytes: bytes, file_name: str, mime_type: str = "application/octet-stream") -> str | None:
+    """Uploads raw file bytes to Google Drive and returns the shareable webViewLink."""
     service, auth_type = get_drive_service()
     if not service:
-        print("[Test File Error] Could not initialize Drive service.")
+        print("[Drive Upload Error] Could not initialize Drive service.")
         return None
 
     try:
@@ -164,40 +170,41 @@ def create_test_file_in_gdrive():
         if st and hasattr(st, "secrets"):
             folder_id = st.secrets.get("google_drive", {}).get("folder_id", None)
 
-        file_metadata = {
-            'name': 'Project_Alpha_Specs.txt',
-            'mimeType': 'text/plain',
-            'description': f'Integration Test File via {auth_type}'
-        }
+        file_metadata = {'name': file_name}
         if folder_id:
             file_metadata['parents'] = [folder_id]
 
-        file_content = (
-            "PROJECT ALPHA SPECIFICATIONS\n"
-            "----------------------------\n"
-            "Project Alpha budget is $50,000 using vendor ACME Corp.\n"
-            "Key Deliverable: Automated inventory sync module.\n"
-            f"Uploaded via {auth_type}."
-        )
-
         media = MediaIoBaseUpload(
-            io.BytesIO(file_content.encode('utf-8')),
-            mimetype='text/plain',
+            io.BytesIO(file_bytes),
+            mimetype=mime_type,
             resumable=True
         )
 
         file = service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id, name',
+            fields='id, webViewLink',
             supportsAllDrives=True
         ).execute()
 
-        print(f"[Test Upload Success] Uploaded via {auth_type}. File ID: {file.get('id')}")
-        return file.get('id')
+        web_link = file.get('webViewLink')
+        print(f"[Drive Upload Success] File '{file_name}' uploaded via {auth_type}. Link: {web_link}")
+        return web_link
+
     except Exception as e:
-        print(f"[Test Upload Error] {e}")
+        print(f"[Drive Upload Error] Failed to upload '{file_name}': {e}")
         return None
+
+
+def create_test_file_in_gdrive():
+    """Creates a sample test document in Google Drive for verification."""
+    file_content = (
+        "PROJECT ALPHA SPECIFICATIONS\n"
+        "----------------------------\n"
+        "Project Alpha budget is $50,000 using vendor ACME Corp.\n"
+        "Key Deliverable: Automated inventory sync module."
+    )
+    return upload_file_to_gdrive(file_content.encode('utf-8'), 'Project_Alpha_Specs.txt', 'text/plain')
 
 
 def backup_db_to_gdrive():
@@ -206,19 +213,8 @@ def backup_db_to_gdrive():
         print(f"[Backup Warning] Database file not found at {DB_FILE}")
         return None
 
-    service, auth_type = get_drive_service()
-    if not service:
-        print("[Backup Error] Drive service unavailable.")
-        return None
-
     temp_backup_path = None
     try:
-        from googleapiclient.http import MediaFileUpload
-
-        folder_id = None
-        if st and hasattr(st, "secrets"):
-            folder_id = st.secrets.get("google_drive", {}).get("folder_id", None)
-
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         backup_filename = f"inventory_backup_{timestamp}.db"
         temp_dir = tempfile.gettempdir()
@@ -231,26 +227,10 @@ def backup_db_to_gdrive():
         bck_conn.close()
         src_conn.close()
 
-        file_metadata = {'name': backup_filename}
-        if folder_id:
-            file_metadata['parents'] = [folder_id]
+        with open(temp_backup_path, 'rb') as f:
+            file_bytes = f.read()
 
-        media = MediaFileUpload(
-            str(temp_backup_path),
-            mimetype='application/x-sqlite3',
-            resumable=True
-        )
-
-        file = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id',
-            supportsAllDrives=True
-        ).execute()
-
-        file_id = file.get('id')
-        print(f"[Backup Success] Uploaded {backup_filename} via {auth_type} (ID: {file_id})")
-        return file_id
+        return upload_file_to_gdrive(file_bytes, backup_filename, 'application/x-sqlite3')
 
     except Exception as e:
         print(f"[Backup Error] Failed to backup: {e}")
