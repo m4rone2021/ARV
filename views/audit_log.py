@@ -1,13 +1,11 @@
 # views/audit_log.py
 import pandas as pd
 import streamlit as st
-from database import get_db, init_db
+from database import get_db
 
 def render_audit_log(user_name, user_role):
     st.title("📜 Audit Log & Transaction History")
     st.caption("Track all stock-in, stock-out, and system operations.")
-
-    init_db()
 
     # Filter controls
     col1, col2, col3 = st.columns([2, 2, 1])
@@ -43,7 +41,7 @@ def render_audit_log(user_name, user_role):
             df = pd.read_sql_query(query, conn, params=params)
 
         if not df.empty:
-            # Metrics Summary calculated BEFORE column renaming on lowercase "type"
+            # Metrics Summary calculated BEFORE column renaming
             in_count = len(df[df["type"].isin(["STOCK IN", "IN"])])
             out_count = len(df[df["type"].isin(["STOCK OUT", "OUT"])])
 
