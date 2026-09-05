@@ -123,15 +123,21 @@ def render_stock_in(user_name: str, user_role: str):
                         clean_original = sanitize_filename(uploaded_file.name)
                         attachment_filename = f"IN_{uuid.uuid4().hex[:8]}_{clean_original}"
                         save_path = Path(UPLOAD_DIR) / attachment_filename
+                        file_bytes = uploaded_file.getvalue()
 
                         try:
+                            # 1. Save locally
                             with open(save_path, "wb") as f:
-                                f.write(uploaded_file.getbuffer())
+                                f.write(file_bytes)
 
-                            # Upload receipt to Google Drive
-                            drive_link = upload_file_to_gdrive(save_path)
+                            # 2. Upload raw bytes to Google Drive
+                            drive_link = upload_file_to_gdrive(
+                                file_bytes=file_bytes,
+                                file_name=attachment_filename,
+                                mime_type=uploaded_file.type or "application/octet-stream"
+                            )
                         except Exception as file_err:
-                            st.error(f"Failed to save uploaded receipt: {file_err}")
+                            st.error(f"Failed to process uploaded receipt: {file_err}")
                             attachment_filename = None
 
                     try:
@@ -199,6 +205,14 @@ def render_stock_in(user_name: str, user_role: str):
                 )
 
             if not history_df.empty:
+                # Extract links directly into a visual column
+                def extract_drive_link(notes: str):
+                    if "Drive Link: " in str(notes):
+                        return notes.split("Drive Link: ")[-1].split(" | ")[0].strip()
+                    return None
+
+                history_df["Drive Receipt"] = history_df["notes"].apply(extract_drive_link)
+
                 st.dataframe(
                     history_df.rename(
                         columns={
@@ -211,25 +225,24 @@ def render_stock_in(user_name: str, user_role: str):
                             "notes": "Details & Attachment Ref",
                         }
                     ),
+                    column_config={
+                        "Drive Receipt": st.column_config.LinkColumn(
+                            "Drive Link",
+                            display_text="🔗 View Receipt"
+                        )
+                    },
                     use_container_width=True,
                     hide_index=True,
                 )
 
-                # Expandable Inspector for Attachments
-                with st.expander("📎 Download / View Log Attachments"):
-                    has_attachments = False
+                # Expandable Inspector for Local Fallback Attachments
+                with st.expander("📎 Download Local Fallback Attachments"):
+                    has_local_attachments = False
                     for _, row in history_df.iterrows():
                         notes_str = str(row["notes"])
 
-                        if "Drive Link: " in notes_str:
-                            has_attachments = True
-                            link = notes_str.split("Drive Link: ")[-1].split(" | ")[0].strip()
-                            st.markdown(
-                                f"🔗 **Log #{row['id']} ({row['item_name']})**: [View Attachment on Google Drive]({link})"
-                            )
-
-                        elif "Attachment: " in notes_str:
-                            has_attachments = True
+                        if "Attachment: " in notes_str and "Drive Link: " not in notes_str:
+                            has_local_attachments = True
                             att_file = notes_str.split("Attachment: ")[-1].split(" | ")[0].strip()
                             file_path = Path(UPLOAD_DIR) / att_file
 
@@ -244,8 +257,8 @@ def render_stock_in(user_name: str, user_role: str):
                             else:
                                 st.caption(f"⚠️ Attachment `{att_file}` not found on local storage.")
 
-                    if not has_attachments:
-                        st.info("No attachments logged in recent history entries.")
+                    if not has_local_attachments:
+                        st.info("No local fallback attachments stored in recent history.")
             else:
                 st.info("No recent Stock IN transactions recorded yet.")
         except Exception as e:
