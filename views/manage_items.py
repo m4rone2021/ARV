@@ -2,7 +2,7 @@
 import sqlite3
 import pandas as pd
 import streamlit as st
-from database import get_db
+from database import get_db, backup_db_to_gdrive  # <-- Added backup_db_to_gdrive import
 
 # Predefined standard list of categories for the drop-down select inputs
 DEFAULT_CATEGORIES = [
@@ -17,6 +17,15 @@ DEFAULT_CATEGORIES = [
 
 # Standard unit options
 UNIT_OPTIONS = ["liters", "bags", "packs", "pcs", "sheets", "rolls"]
+
+
+def trigger_gdrive_sync():
+    """Helper function to run backup to Google Drive without breaking UI flow on failure."""
+    try:
+        backup_db_to_gdrive()
+        st.toast("☁️ Synced to Google Drive!", icon="✅")
+    except Exception as e:
+        st.warning(f"⚠️ Saved locally, but Drive backup failed: {e}")
 
 
 def get_all_categories():
@@ -225,6 +234,10 @@ def render_manage_items(user_name, user_role):
                                     ),
                                 )
                                 conn.commit()
+                                
+                                # Auto Sync to Google Drive
+                                trigger_gdrive_sync()
+
                                 st.toast(
                                     f"✅ Item '{clean_name}' added!", icon="📦"
                                 )
@@ -296,7 +309,6 @@ def render_manage_items(user_name, user_role):
                         else 0
                     )
 
-                    # Dynamic key forces form widget re-initialization when item selection changes
                     with st.form(f"edit_item_form_{selected_item_name}"):
                         col1, col2 = st.columns(2)
 
@@ -382,6 +394,10 @@ def render_manage_items(user_name, user_role):
                                             ),
                                         )
                                         conn.commit()
+                                        
+                                        # Auto Sync to Google Drive
+                                        trigger_gdrive_sync()
+
                                         st.toast(
                                             f"✅ Updated {selected_item_name}!",
                                             icon="✏️",
@@ -440,6 +456,10 @@ def render_manage_items(user_name, user_role):
                                             (target_item,),
                                         )
                                         conn.commit()
+
+                                        # Auto Sync to Google Drive
+                                        trigger_gdrive_sync()
+
                                         st.toast(
                                             f"🗑️ Deleted {target_item}", icon="🗑️"
                                         )
