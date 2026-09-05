@@ -1,6 +1,7 @@
 # app.py
 import streamlit as st
 from database import init_db, login_user, backup_db_to_gdrive
+from tests.setup_test_drive import get_drive_service, create_test_file
 
 # Page Configuration
 st.set_page_config(
@@ -114,6 +115,23 @@ def render_app():
     choice = menu_map[selected_label]
 
     st.sidebar.divider()
+
+    # Admin Utilities / Test Tools
+    if st.session_state.user_role == "Admin":
+        st.sidebar.subheader("🛠️ Admin Tools")
+        if st.sidebar.button("🧪 Generate Test File in Drive", use_container_width=True):
+            with st.spinner("Uploading test file to Google Drive..."):
+                try:
+                    drive_service = get_drive_service()
+                    file_id = create_test_file(drive_service)
+                    if file_id:
+                        st.sidebar.success(f"✅ Success! File ID: {file_id[:8]}...")
+                    else:
+                        st.sidebar.error("❌ Failed to create file.")
+                except Exception as e:
+                    st.sidebar.error(f"❌ Error: {e}")
+        st.sidebar.divider()
+
     if st.sidebar.button("🚪 Logout", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.user_name = ""
