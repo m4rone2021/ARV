@@ -7,11 +7,12 @@ from database import get_db
 
 
 def calculate_days_left(due_date_str):
-    """Calculate days remaining from today until the due date."""
+    """Calculate days remaining from today until the due date safely handling timestamps."""
     if not due_date_str:
         return 9999, "No Date"
     try:
-        due_dt = datetime.strptime(str(due_date_str).strip(), "%Y-%m-%d").date()
+        clean_date = str(due_date_str).strip().split(" ")[0]
+        due_dt = datetime.strptime(clean_date, "%Y-%m-%d").date()
         today = date.today()
         days_diff = (due_dt - today).days
 
@@ -90,6 +91,8 @@ def render_dashboard(user_name, user_role):
 
             if "tasks" in tables or "reminders" in tables:
                 task_table = "tasks" if "tasks" in tables else "reminders"
+                
+                # Fetch columns for safe mapping
                 cursor.execute(f"PRAGMA table_info({task_table})")
                 rem_cols = [col[1] for col in cursor.fetchall()]
 
@@ -99,8 +102,8 @@ def render_dashboard(user_name, user_role):
                     else ("task" if "task" in rem_cols else "description")
                 )
                 has_priority = "priority" in rem_cols
-
                 select_priority = ", priority" if has_priority else ""
+
                 if is_admin:
                     query_rem = f"""
                         SELECT id, due_date, {task_col} AS task, assigned_to, status {select_priority}
@@ -117,6 +120,7 @@ def render_dashboard(user_name, user_role):
                     params_rem = [user_name.strip()]
 
                 reminders_df = pd.read_sql_query(query_rem, conn, params=params_rem)
+                
                 if not has_priority or "priority" not in reminders_df.columns:
                     reminders_df["priority"] = "NORMAL"
 
@@ -133,7 +137,7 @@ def render_dashboard(user_name, user_role):
 
     open_tasks_count = len(reminders_df)
     high_priority_count = (
-        len(reminders_df[reminders_df["priority"].str.upper() == "HIGH"])
+        len(reminders_df[reminders_df["priority"].astype(str).str.upper() == "HIGH"])
         if not reminders_df.empty and "priority" in reminders_df.columns
         else 0
     )
