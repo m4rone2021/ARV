@@ -1,1 +1,79 @@
-records.json
+{
+  "system_info": {
+    "app_name": "ARV Site Inventory System",
+    "version": "1.0.0",
+    "storage_directory": "D:\\Inventory System Files",
+    "database_file": "D:\\Inventory System Files\\inventory.db",
+    "last_sync_timestamp": "2026-09-05T10:15:00Z"
+  },
+  "master_categories": [
+    "Fuel & Oils",
+    "Construction Materials",
+    "Steel / Rebar",
+    "Nails & Fasteners",
+    "Cutting & Grinding Consumables",
+    "Welding Supplies & PPE",
+    "General Site Supplies"
+  ],
+  "transactions_backup": [
+    {
+      "id": 1,
+      "timestamp": "2026-09-05 08:30:00",
+      "type": "STOCK_IN",
+      "item_name": "Portland Cement Bag",
+      "quantity": 100.0,
+      "unit": "bags",
+      "handled_by": "admin",
+      "notes": "Delivered by Hardware Supplier A"
+    },
+    {
+      "id": 2,
+      "timestamp": "2026-09-05 09:15:00",
+      "type": "STOCK_OUT",
+      "item_name": "12mm Rebar (6m)",
+      "quantity": 25.0,
+      "unit": "pcs",
+      "handled_by": "admin",
+      "notes": "Issued to Site Foreman for Block B foundation"
+    }
+  ],
+  "discrepancies": [
+    {
+      "id": 1,
+      "timestamp": "2026-09-04 16:00:00",
+      "item_name": "Diesel Fuel",
+      "system_stock": 500.0,
+      "physical_count": 480.0,
+      "variance": -20.0,
+      "unit": "liters",
+      "submitted_by": "site_inspector",
+      "submission_notes": "Evaporation/minor site generator overuse",
+      "status": "PENDING",
+      "resolved_by": null,
+      "resolved_timestamp": null,
+      "resolution_notes": null
+    }
+  ],
+  "scheduled_deliveries": [
+    {
+      "id": 1,
+      "item_name": "Angle Bar 2x2",
+      "expected_quantity": 50.0,
+      "unit": "pcs",
+      "supplier": "Steel Corp",
+      "expected_date": "2026-09-10",
+      "status": "PENDING",
+      "notes": "For warehouse extension frame"
+    }
+  ],
+  "active_tasks": [
+    {
+      "id": 1,
+      "task_description": "Perform weekly physical audit of welding PPE gear",
+      "assigned_to": "admin",
+      "due_date": "2026-09-07",
+      "status": "OPEN",
+      "created_by": "admin"
+    }
+  ]
+}
