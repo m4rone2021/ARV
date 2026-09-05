@@ -1,6 +1,6 @@
 # app.py
 import streamlit as st
-from database import init_db, login_user
+from database import init_db, login_user, backup_db_to_gdrive
 
 # Page Configuration
 st.set_page_config(
@@ -68,6 +68,11 @@ def render_login():
                         st.session_state.logged_in = True
                         st.session_state.user_name = user_data["username"]
                         st.session_state.user_role = user_data["role"]
+
+                        # Backup database to Google Drive upon Admin login
+                        if user_data["role"] == "Admin":
+                            backup_db_to_gdrive()
+
                         st.toast(
                             f"Welcome back, {user_data['username']}!", icon="👋"
                         )
@@ -145,7 +150,9 @@ def render_app():
             from views.user_management import render_user_management
             render_user_management(st.session_state.user_name, st.session_state.user_role)
     except ModuleNotFoundError as e:
-        st.error(f"⚠️ Navigation error: Missing view module ({e.name}). Please ensure all view files exist in the `/views` folder.")
+        st.error(
+            f"⚠️ Navigation error: Missing view module ({e.name}). Please ensure all view files exist in the `/views` folder."
+        )
     except Exception as e:
         st.error(f"An unexpected error occurred while loading view '{choice}': {e}")
 
