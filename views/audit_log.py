@@ -1,4 +1,3 @@
-# views/audit_log.py
 import re
 from pathlib import Path
 import pandas as pd
@@ -28,7 +27,8 @@ def extract_attachment_filename(notes_str: str) -> str:
     return match.group(1) if match else ""
 
 
-def render_audit_log(user_name, user_role):
+def render_audit_log(user_name: str, user_role: str):
+    """Renders the transaction history and audit log page with filters and downloads."""
     st.title("📜 Audit Log & Transaction History")
     st.caption("Track all stock-in, stock-out, attached receipts, and Google Drive links.")
 
@@ -48,7 +48,7 @@ def render_audit_log(user_name, user_role):
     with col3:
         st.write("")  # Spacing
         st.write("")
-        refresh_btn = st.button("🔄 Refresh", use_container_width=True)
+        st.button("🔄 Refresh", use_container_width=True)
 
     try:
         with get_db() as conn:
