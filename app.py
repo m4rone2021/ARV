@@ -1,7 +1,15 @@
-# app.py
+import sys
+import os
+from pathlib import Path
 import streamlit as st
+
+# Ensure root workspace directory is on sys.path for Cloud execution
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+# Core imports
 from database import init_db, login_user, backup_db_to_gdrive
-from tests.setup_test_drive import get_drive_service, create_test_file
 
 # Page Configuration
 st.set_page_config(
@@ -122,12 +130,15 @@ def render_app():
         if st.sidebar.button("🧪 Generate Test File in Drive", use_container_width=True):
             with st.spinner("Uploading test file to Google Drive..."):
                 try:
+                    from tests.setup_test_drive import get_drive_service, create_test_file
                     drive_service = get_drive_service()
                     file_id = create_test_file(drive_service)
                     if file_id:
                         st.sidebar.success(f"✅ Success! File ID: {file_id[:8]}...")
                     else:
                         st.sidebar.error("❌ Failed to create file.")
+                except ModuleNotFoundError:
+                    st.sidebar.error("❌ Test module not found in '/tests/setup_test_drive.py'.")
                 except Exception as e:
                     st.sidebar.error(f"❌ Error: {e}")
         st.sidebar.divider()
