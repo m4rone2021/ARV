@@ -9,13 +9,13 @@ from datetime import datetime
 # -----------------------------------------------------------------------------
 # DYNAMIC ENVIRONMENT & PATH CONFIGURATION
 # -----------------------------------------------------------------------------
-# Detect environment: Use D: locally if available, otherwise fallback to local/cloud folder
+# Detect environment: Use D: locally if available, otherwise default to local ./data folder
 LOCAL_WIN_DIR = Path(r"D:\Inventory System Files")
 
 if LOCAL_WIN_DIR.exists() or os.name == "nt":
     DATA_DIR = LOCAL_WIN_DIR
 else:
-    # Fallback directory for Linux/Streamlit Cloud
+    # Fallback directory for Streamlit Cloud / Linux
     DATA_DIR = Path("./data")
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -43,8 +43,8 @@ def get_db():
 # -----------------------------------------------------------------------------
 def get_drive_service():
     """
-    Authenticates and builds Google Drive API service using google-api-python-client.
-    Works locally via credentials.json/token.json or Streamlit Secrets in Cloud.
+    Authenticates and builds Google Drive API service.
+    Supports local credentials.json/token.json or Streamlit Secrets in Cloud.
     """
     try:
         from google.oauth2.credentials import Credentials
@@ -55,7 +55,7 @@ def get_drive_service():
         SCOPES = ['https://www.googleapis.com/auth/drive']
         creds = None
 
-        # Check for local token
+        # Check for saved local token
         if os.path.exists('token.json'):
             creds = Credentials.from_authorized_user_file('token.json', SCOPES)
             
@@ -68,7 +68,7 @@ def get_drive_service():
                 with open('token.json', 'w') as token:
                     token.write(creds.to_json())
             else:
-                print("[Drive Error] Neither credentials.json nor token.json found.")
+                print("[Drive Warning] Neither credentials.json nor token.json found.")
                 return None
 
         return build('drive', 'v3', credentials=creds)
@@ -78,7 +78,7 @@ def get_drive_service():
 
 
 def create_test_file_in_gdrive():
-    """Creates a sample test document in Google Drive for integration testing."""
+    """Creates a sample test document in Google Drive for verification."""
     service = get_drive_service()
     if not service:
         print("[Test File Error] Could not initialize Drive service.")
