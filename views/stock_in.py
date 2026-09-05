@@ -1,4 +1,3 @@
-# views/stock_in.py
 import os
 import uuid
 import sqlite3
@@ -26,8 +25,11 @@ def sanitize_filename(filename: str) -> str:
 def trigger_gdrive_sync():
     """Helper function to run backup to Google Drive without breaking UI flow on failure."""
     try:
-        backup_db_to_gdrive()
-        st.toast("☁️ Synced database to Google Drive!", icon="✅")
+        file_id = backup_db_to_gdrive()
+        if file_id:
+            st.toast("☁️ Database synced to Google Drive!", icon="✅")
+        else:
+            st.toast("⚠️ Database saved locally (Drive sync disabled or unconfigured).", icon="ℹ️")
     except Exception as e:
         st.warning(f"⚠️ Saved transaction locally, but Drive backup failed: {e}")
 
@@ -126,6 +128,7 @@ def render_stock_in(user_name: str, user_role: str):
                             with open(save_path, "wb") as f:
                                 f.write(uploaded_file.getbuffer())
 
+                            # Upload receipt to Google Drive
                             drive_link = upload_file_to_gdrive(save_path)
                         except Exception as file_err:
                             st.error(f"Failed to save uploaded receipt: {file_err}")
@@ -146,7 +149,7 @@ def render_stock_in(user_name: str, user_role: str):
                         # Atomic transaction write
                         with get_db() as conn:
                             cursor = conn.cursor()
-                            
+
                             cursor.execute(
                                 """
                                 UPDATE master_items 
@@ -166,7 +169,7 @@ def render_stock_in(user_name: str, user_role: str):
 
                             conn.commit()
 
-                        # Run Google Drive backup safely
+                        # Run Google Drive backup safely after DB update
                         trigger_gdrive_sync()
 
                         st.toast(
