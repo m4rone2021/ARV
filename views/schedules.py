@@ -1,4 +1,3 @@
-# views/schedules.py
 import sqlite3
 import uuid
 from datetime import datetime, date
@@ -674,79 +673,69 @@ def render_schedules(user_name, user_role):
                                     )
                                 else:
                                     dispatch_code = f"DISP-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:4].upper()}"
-                                    h = (
-                                        st.session_state.current_dispatch_header
-                                    )
+                                    h = st.session_state.current_dispatch_header
 
-                                    with get_db() as conn_add:
-                                        cursor = conn_add.cursor()
+                                    with get_db() as conn_save:
+                                        cursor = conn_save.cursor()
 
-                                        for row in updated_cart:
+                                        for item in updated_cart:
+                                            item_name = item["item_name"]
+                                            unit = item["unit"]
+                                            qty = float(item["quantity"])
+                                            notes = item["notes"]
+
+                                            # Insert delivery record
                                             cursor.execute(
                                                 """
                                                 INSERT INTO deliveries (
-                                                    dispatch_id, item_name, supplier, requested_by, destination, project, 
-                                                    expected_quantity, unit, expected_date, status, notes, is_priority, driver_name
-                                                )
-                                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                    dispatch_id, item_name, expected_quantity, unit,
+                                                    expected_date, status, notes, requested_by,
+                                                    destination, project, is_priority, driver_name
+                                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                             """,
                                                 (
                                                     dispatch_code,
-                                                    row["item_name"],
-                                                    h["destination"],
+                                                    item_name,
+                                                    qty,
+                                                    unit,
+                                                    str(h["scheduled_date"]),
+                                                    h["status"],
+                                                    notes,
                                                     h["requested_by"],
                                                     h["destination"],
                                                     h["project"],
-                                                    row["quantity"],
-                                                    row["unit"],
-                                                    str(
-                                                        h[
-                                                            "scheduled_date"
-                                                        ]
-                                                    ),
-                                                    h["status"],
-                                                    row["notes"],
-                                                    (
-                                                        1
-                                                        if h[
-                                                            "is_priority"
-                                                        ]
-                                                        else 0
-                                                    ),
+                                                    1 if h["is_priority"] else 0,
                                                     h["driver_name"],
                                                 ),
                                             )
 
+                                            # Increment reserved_stock in master_items
                                             cursor.execute(
                                                 """
                                                 UPDATE master_items
                                                 SET reserved_stock = COALESCE(reserved_stock, 0) + ?
                                                 WHERE item_name = ?
                                             """,
-                                                (
-                                                    row["quantity"],
-                                                    row["item_name"],
-                                                ),
+                                                (qty, item_name),
                                             )
 
-                                        conn_add.commit()
+                                        conn_save.commit()
 
                                     st.session_state.delivery_cart = []
-                                    st.session_state.current_dispatch_header = (
-                                        None
-                                    )
-                                    st.success(
-                                        f"✅ Dispatch **{dispatch_code}** successfully scheduled!"
+                                    st.session_state.current_dispatch_header = None
+                                    st.toast(
+                                        f"Dispatch {dispatch_code} successfully scheduled!",
+                                        icon="🎉",
                                     )
                                     st.rerun()
+
                             except Exception as e:
                                 st.error(
-                                    f"Failed to submit dispatch batch: {e}"
+                                    f"Error finalizing dispatch schedule: {e}"
                                 )
+
             else:
-                st.warning(
-                    "⚠️ No master items found. Please add items to the Master Catalog first."
-                )
+                st.info("No items found in master inventory.")
 
         except Exception as e:
-            st.error(f"Error fetching catalog items: {e}")
+            st.error(f"Error loading dispatch scheduling form: {e}")
