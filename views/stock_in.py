@@ -1,236 +1,259 @@
-# views/stock_in.py
-import os
-import uuid
 import sqlite3
+import os
+import hashlib
+from pathlib import Path
+from contextlib import contextmanager
 from datetime import datetime
-import pandas as pd
-import streamlit as st
-from database import get_db, init_db
 
-# Ensure UPLOAD_DIR fallback
+# Google Drive API Dependencies
 try:
-    from database import UPLOAD_DIR
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+    GDRIVE_AVAILABLE = True
 except ImportError:
-    UPLOAD_DIR = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads"
-    )
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    GDRIVE_AVAILABLE = False
+
+# 1. Define folder path on local Disk D
+DATA_DIR = Path(r"D:\Inventory System Files")
+
+# 2. Create directory automatically if it doesn't exist
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# 3. Directories & Configurations
+DB_FILE = DATA_DIR / "inventory.db"
+UPLOAD_DIR = DATA_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# Google Drive Credentials & Configs
+SERVICE_ACCOUNT_FILE = DATA_DIR / "service_account.json"
+GDRIVE_FOLDER_ID = "1zLtErDbaDuGFMdAfBndU4MgCUC1lDg8J"
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 
-def sanitize_filename(filename: str) -> str:
-    """Sanitize uploaded filenames to prevent path traversal issues."""
-    clean_name = os.path.basename(filename)
-    return "".join(c for c in clean_name if c.isalnum() or c in "._- ")
+def hash_password(password: str) -> str:
+    """Hashes passwords using SHA-256 for secure database storage."""
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
-def render_stock_in(user_name, user_role):
-    st.title("📥 Stock IN Receive Log")
-    st.caption("Record site material receipts, deliveries, and stock replenishment.")
-
-    init_db()
-
-    # Load master items
+@contextmanager
+def get_db():
+    """Context manager for managing SQLite database connections cleanly."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
     try:
-        with get_db() as conn:
-            items_df = pd.read_sql_query(
-                "SELECT item_name, category, unit, current_stock FROM master_items ORDER BY item_name ASC",
-                conn,
-            )
-    except Exception as e:
-        st.error(f"Failed to fetch master items: {e}")
-        return
+        yield conn
+    finally:
+        conn.close()
 
-    if items_df.empty:
-        st.warning(
-            "⚠️ No master items found in the database. Please add items in **Manage Master Items** first."
+
+# -----------------------------------------------------------------------------
+# GOOGLE DRIVE INTEGRATION HELPERS
+# -----------------------------------------------------------------------------
+def get_gdrive_service():
+    """Authenticates and returns the Google Drive API service client."""
+    if not GDRIVE_AVAILABLE:
+        print("⚠️ Google API client libraries not installed. Run: pip install google-api-python-client google-auth")
+        return None
+
+    if not SERVICE_ACCOUNT_FILE.exists():
+        print(f"⚠️ Service account key not found at: {SERVICE_ACCOUNT_FILE}")
+        return None
+
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES
         )
-        return
+        return build("drive", "v3", credentials=creds)
+    except Exception as e:
+        print(f"❌ Failed to authenticate with Google Drive API: {e}")
+        return None
 
-    tab_receive, tab_history = st.tabs(
-        ["📥 Receive Stock", "📜 Recent Stock IN History"]
-    )
 
-    # -------------------------------------------------------------
-    # TAB 1: RECEIVE STOCK FORM
-    # -------------------------------------------------------------
-    with tab_receive:
-        with st.form("stock_in_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
+def backup_db_to_gdrive(folder_id: str = None) -> bool:
+    """Uploads/backs up the current SQLite database file to Google Drive."""
+    service = get_gdrive_service()
+    if not service:
+        return False
 
-            with col1:
-                selected_item = st.selectbox(
-                    "Select Master Item*", items_df["item_name"].tolist()
-                )
+    target_folder = folder_id or GDRIVE_FOLDER_ID
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"inventory_backup_{timestamp}.db"
 
-                item_info = items_df[
-                    items_df["item_name"] == selected_item
-                ].iloc[0]
-                current_stock = float(item_info["current_stock"])
-                unit = str(item_info["unit"])
-                category = str(item_info["category"])
+    file_metadata = {"name": backup_filename}
+    if target_folder:
+        file_metadata["parents"] = [target_folder]
 
-                st.info(
-                    f"Category: **{category}** | Current Balance: **{current_stock:,.2f} {unit}**"
-                )
+    try:
+        media = MediaFileUpload(str(DB_FILE), mimetype="application/x-sqlite3", resumable=True)
+        uploaded_file = (
+            service.files()
+            .create(body=file_metadata, media_body=media, fields="id")
+            .execute()
+        )
+        print(f"✅ Database backup uploaded to Drive (File ID: {uploaded_file.get('id')})")
+        return True
+    except Exception as e:
+        print(f"❌ Google Drive upload failed: {e}")
+        return False
 
-                quantity = st.number_input(
-                    f"Received Quantity ({unit})*",
-                    min_value=0.01,
-                    value=1.00,
-                    step=1.00,
-                    format="%.2f",
-                )
 
-            with col2:
-                supplier_source = st.text_input(
-                    "Supplier / Source / DR No.*",
-                    placeholder="e.g., ABC Hardware, DR #10293",
-                )
-                remarks = st.text_input(
-                    "Remarks / Notes",
-                    placeholder="e.g., Batch code, Storage bay A-3",
-                )
-                uploaded_file = st.file_uploader(
-                    "Attach Delivery Receipt / Invoice (Optional)",
-                    type=["png", "jpg", "jpeg", "pdf"],
-                )
+def upload_file_to_gdrive(file_path: Path, folder_id: str = None) -> str:
+    """Uploads arbitrary site attachments (invoices/DRs) to Google Drive and returns a viewable web link."""
+    service = get_gdrive_service()
+    if not service or not file_path.exists():
+        return None
 
-            submit_btn = st.form_submit_button(
-                "📥 Log Stock IN Receipt", use_container_width=True
+    target_folder = folder_id or GDRIVE_FOLDER_ID
+    file_metadata = {"name": file_path.name}
+    if target_folder:
+        file_metadata["parents"] = [target_folder]
+
+    try:
+        media = MediaFileUpload(str(file_path), resumable=True)
+        uploaded = (
+            service.files()
+            .create(body=file_metadata, media_body=media, fields="id, webViewLink")
+            .execute()
+        )
+        return uploaded.get("webViewLink")
+    except Exception as e:
+        print(f"❌ File upload to Drive failed: {e}")
+        return None
+
+
+# -----------------------------------------------------------------------------
+# DATABASE INITIALIZATION & SCHEMA
+# -----------------------------------------------------------------------------
+def init_db():
+    """Initializes database tables, default admin credentials, and handles schema updates."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Users Table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL
+            )
+        """)
+
+        # Default admin password hashed
+        admin_hashed = hash_password("admin123")
+
+        cursor.execute("SELECT id FROM users WHERE username = 'admin'")
+        existing_admin = cursor.fetchone()
+
+        if existing_admin:
+            cursor.execute("""
+                UPDATE users 
+                SET password = ?, role = 'Admin' 
+                WHERE username = 'admin'
+            """, (admin_hashed,))
+        else:
+            cursor.execute("""
+                INSERT INTO users (username, password, role) 
+                VALUES ('admin', ?, 'Admin')
+            """, (admin_hashed,))
+
+        # Master Items Catalog
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS master_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_name TEXT UNIQUE NOT NULL,
+                category TEXT NOT NULL,
+                unit TEXT NOT NULL,
+                current_stock REAL DEFAULT 0.0,
+                reserved_stock REAL DEFAULT 0.0,
+                min_threshold REAL DEFAULT 10.0,
+                remarks TEXT
+            )
+        """)
+
+        # Schema Migration check
+        cursor.execute("PRAGMA table_info(master_items)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if "reserved_stock" not in columns:
+            cursor.execute(
+                "ALTER TABLE master_items ADD COLUMN reserved_stock REAL DEFAULT 0.0"
             )
 
-            if submit_btn:
-                supplier_clean = supplier_source.strip()
-                remarks_clean = remarks.strip()
+        # Transactions Log
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                type TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                unit TEXT NOT NULL,
+                handled_by TEXT NOT NULL,
+                notes TEXT
+            )
+        """)
 
-                if not supplier_clean:
-                    st.error("⚠️ 'Supplier / Source / DR No.' is required.")
-                elif quantity <= 0:
-                    st.error("⚠️ Received quantity must be greater than zero.")
-                else:
-                    attachment_filename = None
+        # Physical Inventory Discrepancies
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS discrepancies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                item_name TEXT NOT NULL,
+                system_stock REAL NOT NULL,
+                physical_count REAL NOT NULL,
+                variance REAL NOT NULL,
+                unit TEXT NOT NULL,
+                submitted_by TEXT NOT NULL,
+                submission_notes TEXT,
+                status TEXT DEFAULT 'PENDING',
+                resolved_by TEXT,
+                resolved_timestamp DATETIME,
+                resolution_notes TEXT
+            )
+        """)
 
-                    # Handle safe file upload with unique collision-free naming
-                    if uploaded_file is not None:
-                        clean_original = sanitize_filename(uploaded_file.name)
-                        attachment_filename = f"IN_{uuid.uuid4().hex[:8]}_{clean_original}"
-                        save_path = os.path.join(UPLOAD_DIR, attachment_filename)
+        # Deliveries Table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_name TEXT NOT NULL,
+                expected_quantity REAL NOT NULL,
+                unit TEXT NOT NULL,
+                supplier TEXT,
+                expected_date DATE NOT NULL,
+                status TEXT DEFAULT 'PENDING',
+                notes TEXT
+            )
+        """)
 
-                        try:
-                            with open(save_path, "wb") as f:
-                                f.write(uploaded_file.getbuffer())
-                        except Exception as file_err:
-                            st.error(f"Failed to save uploaded receipt: {file_err}")
-                            attachment_filename = None
+        # Tasks Table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_description TEXT NOT NULL,
+                assigned_to TEXT NOT NULL,
+                due_date DATE,
+                status TEXT DEFAULT 'OPEN',
+                created_by TEXT NOT NULL
+            )
+        """)
 
-                    try:
-                        # Build standard notes string
-                        notes_parts = [f"Supplier/DR: {supplier_clean}"]
-                        if remarks_clean:
-                            notes_parts.append(f"Remarks: {remarks_clean}")
-                        if attachment_filename:
-                            notes_parts.append(f"Attachment: {attachment_filename}")
+        conn.commit()
 
-                        full_notes = " | ".join(notes_parts)
 
-                        with get_db() as conn:
-                            cursor = conn.cursor()
+def login_user(username, password):
+    """Authenticates a user against the database using hashed passwords."""
+    hashed = hash_password(password)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT username, role FROM users WHERE username = ? AND password = ?",
+            (username, hashed),
+        )
+        return cursor.fetchone()
 
-                            # Atomic stock increment in database
-                            cursor.execute(
-                                """
-                                UPDATE master_items 
-                                SET current_stock = current_stock + ? 
-                                WHERE item_name = ?
-                            """,
-                                (quantity, selected_item),
-                            )
 
-                            # Record transaction audit log
-                            cursor.execute(
-                                """
-                                INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
-                                VALUES ('STOCK IN', ?, ?, ?, ?, ?)
-                            """,
-                                (
-                                    selected_item,
-                                    quantity,
-                                    unit,
-                                    user_name,
-                                    full_notes,
-                                ),
-                            )
-
-                            conn.commit()
-
-                        st.toast(
-                            f"✅ Successfully received {quantity:,.2f} {unit} of {selected_item}.",
-                            icon="📥",
-                        )
-                        st.rerun()
-
-                    except Exception as e:
-                        st.error(f"Error executing stock-in transaction: {e}")
-
-    # -------------------------------------------------------------
-    # TAB 2: RECEIPT HISTORY & AUDIT LOG
-    # -------------------------------------------------------------
-    with tab_history:
-        st.subheader("Recent Stock IN Entries")
-        try:
-            with get_db() as conn:
-                history_df = pd.read_sql_query(
-                    """
-                    SELECT id, timestamp, item_name, quantity, unit, handled_by, notes 
-                    FROM transactions 
-                    WHERE type = 'STOCK IN' 
-                    ORDER BY id DESC LIMIT 50
-                """,
-                    conn,
-                )
-
-            if not history_df.empty:
-                st.dataframe(
-                    history_df.rename(
-                        columns={
-                            "id": "ID",
-                            "timestamp": "Timestamp",
-                            "item_name": "Item Name",
-                            "quantity": "Quantity",
-                            "unit": "Unit",
-                            "handled_by": "Received By",
-                            "notes": "Details & Attachment Ref",
-                        }
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                # Option to inspect and download attachments referenced in history
-                with st.expander("📎 Download / View Log Attachments"):
-                    attachment_rows = history_df[
-                        history_df["notes"].str.contains("Attachment: ", na=False)
-                    ]
-                    if not attachment_rows.empty:
-                        for _, row in attachment_rows.iterrows():
-                            # Extract attachment filename from notes
-                            notes_str = row["notes"]
-                            att_file = notes_str.split("Attachment: ")[-1].split(" | ")[0].strip()
-                            file_path = os.path.join(UPLOAD_DIR, att_file)
-
-                            if os.path.exists(file_path):
-                                with open(file_path, "rb") as f:
-                                    st.download_button(
-                                        label=f"📄 Download {att_file} (Log #{row['id']} - {row['item_name']})",
-                                        data=f.read(),
-                                        file_name=att_file,
-                                        key=f"dl_btn_{row['id']}",
-                                    )
-                            else:
-                                st.caption(f"⚠️ Attachment `{att_file}` not found on server disk.")
-                    else:
-                        st.info("No attachments logged in the recent history entries.")
-            else:
-                st.info("No recent Stock IN transactions recorded yet.")
-        except Exception as e:
-            st.error(f"Error loading stock-in transaction history: {e}")
+if __name__ == "__main__":
+    init_db()
+    print(f"Database initialized successfully at: {DB_FILE}")
