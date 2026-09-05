@@ -2,17 +2,18 @@
 import os
 import uuid
 import sqlite3
+import tempfile
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
 import streamlit as st
 from database import get_db, init_db, upload_file_to_gdrive, backup_db_to_gdrive
 
-# Ensure UPLOAD_DIR fallback
+# Safe fallback directory resolution across OS platforms
 try:
     from database import UPLOAD_DIR
 except ImportError:
-    UPLOAD_DIR = Path(r"D:\Inventory System Files\uploads")
+    UPLOAD_DIR = Path(tempfile.gettempdir()) / "inventory_uploads"
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -22,13 +23,13 @@ def sanitize_filename(filename: str) -> str:
     return "".join(c for c in clean_name if c.isalnum() or c in "._- ")
 
 
-def render_stock_in(user_name, user_role):
+def render_stock_in(user_name: str, user_role: str):
     st.title("📥 Stock IN Receive Log")
     st.caption("Record site material receipts, deliveries, and stock replenishment.")
 
     init_db()
 
-    # Load master items
+    # Load master items catalog
     try:
         with get_db() as conn:
             items_df = pd.read_sql_query(
@@ -45,9 +46,7 @@ def render_stock_in(user_name, user_role):
         )
         return
 
-    tab_receive, tab_history = st.tabs(
-        ["📥 Receive Stock", "📜 Recent Stock IN History"]
-    )
+    tab_receive, tab_history = st.tabs(["📥 Receive Stock", "📜 Recent Stock IN History"])
 
     # -------------------------------------------------------------
     # TAB 1: RECEIVE STOCK FORM
@@ -61,9 +60,7 @@ def render_stock_in(user_name, user_role):
                     "Select Master Item*", items_df["item_name"].tolist()
                 )
 
-                item_info = items_df[
-                    items_df["item_name"] == selected_item
-                ].iloc[0]
+                item_info = items_df[items_df["item_name"] == selected_item].iloc[0]
                 current_stock = float(item_info["current_stock"])
                 unit = str(item_info["unit"])
                 category = str(item_info["category"])
@@ -110,7 +107,7 @@ def render_stock_in(user_name, user_role):
                     attachment_filename = None
                     drive_link = None
 
-                    # Handle safe local save and Google Drive upload
+                    # Handle file saving and drive synchronization
                     if uploaded_file is not None:
                         clean_original = sanitize_filename(uploaded_file.name)
                         attachment_filename = f"IN_{uuid.uuid4().hex[:8]}_{clean_original}"
@@ -119,15 +116,14 @@ def render_stock_in(user_name, user_role):
                         try:
                             with open(save_path, "wb") as f:
                                 f.write(uploaded_file.getbuffer())
-                            
-                            # Sync file to Google Drive
+
                             drive_link = upload_file_to_gdrive(save_path)
                         except Exception as file_err:
                             st.error(f"Failed to save uploaded receipt: {file_err}")
                             attachment_filename = None
 
                     try:
-                        # Build standard notes string
+                        # Construct audit details string
                         notes_parts = [f"Supplier/DR: {supplier_clean}"]
                         if remarks_clean:
                             notes_parts.append(f"Remarks: {remarks_clean}")
@@ -138,37 +134,29 @@ def render_stock_in(user_name, user_role):
 
                         full_notes = " | ".join(notes_parts)
 
+                        # Atomic transaction write
                         with get_db() as conn:
                             cursor = conn.cursor()
-
-                            # Atomic stock increment in database
+                            
                             cursor.execute(
                                 """
                                 UPDATE master_items 
                                 SET current_stock = current_stock + ? 
                                 WHERE item_name = ?
-                            """,
+                                """,
                                 (quantity, selected_item),
                             )
 
-                            # Record transaction audit log
                             cursor.execute(
                                 """
                                 INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
                                 VALUES ('STOCK IN', ?, ?, ?, ?, ?)
-                            """,
-                                (
-                                    selected_item,
-                                    quantity,
-                                    unit,
-                                    user_name,
-                                    full_notes,
-                                ),
+                                """,
+                                (selected_item, quantity, unit, user_name, full_notes),
                             )
 
                             conn.commit()
 
-                        # Auto-backup updated DB to Google Drive
                         backup_db_to_gdrive()
 
                         st.toast(
@@ -193,7 +181,7 @@ def render_stock_in(user_name, user_role):
                     FROM transactions 
                     WHERE type = 'STOCK IN' 
                     ORDER BY id DESC LIMIT 50
-                """,
+                    """,
                     conn,
                 )
 
@@ -214,19 +202,19 @@ def render_stock_in(user_name, user_role):
                     hide_index=True,
                 )
 
-                # Inspect and view attachments/links
+                # Expandable Inspector for Attachments
                 with st.expander("📎 Download / View Log Attachments"):
                     has_attachments = False
                     for _, row in history_df.iterrows():
                         notes_str = str(row["notes"])
-                        
-                        # Handle Google Drive Web Links
+
                         if "Drive Link: " in notes_str:
                             has_attachments = True
                             link = notes_str.split("Drive Link: ")[-1].split(" | ")[0].strip()
-                            st.markdown(f"🔗 **Log #{row['id']} ({row['item_name']})**: [View Attachment on Google Drive]({link})")
-                        
-                        # Handle Local Attachments Fallback
+                            st.markdown(
+                                f"🔗 **Log #{row['id']} ({row['item_name']})**: [View Attachment on Google Drive]({link})"
+                            )
+
                         elif "Attachment: " in notes_str:
                             has_attachments = True
                             att_file = notes_str.split("Attachment: ")[-1].split(" | ")[0].strip()
@@ -241,10 +229,10 @@ def render_stock_in(user_name, user_role):
                                         key=f"dl_btn_{row['id']}",
                                     )
                             else:
-                                st.caption(f"⚠️ Attachment `{att_file}` not found on server disk.")
-                    
+                                st.caption(f"⚠️ Attachment `{att_file}` not found on local storage.")
+
                     if not has_attachments:
-                        st.info("No attachments logged in the recent history entries.")
+                        st.info("No attachments logged in recent history entries.")
             else:
                 st.info("No recent Stock IN transactions recorded yet.")
         except Exception as e:
