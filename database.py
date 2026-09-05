@@ -120,7 +120,11 @@ def get_drive_service():
 
         creds = None
         if os.path.exists('token.json'):
-            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+            try:
+                creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+            except Exception as e:
+                print(f"[Drive Warning] Invalid or expired token.json deleted: {e}")
+                os.remove('token.json')
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
