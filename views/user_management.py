@@ -18,6 +18,14 @@ def render_user_management(user_name, user_role):
 
     init_db()
 
+    # Flash notification queue for post-rerun messages
+    if "user_mgmt_flash" in st.session_state:
+        msg_type, msg_text = st.session_state.pop("user_mgmt_flash")
+        if msg_type == "success":
+            st.success(msg_text)
+        elif msg_type == "error":
+            st.error(msg_text)
+
     tab_users, tab_add, tab_reset = st.tabs(
         ["📋 Registered Users", "➕ Create New User", "🔑 Reset Password"]
     )
@@ -51,12 +59,12 @@ def render_user_management(user_name, user_role):
                 deletable_users = df[df["username"] != user_name]["username"].tolist()
 
                 if deletable_users:
-                    with st.form("delete_user_form"):
+                    with st.form("delete_user_form", clear_on_submit=True):
                         target_user = st.selectbox(
                             "Select Account to Delete", deletable_users
                         )
                         submit_delete = st.form_submit_button(
-                            "Delete Account", use_container_width=True
+                            "🗑️ Delete Account", use_container_width=True
                         )
 
                         if submit_delete:
@@ -69,16 +77,18 @@ def render_user_management(user_name, user_role):
                                         "SELECT role FROM users WHERE username = ?",
                                         (target_user,),
                                     )
-                                    target_role = cursor.fetchone()[0]
+                                    row = cursor.fetchone()
+                                    target_role = row[0] if row else None
 
                                     if target_role == "Admin":
                                         cursor.execute(
                                             "SELECT COUNT(*) FROM users WHERE role = 'Admin'"
                                         )
                                         admin_count = cursor.fetchone()[0]
+
                                         if admin_count <= 1:
                                             st.error(
-                                                "⚠️ Cannot delete the last remaining Administrator account."
+                                                "⚠️ Action Blocked: Cannot delete the last remaining Administrator account."
                                             )
                                             st.stop()
 
@@ -88,8 +98,9 @@ def render_user_management(user_name, user_role):
                                     )
                                     conn.commit()
 
-                                st.success(
-                                    f"✅ Account **{target_user}** successfully removed."
+                                st.session_state["user_mgmt_flash"] = (
+                                    "success",
+                                    f"✅ Account **{target_user}** successfully removed.",
                                 )
                                 st.rerun()
 
@@ -147,8 +158,9 @@ def render_user_management(user_name, user_role):
                             )
                             conn.commit()
 
-                        st.success(
-                            f"✅ User account **{clean_user}** ({new_role}) created successfully."
+                        st.session_state["user_mgmt_flash"] = (
+                            "success",
+                            f"✅ User account **{clean_user}** ({new_role}) created successfully.",
                         )
                         st.rerun()
 
@@ -209,9 +221,12 @@ def render_user_management(user_name, user_role):
                                 )
                                 conn.commit()
 
-                            st.success(
-                                f"✅ Password for **{selected_user}** updated successfully."
+                            st.session_state["user_mgmt_flash"] = (
+                                "success",
+                                f"✅ Password for **{selected_user}** updated successfully.",
                             )
+                            st.rerun()
+
                         except Exception as e:
                             st.error(f"Failed to reset password: {e}")
         else:
