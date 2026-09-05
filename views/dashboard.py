@@ -57,7 +57,7 @@ def render_dashboard(user_name, user_role):
                 SELECT id, item_name, category, unit, 
                        COALESCE(current_stock, 0.0) AS current_stock, 
                        COALESCE(reserved_stock, 0.0) AS reserved_stock, 
-                       min_threshold 
+                       COALESCE(min_threshold, 0.0) AS min_threshold 
                 FROM master_items 
                 ORDER BY category ASC, item_name ASC
             """,
@@ -67,9 +67,20 @@ def render_dashboard(user_name, user_role):
             if not df.empty:
                 df["effective_stock"] = df["current_stock"] - df["reserved_stock"]
             else:
-                df["effective_stock"] = 0.0
+                df = pd.DataFrame(
+                    columns=[
+                        "id",
+                        "item_name",
+                        "category",
+                        "unit",
+                        "current_stock",
+                        "reserved_stock",
+                        "min_threshold",
+                        "effective_stock",
+                    ]
+                )
 
-            # 2. Fetch active tasks/reminders (Checks 'tasks' or 'reminders' table safely)
+            # 2. Fetch active tasks/reminders safely
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'reminders')"
@@ -90,25 +101,24 @@ def render_dashboard(user_name, user_role):
                 )
                 has_priority = "priority" in rem_cols
 
+                select_priority = ", priority" if has_priority else ""
                 if is_admin:
                     query_rem = f"""
-                        SELECT id, due_date, {task_col} AS task, assigned_to, status
-                        {', priority' if has_priority else ''}
+                        SELECT id, due_date, {task_col} AS task, assigned_to, status {select_priority}
                         FROM {task_table}
-                        WHERE status IN ('OPEN', 'PENDING')
+                        WHERE UPPER(status) IN ('OPEN', 'PENDING')
                     """
                     params_rem = []
                 else:
                     query_rem = f"""
-                        SELECT id, due_date, {task_col} AS task, assigned_to, status
-                        {', priority' if has_priority else ''}
+                        SELECT id, due_date, {task_col} AS task, assigned_to, status {select_priority}
                         FROM {task_table}
-                        WHERE status IN ('OPEN', 'PENDING') AND LOWER(assigned_to) = LOWER(?)
+                        WHERE UPPER(status) IN ('OPEN', 'PENDING') AND LOWER(assigned_to) = LOWER(?)
                     """
                     params_rem = [user_name.strip()]
 
                 reminders_df = pd.read_sql_query(query_rem, conn, params=params_rem)
-                if not has_priority:
+                if not has_priority or "priority" not in reminders_df.columns:
                     reminders_df["priority"] = "NORMAL"
 
     except Exception as e:
@@ -124,7 +134,9 @@ def render_dashboard(user_name, user_role):
 
     open_tasks_count = len(reminders_df)
     high_priority_count = (
-        len(reminders_df[reminders_df["priority"] == "HIGH"]) if not reminders_df.empty else 0
+        len(reminders_df[reminders_df["priority"].str.upper() == "HIGH"])
+        if not reminders_df.empty and "priority" in reminders_df.columns
+        else 0
     )
 
     # 1. Top Metrics Display
@@ -139,7 +151,7 @@ def render_dashboard(user_name, user_role):
         delta_color="inverse" if low_stock_count > 0 else "normal",
     )
     col5.metric(
-        label="📝 Open Tasks" if not is_admin else "📝 Total Tasks",
+        label="📝 Total Tasks" if is_admin else "📝 My Tasks",
         value=f"{open_tasks_count}",
         delta=f"🚨 {high_priority_count} High" if high_priority_count > 0 else "All Normal",
         delta_color="inverse" if high_priority_count > 0 else "normal",
@@ -164,9 +176,7 @@ def render_dashboard(user_name, user_role):
                 chart_source = chart_source[chart_source["category"] == chart_cat_filter]
 
             if not chart_source.empty:
-                chart_source["Available Stock"] = (
-                    chart_source["current_stock"] - chart_source["reserved_stock"]
-                )
+                chart_source["Available Stock"] = chart_source["effective_stock"]
 
                 chart_df = pd.melt(
                     chart_source,
@@ -210,16 +220,16 @@ def render_dashboard(user_name, user_role):
     with alert_col:
         st.subheader("📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({user_name})")
         if not reminders_df.empty:
-            days_left_data = reminders_df["due_date"].apply(calculate_days_left)
-            reminders_df["days_left_num"] = [d[0] for d in days_left_data]
-            reminders_df["days_left_str"] = [d[1] for d in days_left_data]
+            parsed_dates = reminders_df["due_date"].apply(calculate_days_left)
+            reminders_df["days_left_num"] = [d[0] for d in parsed_dates]
+            reminders_df["days_left_str"] = [d[1] for d in parsed_dates]
 
             reminders_df = reminders_df.sort_values(
                 by=["days_left_num", "priority"], ascending=[True, False]
             )
 
             reminders_df["Priority"] = reminders_df["priority"].apply(
-                lambda x: "🚨 HIGH" if x == "HIGH" else "NORMAL"
+                lambda x: "🚨 HIGH" if str(x).upper() == "HIGH" else "NORMAL"
             )
 
             display_reminders = reminders_df[
@@ -266,7 +276,17 @@ def render_dashboard(user_name, user_role):
                     "min_threshold": "Limit",
                 }
             )
-            st.dataframe(low_stock_display, use_container_width=True, hide_index=True)
+            st.dataframe(
+                low_stock_display,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Total Stock": st.column_config.NumberColumn(format="%.2f"),
+                    "Reserved": st.column_config.NumberColumn(format="%.2f"),
+                    "Available": st.column_config.NumberColumn(format="%.2f"),
+                    "Limit": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
         else:
             st.success("✅ All stock items are currently above safety thresholds.")
 
@@ -344,6 +364,9 @@ def render_dashboard(user_name, user_role):
                         ),
                         "Effective Available": st.column_config.NumberColumn(
                             "Effective Available", format="%.2f"
+                        ),
+                        "Safety Limit": st.column_config.NumberColumn(
+                            "Safety Limit", format="%.2f"
                         ),
                     },
                 )
