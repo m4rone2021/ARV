@@ -1,17 +1,24 @@
 import sqlite3
 import os
+import io
 import hashlib
 from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime
 
-# 1. Define folder path on local Disk D
-DATA_DIR = Path(r"D:\Inventory System Files")
+# -----------------------------------------------------------------------------
+# DYNAMIC ENVIRONMENT & PATH CONFIGURATION
+# -----------------------------------------------------------------------------
+# Detect environment: Use D: locally if available, otherwise fallback to local/cloud folder
+LOCAL_WIN_DIR = Path(r"D:\Inventory System Files")
 
-# 2. Create directory automatically if it doesn't exist
+if LOCAL_WIN_DIR.exists() or os.name == "nt":
+    DATA_DIR = LOCAL_WIN_DIR
+else:
+    # Fallback directory for Linux/Streamlit Cloud
+    DATA_DIR = Path("./data")
+
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-# 3. Store SQLite database permanently in 'D:\Inventory System Files\inventory.db'
 DB_FILE = DATA_DIR / "inventory.db"
 
 
@@ -31,42 +38,118 @@ def get_db():
         conn.close()
 
 
+# -----------------------------------------------------------------------------
+# GOOGLE DRIVE INTEGRATION & TESTING
+# -----------------------------------------------------------------------------
+def get_drive_service():
+    """
+    Authenticates and builds Google Drive API service using google-api-python-client.
+    Works locally via credentials.json/token.json or Streamlit Secrets in Cloud.
+    """
+    try:
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+
+        SCOPES = ['https://www.googleapis.com/auth/drive']
+        creds = None
+
+        # Check for local token
+        if os.path.exists('token.json'):
+            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+            
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            elif os.path.exists('credentials.json'):
+                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+                creds = flow.run_local_server(port=0)
+                with open('token.json', 'w') as token:
+                    token.write(creds.to_json())
+            else:
+                print("[Drive Error] Neither credentials.json nor token.json found.")
+                return None
+
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        print(f"[Drive Auth Error] {e}")
+        return None
+
+
+def create_test_file_in_gdrive():
+    """Creates a sample test document in Google Drive for integration testing."""
+    service = get_drive_service()
+    if not service:
+        print("[Test File Error] Could not initialize Drive service.")
+        return None
+
+    try:
+        from googleapiclient.http import MediaIoBaseUpload
+
+        file_metadata = {
+            'name': 'Project_Alpha_Specs.txt',
+            'mimeType': 'text/plain',
+            'description': 'Integration Test File'
+        }
+
+        file_content = (
+            "PROJECT ALPHA SPECIFICATIONS\n"
+            "----------------------------\n"
+            "Project Alpha budget is $50,000 using vendor ACME Corp.\n"
+            "Key Deliverable: Automated inventory sync module.\n"
+            "Target Date: Q4 2026."
+        )
+
+        media = MediaIoBaseUpload(
+            io.BytesIO(file_content.encode('utf-8')),
+            mimetype='text/plain',
+            resumable=True
+        )
+
+        file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, name, webViewLink'
+        ).execute()
+
+        print(f"[Test Upload Success] File ID: {file.get('id')}")
+        return file.get('id')
+    except Exception as e:
+        print(f"[Test Upload Error] {e}")
+        return None
+
+
 def backup_db_to_gdrive():
-    """
-    Uploads/Backs up the local inventory.db to Google Drive.
-    Requires credentials settings file 'settings.yaml' or service account key 
-    in 'D:\\Inventory System Files\\'.
-    """
+    """Uploads/Backs up the local inventory.db to Google Drive."""
     if not DB_FILE.exists():
         print(f"[Backup Warning] Database file not found at {DB_FILE}")
         return False
 
+    service = get_drive_service()
+    if not service:
+        print("[Backup Error] Drive service unavailable.")
+        return False
+
     try:
-        from pydrive2.auth import GoogleAuth
-        from pydrive2.drive import GoogleDrive
+        from googleapiclient.http import MediaFileUpload
 
-        # Configure Google Drive Auth looking in local D: drive folder
-        settings_file = DATA_DIR / "settings.yaml"
-        gauth = GoogleAuth(settings_file=str(settings_file) if settings_file.exists() else None)
-        gauth.LocalWebserverAuth() # Authenticates via local browser session if token not saved
-        drive = GoogleDrive(gauth)
-
-        # File metadata for upload
         backup_filename = f"inventory_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-        gfile = drive.CreateFile({'title': backup_filename})
-        gfile.SetContentFile(str(DB_FILE))
-        gfile.Upload()
+        file_metadata = {'name': backup_filename}
+        
+        media = MediaFileUpload(str(DB_FILE), mimetype='application/x-sqlite3', resumable=True)
+        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
-        print(f"[Backup Success] Successfully uploaded {backup_filename} to Google Drive.")
+        print(f"[Backup Success] Uploaded {backup_filename} (ID: {file.get('id')})")
         return True
-    except ImportError:
-        print("[Backup Error] PyDrive2 library not installed. Run: pip install PyDrive2")
-        return False
     except Exception as e:
-        print(f"[Backup Error] Failed to backup to Google Drive: {e}")
+        print(f"[Backup Error] Failed to backup: {e}")
         return False
 
 
+# -----------------------------------------------------------------------------
+# DATABASE INITIALIZATION & SCHEMA
+# -----------------------------------------------------------------------------
 def init_db():
     """Initializes database tables, default admin credentials, and handles schema updates."""
     with get_db() as conn:
