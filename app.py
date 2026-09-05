@@ -80,7 +80,10 @@ def render_login():
 
                         # Backup database to Google Drive upon Admin login
                         if user_data["role"] == "Admin":
-                            backup_db_to_gdrive()
+                            try:
+                                backup_db_to_gdrive()
+                            except Exception as e:
+                                st.warning(f"⚠️ Initial Admin backup warning: {e}")
 
                         st.toast(
                             f"Welcome back, {user_data['username']}!", icon="👋"
@@ -127,20 +130,39 @@ def render_app():
     # Admin Utilities / Test Tools
     if st.session_state.user_role == "Admin":
         st.sidebar.subheader("🛠️ Admin Tools")
+        
+        # 1. Manual DB Backup Button
+        if st.sidebar.button("💾 Backup Database to Drive", use_container_width=True):
+            with st.spinner("Backing up SQLite DB to Google Drive..."):
+                try:
+                    file_id = backup_db_to_gdrive()
+                    if file_id:
+                        st.sidebar.success("✅ Backup upload complete!")
+                except Exception as e:
+                    st.sidebar.error(f"❌ Backup failed: {e}")
+
+        # 2. Test Drive Upload Button
         if st.sidebar.button("🧪 Generate Test File in Drive", use_container_width=True):
             with st.spinner("Uploading test file to Google Drive..."):
                 try:
                     from tests.setup_test_drive import get_drive_service, create_test_file
-                    drive_service = get_drive_service()
-                    file_id = create_test_file(drive_service)
-                    if file_id:
-                        st.sidebar.success(f"✅ Success! File ID: {file_id[:8]}...")
+                    
+                    # Unpack the (service, auth_type) tuple correctly
+                    drive_service, auth_label = get_drive_service()
+                    
+                    if drive_service:
+                        file_id = create_test_file(drive_service)
+                        if file_id:
+                            st.sidebar.success(f"✅ Success ({auth_label})! ID: {file_id[:8]}...")
+                        else:
+                            st.sidebar.error("❌ Failed to create file.")
                     else:
-                        st.sidebar.error("❌ Failed to create file.")
+                        st.sidebar.error("❌ Drive Service authentication failed.")
                 except ModuleNotFoundError:
                     st.sidebar.error("❌ Test module not found in '/tests/setup_test_drive.py'.")
                 except Exception as e:
                     st.sidebar.error(f"❌ Error: {e}")
+                    
         st.sidebar.divider()
 
     if st.sidebar.button("🚪 Logout", use_container_width=True):
