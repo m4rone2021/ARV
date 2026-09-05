@@ -23,6 +23,15 @@ def sanitize_filename(filename: str) -> str:
     return "".join(c for c in clean_name if c.isalnum() or c in "._- ")
 
 
+def trigger_gdrive_sync():
+    """Helper function to run backup to Google Drive without breaking UI flow on failure."""
+    try:
+        backup_db_to_gdrive()
+        st.toast("☁️ Synced database to Google Drive!", icon="✅")
+    except Exception as e:
+        st.warning(f"⚠️ Saved transaction locally, but Drive backup failed: {e}")
+
+
 def render_stock_in(user_name: str, user_role: str):
     st.title("📥 Stock IN Receive Log")
     st.caption("Record site material receipts, deliveries, and stock replenishment.")
@@ -157,10 +166,11 @@ def render_stock_in(user_name: str, user_role: str):
 
                             conn.commit()
 
-                        backup_db_to_gdrive()
+                        # Run Google Drive backup safely
+                        trigger_gdrive_sync()
 
                         st.toast(
-                            f"✅ Received {quantity:,.2f} {unit} of {selected_item} (Synced to Drive).",
+                            f"✅ Received {quantity:,.2f} {unit} of {selected_item}.",
                             icon="📥",
                         )
                         st.rerun()
