@@ -1,13 +1,23 @@
 import sqlite3
 import os
 import hashlib
+from pathlib import Path
 from contextlib import contextmanager
 
-DB_FILE = "inventory.db"
+# 1. Define folder path on local Disk D
+DATA_DIR = Path(r"D:\Inventory System Files")
+
+# 2. Create directory automatically if it doesn't exist
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# 3. Store SQLite database permanently in 'D:\Inventory System Files\inventory.db'
+DB_FILE = DATA_DIR / "inventory.db"
+
 
 def hash_password(password: str) -> str:
     """Hashes passwords using SHA-256 for secure database storage."""
     return hashlib.sha256(password.encode()).hexdigest()
+
 
 @contextmanager
 def get_db():
@@ -18,6 +28,7 @@ def get_db():
         yield conn
     finally:
         conn.close()
+
 
 def init_db():
     """Initializes database tables, default admin credentials, and handles schema updates."""
@@ -134,6 +145,7 @@ def init_db():
 
         conn.commit()
 
+
 def login_user(username, password):
     """Authenticates a user against the database using hashed passwords."""
     hashed = hash_password(password)
@@ -145,6 +157,7 @@ def login_user(username, password):
         )
         return cursor.fetchone()
 
+
 if __name__ == "__main__":
     init_db()
-    print("Database initialized successfully.")
+    print(f"Database initialized successfully at: {DB_FILE}")
