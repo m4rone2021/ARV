@@ -6,16 +6,33 @@ from googleapiclient.http import MediaIoBaseUpload
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
+def clean_private_key(key_str: str) -> str:
+    """Sanitizes raw private key strings into valid multi-line PEM format."""
+    if not key_str:
+        return key_str
+    
+    # Strip quotes if accidental double wrapping occurred in secrets
+    key_str = key_str.strip('\'"')
+    
+    # Replace literal '\\n' or '\n' characters with actual line breaks
+    key_str = key_str.replace('\\n', '\n')
+    
+    # Ensure correct PEM boundaries
+    if "-----BEGIN PRIVATE KEY-----" in key_str and not key_str.startswith("-----BEGIN PRIVATE KEY-----"):
+        key_str = "-----BEGIN PRIVATE KEY-----" + key_str.split("-----BEGIN PRIVATE KEY-----")[-1]
+        
+    return key_str
+
 def get_drive_service():
     """Authenticates using GCP Service Account secrets on Streamlit Cloud."""
     try:
         if "gcp_service_account" in st.secrets:
-            # Load credentials directly from Streamlit secrets
+            # Copy secrets dict to avoid modifying in-memory config directly
             creds_dict = dict(st.secrets["gcp_service_account"])
             
-            # Handle escaped newlines in private key if necessary
+            # Clean and re-format the private key for OpenSSL
             if "private_key" in creds_dict:
-                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+                creds_dict["private_key"] = clean_private_key(creds_dict["private_key"])
 
             creds = service_account.Credentials.from_service_account_info(
                 creds_dict, 
@@ -35,7 +52,6 @@ def create_test_file(service):
         return None
 
     try:
-        # Retrieve target folder ID from secrets if available
         folder_id = st.secrets.get("google_drive", {}).get("folder_id", None)
         
         file_metadata = {
@@ -43,8 +59,7 @@ def create_test_file(service):
             'mimeType': 'text/plain'
         }
         
-        # Target specific folder if defined
-        if folder_id and folder_id != "your-folder-id":
+        if folder_id:
             file_metadata['parents'] = [folder_id]
 
         file_content = "PROJECT ALPHA SPECIFICATIONS\n----------------------------\nInventory sync integration test."
