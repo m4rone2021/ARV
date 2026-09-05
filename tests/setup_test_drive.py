@@ -23,11 +23,9 @@ def clean_private_key(key_str: str) -> str:
 
 def get_drive_service():
     """
-    Dual-Auth Authentication Strategy:
-    1. Primary: Tries GCP Service Account.
-    2. Fallback: Tries User OAuth Refresh Token if Service Account is unavailable.
+    Returns (service_object, auth_type_string).
     """
-    # 1. PRIMARY METHOD: GCP Service Account
+    # 1. PRIMARY: GCP Service Account
     if "gcp_service_account" in st.secrets:
         try:
             creds_dict = dict(st.secrets["gcp_service_account"])
@@ -38,12 +36,11 @@ def get_drive_service():
                 creds_dict, 
                 scopes=SCOPES
             )
-            service = build('drive', 'v3', credentials=creds)
-            return service, "Service Account"
+            return build('drive', 'v3', credentials=creds), "Service Account"
         except Exception as e:
-            st.warning(f"⚠️ Service Account Auth failed ({e}). Trying OAuth fallback...")
+            st.warning(f"⚠️ Service Account Auth failed: {e}")
 
-    # 2. FALLBACK METHOD: User OAuth Refresh Token
+    # 2. FALLBACK: User OAuth Refresh Token
     if "gdrive_token" in st.secrets:
         try:
             token_info = dict(st.secrets["gdrive_token"])
@@ -52,18 +49,22 @@ def get_drive_service():
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
                 
-            service = build('drive', 'v3', credentials=creds)
-            return service, "OAuth Token"
+            return build('drive', 'v3', credentials=creds), "OAuth Token"
         except Exception as e:
             st.error(f"❌ OAuth Fallback Auth Error: {e}")
-            return None, None
 
-    st.error("❌ No valid authentication secrets found ([gcp_service_account] or [gdrive_token]).")
     return None, None
 
-def create_test_file(service, auth_type="Service Account"):
+def create_test_file(service_arg=None):
     """Creates a sample test file in the specified Google Drive folder."""
+    # Obtain service and auth label safely
+    if service_arg is None or isinstance(service_arg, tuple):
+        service, auth_type = get_drive_service()
+    else:
+        service, auth_type = service_arg, "Service Account"
+
     if not service:
+        st.error("❌ Drive service initialization failed.")
         return None
 
     try:
@@ -86,7 +87,6 @@ def create_test_file(service, auth_type="Service Account"):
             resumable=True
         )
 
-        # supportsAllDrives=True bypasses shared drive/folder quota errors
         file = service.files().create(
             body=file_metadata,
             media_body=media,
@@ -96,23 +96,5 @@ def create_test_file(service, auth_type="Service Account"):
 
         return file.get('id')
     except Exception as e:
-        # Handles 403 Storage Quota issue specifically for Service Accounts on personal drives
-        if "storageQuotaExceeded" in str(e) and auth_type == "Service Account" and "gdrive_token" in st.secrets:
-            st.warning("⚠️ Service Account blocked by personal drive quota limits. Attempting OAuth Fallback...")
-            fallback_service, _ = get_drive_service_oauth_only()
-            return create_test_file(fallback_service, auth_type="OAuth Token (Fallback)")
-        else:
-            st.error(f"❌ Drive File Creation Error ({auth_type}): {e}")
-            return None
-
-def get_drive_service_oauth_only():
-    """Dedicated helper to force OAuth fallback when Service Account hits quota limits."""
-    try:
-        token_info = dict(st.secrets["gdrive_token"])
-        creds = Credentials.from_authorized_user_info(token_info, SCOPES)
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        return build('drive', 'v3', credentials=creds), "OAuth Token"
-    except Exception as e:
-        st.error(f"❌ OAuth Auth Error: {e}")
-        return None, None
+        st.error(f"❌ Drive File Creation Error ({auth_type}): {e}")
+        return None
