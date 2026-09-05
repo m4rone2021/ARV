@@ -1,9 +1,7 @@
-# views/reminders.py
-import sqlite3
 from datetime import datetime, date
 import pandas as pd
 import streamlit as st
-from database import get_db, init_db
+from database import get_db
 
 
 def ensure_reminders_table():
@@ -21,7 +19,7 @@ def ensure_reminders_table():
                     status TEXT DEFAULT 'OPEN',
                     priority TEXT DEFAULT 'NORMAL'
                 )
-            """
+                """
             )
 
             cursor.execute("PRAGMA table_info(reminders)")
@@ -30,6 +28,10 @@ def ensure_reminders_table():
             if "priority" not in cols:
                 cursor.execute(
                     "ALTER TABLE reminders ADD COLUMN priority TEXT DEFAULT 'NORMAL'"
+                )
+            if "task" not in cols and "description" in cols:
+                cursor.execute(
+                    "ALTER TABLE reminders RENAME COLUMN description TO task"
                 )
 
             conn.commit()
@@ -42,9 +44,7 @@ def calculate_days_left(due_date_str):
     if not due_date_str:
         return 9999, "No Date"
     try:
-        due_dt = datetime.strptime(
-            str(due_date_str).strip(), "%Y-%m-%d"
-        ).date()
+        due_dt = datetime.strptime(str(due_date_str).strip(), "%Y-%m-%d").date()
         today = date.today()
         days_diff = (due_dt - today).days
 
@@ -63,12 +63,11 @@ def calculate_days_left(due_date_str):
 def render_reminders(user_name, user_role):
     st.title("📝 Reminders & Tasks")
 
+    # Table setup
+    ensure_reminders_table()
+
     # Access control evaluation
-    is_admin = (
-        user_role.lower() in ["admin", "manager"]
-        if user_role
-        else False
-    )
+    is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
 
     if is_admin:
         st.caption(
@@ -79,27 +78,7 @@ def render_reminders(user_name, user_role):
             f"👤 **User Mode** ({user_name}): Viewing tasks assigned specifically to you."
         )
 
-    init_db()
-    ensure_reminders_table()
-
-    tab_tasks, tab_add = st.tabs(
-        ["📋 Task List", "➕ Create Task / Reminder"]
-    )
-
-    # Resolve active task column name safely
-    valid_cols = ["task", "description", "reminder"]
-    task_col = "task"
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(reminders)")
-            cols = [col[1] for col in cursor.fetchall()]
-            for vc in valid_cols:
-                if vc in cols:
-                    task_col = vc
-                    break
-    except Exception as e:
-        st.error(f"Database schema inspection failed: {e}")
+    tab_tasks, tab_add = st.tabs(["📋 Task List", "➕ Create Task / Reminder"])
 
     # -------------------------------------------------------------
     # TAB 1: TASK LIST & STATUS UPDATES
@@ -108,14 +87,14 @@ def render_reminders(user_name, user_role):
         try:
             with get_db() as conn:
                 if is_admin:
-                    query = f"""
-                        SELECT id, due_date, {task_col} AS task, assigned_to, status, priority 
+                    query = """
+                        SELECT id, due_date, task, assigned_to, status, priority 
                         FROM reminders
                     """
                     params = []
                 else:
-                    query = f"""
-                        SELECT id, due_date, {task_col} AS task, assigned_to, status, priority 
+                    query = """
+                        SELECT id, due_date, task, assigned_to, status, priority 
                         FROM reminders 
                         WHERE LOWER(assigned_to) = LOWER(?)
                     """
@@ -128,12 +107,8 @@ def render_reminders(user_name, user_role):
                 df["days_left_num"] = [d[0] for d in days_left_data]
                 df["days_left_str"] = [d[1] for d in days_left_data]
 
-                open_df = df[
-                    df["status"].isin(["OPEN", "PENDING"])
-                ].copy()
-                closed_df = df[
-                    df["status"].isin(["COMPLETED", "CANCELLED"])
-                ].copy()
+                open_df = df[df["status"].isin(["OPEN", "PENDING"])].copy()
+                closed_df = df[df["status"].isin(["COMPLETED", "CANCELLED"])].copy()
 
                 # SECTION 1: OPEN / ACTIVE TASKS
                 st.subheader("🟡 Open & Pending Tasks")
@@ -176,9 +151,7 @@ def render_reminders(user_name, user_role):
 
                     # UPDATE ACTION FORM
                     st.markdown("#### 🔄 Update Task Status / Schedule")
-                    with st.form(
-                        "update_open_task_form", clear_on_submit=False
-                    ):
+                    with st.form("update_open_task_form", clear_on_submit=False):
                         col1, col2 = st.columns(2)
 
                         with col1:
@@ -220,70 +193,40 @@ def render_reminders(user_name, user_role):
                                 with get_db() as conn:
                                     cursor = conn.cursor()
 
-                                    if (
-                                        action_type
-                                        == "MOVE DUE DATE (RESCHEDULE)"
-                                    ):
+                                    if action_type == "MOVE DUE DATE (RESCHEDULE)":
                                         cursor.execute(
                                             "UPDATE reminders SET due_date = ?, status = 'OPEN' WHERE id = ?",
                                             (str(new_due_date), task_id),
                                         )
-                                        st.toast(
-                                            f"Task #{task_id} rescheduled to {new_due_date}",
-                                            icon="📅",
-                                        )
-                                    elif (
-                                        action_type == "SET AS HIGH PRIORITY"
-                                    ):
+                                    elif action_type == "SET AS HIGH PRIORITY":
                                         cursor.execute(
                                             "UPDATE reminders SET priority = 'HIGH' WHERE id = ?",
                                             (task_id,),
                                         )
-                                        st.toast(
-                                            f"Task #{task_id} marked High Priority",
-                                            icon="🚨",
-                                        )
-                                    elif (
-                                        action_type == "SET AS NORMAL PRIORITY"
-                                    ):
+                                    elif action_type == "SET AS NORMAL PRIORITY":
                                         cursor.execute(
                                             "UPDATE reminders SET priority = 'NORMAL' WHERE id = ?",
                                             (task_id,),
-                                        )
-                                        st.toast(
-                                            f"Task #{task_id} marked Normal Priority",
-                                            icon="🔹",
                                         )
                                     elif action_type == "MARK COMPLETED":
                                         cursor.execute(
                                             "UPDATE reminders SET status = 'COMPLETED' WHERE id = ?",
                                             (task_id,),
                                         )
-                                        st.toast(
-                                            f"Task #{task_id} Completed!",
-                                            icon="✅",
-                                        )
                                     elif action_type == "MARK PENDING":
                                         cursor.execute(
                                             "UPDATE reminders SET status = 'PENDING' WHERE id = ?",
                                             (task_id,),
-                                        )
-                                        st.toast(
-                                            f"Task #{task_id} set to Pending",
-                                            icon="⌛",
                                         )
                                     elif action_type == "CANCEL TASK":
                                         cursor.execute(
                                             "UPDATE reminders SET status = 'CANCELLED' WHERE id = ?",
                                             (task_id,),
                                         )
-                                        st.toast(
-                                            f"Task #{task_id} Cancelled",
-                                            icon="🚫",
-                                        )
 
                                     conn.commit()
-                                    st.rerun()
+                                st.success(f"Task #{task_id} updated successfully!")
+                                st.rerun()
 
                             except Exception as e:
                                 st.error(f"Failed to update task: {e}")
@@ -299,9 +242,7 @@ def render_reminders(user_name, user_role):
                 # SECTION 2: COMPLETED & CANCELLED TASKS
                 st.subheader("✅ Completed & Cancelled History")
                 if not closed_df.empty:
-                    closed_df = closed_df.sort_values(
-                        by="id", ascending=False
-                    )
+                    closed_df = closed_df.sort_values(by="id", ascending=False)
                     df_closed_display = closed_df[
                         ["id", "due_date", "task", "assigned_to", "status"]
                     ].rename(
@@ -345,9 +286,7 @@ def render_reminders(user_name, user_role):
                     "Task Description*",
                     placeholder="e.g., Weekly Fuel Reserve Audit",
                 )
-                due_date = st.date_input(
-                    "Target Due Date*", value=date.today()
-                )
+                due_date = st.date_input("Target Due Date*", value=date.today())
 
             with col2:
                 assigned_to = st.text_input(
@@ -355,9 +294,7 @@ def render_reminders(user_name, user_role):
                     value=user_name,
                     placeholder="e.g., Warehouse Team",
                 )
-                is_high_priority = st.checkbox(
-                    "🚨 Mark as High Priority", value=False
-                )
+                is_high_priority = st.checkbox("🚨 Mark as High Priority", value=False)
 
             submit_add = st.form_submit_button(
                 "💾 Save Task / Reminder", use_container_width=True
@@ -368,16 +305,14 @@ def render_reminders(user_name, user_role):
                     st.error("⚠️ Task Description is required.")
                 else:
                     try:
-                        priority_val = (
-                            "HIGH" if is_high_priority else "NORMAL"
-                        )
+                        priority_val = "HIGH" if is_high_priority else "NORMAL"
                         with get_db() as conn:
                             cursor = conn.cursor()
                             cursor.execute(
-                                f"""
-                                INSERT INTO reminders (due_date, {task_col}, assigned_to, status, priority)
+                                """
+                                INSERT INTO reminders (due_date, task, assigned_to, status, priority)
                                 VALUES (?, ?, ?, 'OPEN', ?)
-                            """,
+                                """,
                                 (
                                     str(due_date),
                                     task_desc.strip(),
@@ -386,10 +321,9 @@ def render_reminders(user_name, user_role):
                                 ),
                             )
                             conn.commit()
-                            st.toast("✅ Created new task successfully!")
-                            st.success(
-                                f"Task assigned to **{assigned_to.strip()}**: **{task_desc.strip()}**"
-                            )
-                            st.rerun()
+                        st.success(
+                            f"Task assigned to **{assigned_to.strip()}**: **{task_desc.strip()}**"
+                        )
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Failed to save task: {e}")
