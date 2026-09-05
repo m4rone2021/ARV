@@ -7,7 +7,7 @@ st.set_page_config(
     page_title="ARV Site Inventory System",
     page_icon="🏗️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # Initialize Session States
@@ -27,7 +27,7 @@ if "categories" not in st.session_state:
         "Nails & Fasteners",
         "Cutting & Grinding Consumables",
         "Welding Supplies & PPE",
-        "General Site Supplies"
+        "General Site Supplies",
     ]
 
 # Ensure DB & Tables exist on startup
@@ -38,8 +38,14 @@ init_db()
 # LOGIN VIEW
 # -----------------------------------------------------------------------------
 def render_login():
-    st.markdown("<h1 style='text-align: center;'>🏗️ ARV Construction Site Inventory</h1>", unsafe_allow_html=True)
-    st.markdown("<h4 style='text-align: center; color: gray;'>Material Tracking & Warehouse Management</h4>", unsafe_allow_html=True)
+    st.markdown(
+        "<h1 style='text-align: center;'>🏗️ ARV Construction Site Inventory</h1>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<h4 style='text-align: center; color: gray;'>Material Tracking & Warehouse Management</h4>",
+        unsafe_allow_html=True,
+    )
     st.write("---")
 
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -48,7 +54,9 @@ def render_login():
         st.subheader("🔑 Sign In")
         with st.form("login_form", clear_on_submit=False):
             username = st.text_input("Username", placeholder="Enter your username")
-            password = st.text_input("Password", type="password", placeholder="Enter your password")
+            password = st.text_input(
+                "Password", type="password", placeholder="Enter your password"
+            )
             submit = st.form_submit_button("Login", use_container_width=True)
 
             if submit:
@@ -60,7 +68,9 @@ def render_login():
                         st.session_state.logged_in = True
                         st.session_state.user_name = user_data["username"]
                         st.session_state.user_role = user_data["role"]
-                        st.success(f"Welcome back, {user_data['username']}!")
+                        st.toast(
+                            f"Welcome back, {user_data['username']}!", icon="👋"
+                        )
                         st.rerun()
                     else:
                         st.error("❌ Invalid Username or Password.")
@@ -72,39 +82,31 @@ def render_login():
 # MAIN APPLICATION & NAVIGATION
 # -----------------------------------------------------------------------------
 def render_app():
-    # Views imports - directly importing from manage_items.py
-    from views.dashboard import render_dashboard
-    from views.manage_items import render_manage_items
-    from views.stock_in import render_stock_in
-    from views.stock_out import render_stock_out
-    from views.low_stock import render_low_stock
-    from views.schedules import render_schedules
-    from views.reminders import render_reminders
-    from views.audit_log import render_audit_log
-    from views.user_management import render_user_management
-
     # Sidebar Header
     st.sidebar.markdown(f"### 👤 Logged in: **{st.session_state.user_name}**")
     st.sidebar.caption(f"Role: **{st.session_state.user_role}**")
     st.sidebar.divider()
 
-    # NAVIGATION OPTIONS
-    menu_options = [
-        "Dashboard",
-        "Manage Master Items",
-        "Stock IN",
-        "Stock OUT",
-        "Low Stock Alerts",
-        "Schedules & Deliveries",
-        "Reminders & Tasks",
-        "Transaction Ledger"
-    ]
+    # NAVIGATION OPTIONS WITH ICONS
+    menu_map = {
+        "📊 Dashboard": "Dashboard",
+        "📦 Manage Master Items": "Manage Master Items",
+        "📥 Stock IN": "Stock IN",
+        "📤 Stock OUT": "Stock OUT",
+        "⚠️ Low Stock Alerts": "Low Stock Alerts",
+        "🚚 Schedules & Deliveries": "Schedules & Deliveries",
+        "📝 Reminders & Tasks": "Reminders & Tasks",
+        "📜 Transaction Ledger": "Transaction Ledger",
+    }
 
-    # 2. ADD TO MENU (Restricted to Admin role)
+    # Add Admin-only view options
     if st.session_state.user_role == "Admin":
-        menu_options.append("User Management")
+        menu_map["👥 User Management"] = "User Management"
 
-    choice = st.sidebar.radio("Main Menu", menu_options)
+    selected_label = st.sidebar.radio(
+        "Main Menu", list(menu_map.keys()), index=0
+    )
+    choice = menu_map[selected_label]
 
     st.sidebar.divider()
     if st.sidebar.button("🚪 Logout", use_container_width=True):
@@ -113,25 +115,39 @@ def render_app():
         st.session_state.user_role = "User"
         st.rerun()
 
-    # Router Logic
-    if choice == "Dashboard":
-        render_dashboard(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "Manage Master Items":
-        render_manage_items(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "Stock IN":
-        render_stock_in(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "Stock OUT":
-        render_stock_out(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "Low Stock Alerts":
-        render_low_stock(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "Schedules & Deliveries":
-        render_schedules(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "Reminders & Tasks":
-        render_reminders(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "Transaction Ledger":
-        render_audit_log(st.session_state.user_name, st.session_state.user_role)
-    elif choice == "User Management":  # <-- 3. ROUTE TO VIEW
-        render_user_management(st.session_state.user_name, st.session_state.user_role)
+    # Lazy router import with error fallback
+    try:
+        if choice == "Dashboard":
+            from views.dashboard import render_dashboard
+            render_dashboard(st.session_state.user_name, st.session_state.user_role)
+        elif choice == "Manage Master Items":
+            from views.manage_items import render_manage_items
+            render_manage_items(st.session_state.user_name, st.session_state.user_role)
+        elif choice == "Stock IN":
+            from views.stock_in import render_stock_in
+            render_stock_in(st.session_state.user_name, st.session_state.user_role)
+        elif choice == "Stock OUT":
+            from views.stock_out import render_stock_out
+            render_stock_out(st.session_state.user_name, st.session_state.user_role)
+        elif choice == "Low Stock Alerts":
+            from views.low_stock import render_low_stock
+            render_low_stock(st.session_state.user_name, st.session_state.user_role)
+        elif choice == "Schedules & Deliveries":
+            from views.schedules import render_schedules
+            render_schedules(st.session_state.user_name, st.session_state.user_role)
+        elif choice == "Reminders & Tasks":
+            from views.reminders import render_reminders
+            render_reminders(st.session_state.user_name, st.session_state.user_role)
+        elif choice == "Transaction Ledger":
+            from views.audit_log import render_audit_log
+            render_audit_log(st.session_state.user_name, st.session_state.user_role)
+        elif choice == "User Management" and st.session_state.user_role == "Admin":
+            from views.user_management import render_user_management
+            render_user_management(st.session_state.user_name, st.session_state.user_role)
+    except ModuleNotFoundError as e:
+        st.error(f"⚠️ Navigation error: Missing view module ({e.name}). Please ensure all view files exist in the `/views` folder.")
+    except Exception as e:
+        st.error(f"An unexpected error occurred while loading view '{choice}': {e}")
 
 
 # Entry Point
