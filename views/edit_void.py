@@ -2,20 +2,27 @@ import sqlite3
 from datetime import datetime
 import pandas as pd
 import streamlit as st
-from database import get_db
+from database import get_db, backup_db_to_gdrive
 
 
-def render_edit_void(user_name, user_role):
+def render_edit_void(user_name: str, user_role: str):
     st.title("📝 Edit or Void Transactions")
     st.caption(
         "Correct entry errors or void erroneous transactions. Inventory stock will update automatically."
     )
 
     with get_db() as conn:
-        df_tx = pd.read_sql_query(
-            "SELECT * FROM transactions WHERE edit_status != 'VOIDED' ORDER BY id DESC LIMIT 50",
-            conn,
-        )
+        # Fallback query if edit_status is missing
+        try:
+            df_tx = pd.read_sql_query(
+                "SELECT * FROM transactions WHERE COALESCE(edit_status, 'ACTIVE') != 'VOIDED' ORDER BY id DESC LIMIT 50",
+                conn,
+            )
+        except sqlite3.OperationalError:
+            df_tx = pd.read_sql_query(
+                "SELECT * FROM transactions ORDER BY id DESC LIMIT 50",
+                conn,
+            )
 
     if df_tx.empty:
         st.info("No active transactions available to edit or void.")
@@ -23,10 +30,10 @@ def render_edit_void(user_name, user_role):
 
     st.subheader("🔍 Select Transaction")
 
-    # Format selectbox options for quick identification
+    # Format selectbox options
     tx_options = {}
     for _, row in df_tx.iterrows():
-        label = f"ID #{row['id']} | {row['timestamp']} | {row['type']} | {row['item_name']} ({row['quantity']})"
+        label = f"ID #{row['id']} | {row.get('timestamp', 'N/A')} | {row['type']} | {row['item_name']} ({row['quantity']})"
         tx_options[label] = row["id"]
 
     selected_label = st.selectbox(
@@ -46,12 +53,12 @@ def render_edit_void(user_name, user_role):
         st.markdown(f"**Item Name:** `{tx_detail['item_name']}`")
         st.markdown(f"**Current Quantity:** `{tx_detail['quantity']}`")
     with col2:
-        st.markdown(
-            f"**Logged By:** `{tx_detail['user_name']}` ({tx_detail['user_role']})"
-        )
-        st.markdown(f"**Date/Time:** `{tx_detail['timestamp']}`")
-        st.markdown(f"**Project Site:** `{tx_detail['project_name'] or 'N/A'}`")
-        st.markdown(f"**Remarks:** `{tx_detail['remarks'] or 'N/A'}`")
+        logged_by = tx_detail.get("user_name") or tx_detail.get("handled_by") or "N/A"
+        logged_role = tx_detail.get("user_role") or "N/A"
+        st.markdown(f"**Logged By:** `{logged_by}` ({logged_role})")
+        st.markdown(f"**Date/Time:** `{tx_detail.get('timestamp', 'N/A')}`")
+        st.markdown(f"**Project Site:** `{tx_detail.get('project_name') or 'N/A'}`")
+        st.markdown(f"**Remarks/Notes:** `{tx_detail.get('remarks') or tx_detail.get('notes') or 'N/A'}`")
 
     tab_edit, tab_void = st.tabs(["✏️ Edit Details / Quantity", "🚫 Void Transaction"])
 
@@ -66,12 +73,11 @@ def render_edit_void(user_name, user_role):
                 step=1.0,
                 format="%.2f",
             )
-            new_project = st.text_input(
-                "Project Site", value=tx_detail["project_name"] or ""
-            )
-            new_remarks = st.text_area(
-                "Remarks / Reason for Edit", value=tx_detail["remarks"] or ""
-            )
+            existing_project = tx_detail.get("project_name") or ""
+            existing_remarks = tx_detail.get("remarks") or tx_detail.get("notes") or ""
+
+            new_project = st.text_input("Project Site", value=existing_project)
+            new_remarks = st.text_area("Remarks / Reason for Edit", value=existing_remarks)
 
             submit_edit = st.form_submit_button("💾 Save Changes")
 
@@ -82,14 +88,13 @@ def render_edit_void(user_name, user_role):
                     with get_db() as conn:
                         cursor = conn.cursor()
 
-                        # Check if stock reduction on OUT transaction goes negative
                         if tx_detail["type"] == "OUT" and qty_diff > 0:
                             cursor.execute(
                                 "SELECT current_stock FROM master_items WHERE item_name = ?",
                                 (tx_detail["item_name"],),
                             )
                             row = cursor.fetchone()
-                            avail_stock = row[0] if row else 0.0
+                            avail_stock = row["current_stock"] if row else 0.0
                             if qty_diff > avail_stock:
                                 st.error(
                                     f"Cannot increase OUT quantity by {qty_diff:.2f}. Only {avail_stock:.2f} available in stock."
@@ -113,22 +118,22 @@ def render_edit_void(user_name, user_role):
                         cursor.execute(
                             """
                             UPDATE transactions 
-                            SET quantity = ?, project_name = ?, remarks = ?, edit_status = 'EDITED'
+                            SET quantity = ?, project_name = ?, remarks = ?, notes = ?, edit_status = 'EDITED'
                             WHERE id = ?
                         """,
                             (
                                 new_qty,
                                 new_project.strip(),
                                 edit_msg,
+                                edit_msg,
                                 selected_tx_id,
                             ),
                         )
 
                         conn.commit()
-                        st.toast(
-                            "✅ Transaction successfully updated!", icon="✏️"
-                        )
-                        st.success("Changes saved successfully.")
+                        backup_db_to_gdrive()
+                        st.toast("✅ Transaction successfully updated!", icon="✏️")
+                        st.success("Changes saved and backed up to Drive.")
                         st.rerun()
 
                 except sqlite3.OperationalError as e:
@@ -154,14 +159,13 @@ def render_edit_void(user_name, user_role):
                     with get_db() as conn:
                         cursor = conn.cursor()
 
-                        # For IN transactions being voided, verify we don't drop stock below zero
                         if tx_detail["type"] == "IN":
                             cursor.execute(
                                 "SELECT current_stock FROM master_items WHERE item_name = ?",
                                 (tx_detail["item_name"],),
                             )
                             row = cursor.fetchone()
-                            avail_stock = row[0] if row else 0.0
+                            avail_stock = row["current_stock"] if row else 0.0
                             if float(tx_detail["quantity"]) > avail_stock:
                                 st.error(
                                     f"Cannot void IN transaction. Stock is already at {avail_stock:.2f}, but this transaction added {tx_detail['quantity']}."
@@ -172,18 +176,12 @@ def render_edit_void(user_name, user_role):
                         if tx_detail["type"] == "IN":
                             cursor.execute(
                                 "UPDATE master_items SET current_stock = current_stock - ? WHERE item_name = ?",
-                                (
-                                    tx_detail["quantity"],
-                                    tx_detail["item_name"],
-                                ),
+                                (tx_detail["quantity"], tx_detail["item_name"]),
                             )
                         elif tx_detail["type"] == "OUT":
                             cursor.execute(
                                 "UPDATE master_items SET current_stock = current_stock + ? WHERE item_name = ?",
-                                (
-                                    tx_detail["quantity"],
-                                    tx_detail["item_name"],
-                                ),
+                                (tx_detail["quantity"], tx_detail["item_name"]),
                             )
 
                         # Mark record as VOIDED
@@ -191,19 +189,16 @@ def render_edit_void(user_name, user_role):
                         cursor.execute(
                             """
                             UPDATE transactions 
-                            SET edit_status = 'VOIDED', remarks = ? 
+                            SET edit_status = 'VOIDED', remarks = ?, notes = ?
                             WHERE id = ?
                         """,
-                            (void_msg, selected_tx_id),
+                            (void_msg, void_msg, selected_tx_id),
                         )
 
                         conn.commit()
-                        st.toast(
-                            "🚫 Transaction voided successfully!", icon="🗑️"
-                        )
-                        st.success(
-                            "Transaction voided and stock balance reversed."
-                        )
+                        backup_db_to_gdrive()
+                        st.toast("🚫 Transaction voided successfully!", icon="🗑️")
+                        st.success("Transaction voided and stock balance reversed.")
                         st.rerun()
 
                 except sqlite3.OperationalError as e:
