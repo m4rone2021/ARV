@@ -1,8 +1,7 @@
-# views/physical_inventory.py
 import sqlite3
 import pandas as pd
 import streamlit as st
-from database import get_db
+from database import get_db, backup_db_to_gdrive
 
 
 def render_physical_inventory(user_name, user_role):
@@ -150,6 +149,10 @@ def render_physical_inventory(user_name, user_role):
                                     )
 
                                     conn.commit()
+
+                                    # Trigger automated Drive Backup
+                                    backup_db_to_gdrive()
+
                                     st.toast(
                                         f"⚠️ Discrepancy logged for {selected_item_name}",
                                         icon="📌",
@@ -286,6 +289,10 @@ def render_physical_inventory(user_name, user_role):
                                                 )
 
                                                 conn_action.commit()
+
+                                                # Trigger automated Drive Backup
+                                                backup_db_to_gdrive()
+
                                                 st.toast(
                                                     f"✅ Approved Request #{disc_id}",
                                                     icon="✅",
@@ -327,6 +334,10 @@ def render_physical_inventory(user_name, user_role):
                                                     ),
                                                 )
                                                 conn_action.commit()
+
+                                                # Trigger automated Drive Backup
+                                                backup_db_to_gdrive()
+
                                                 st.toast(
                                                     f"❌ Rejected Request #{disc_id}",
                                                     icon="❌",
