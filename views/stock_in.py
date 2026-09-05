@@ -205,6 +205,3 @@ def render_stock_in(user_name, user_role):
                 st.info("No recent Stock IN transactions recorded yet.")
         except Exception as e:
             st.error(f"Error loading stock-in transaction history: {e}")
-
-
-<FollowUp label="Want me to refactor the Stock OUT module with atomic stock safety?" query="Show me the refactored views/stock_out.py code with atomic database updates and stock depletion validation." />
