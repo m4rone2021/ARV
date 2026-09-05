@@ -1,6 +1,6 @@
 import pandas as pd
 import streamlit as st
-from database import get_db, init_db
+from database import get_db, init_db, upload_file_to_gdrive
 
 
 def render_stock_out(user_name, user_role):
@@ -77,10 +77,15 @@ def render_stock_out(user_name, user_role):
                             format="%.2f",
                             disabled=is_out_of_stock
                         )
-                    with col_d:
                         recipient = st.text_input(
                             "Issued To / Department / Project*",
                             placeholder="e.g., Site Phase 2 / John Doe",
+                            disabled=is_out_of_stock
+                        )
+                    with col_d:
+                        req_file = st.file_uploader(
+                            "Attach Requisition Form / Release Pass",
+                            type=["png", "jpg", "jpeg", "pdf"],
                             disabled=is_out_of_stock
                         )
 
@@ -106,6 +111,20 @@ def render_stock_out(user_name, user_role):
                             st.error("⚠️ Quantity to issue must be greater than zero.")
                         else:
                             try:
+                                # Upload attached file to Google Drive if provided
+                                drive_link = None
+                                if req_file is not None:
+                                    with st.spinner("Uploading document to Google Drive..."):
+                                        file_bytes = req_file.getvalue()
+                                        file_name = f"StockOut_{selected_item_name}_{req_file.name}"
+                                        mime_type = req_file.type
+
+                                        drive_link = upload_file_to_gdrive(
+                                            file_bytes=file_bytes,
+                                            file_name=file_name,
+                                            mime_type=mime_type
+                                        )
+
                                 with get_db() as conn_trans:
                                     cursor = conn_trans.cursor()
 
@@ -137,6 +156,10 @@ def render_stock_out(user_name, user_role):
                                             if clean_notes
                                             else f"Issued to: {clean_recipient}"
                                         )
+
+                                        # Append Drive link to notes if upload succeeded
+                                        if drive_link:
+                                            formatted_notes += f" | Attachment: {drive_link}"
 
                                         cursor.execute(
                                             """
@@ -206,7 +229,17 @@ def render_stock_out(user_name, user_role):
                         "notes": "Recipient / Purpose",
                     }
                 )
-                st.dataframe(df_display, use_container_width=True, hide_index=True)
+                st.dataframe(
+                    df_display, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "Recipient / Purpose": st.column_config.LinkColumn(
+                            "Recipient / Purpose",
+                            help="Contains recipient details and Google Drive attachment links."
+                        )
+                    }
+                )
             else:
                 st.info("No outgoing stock transactions recorded yet.")
 
