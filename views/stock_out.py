@@ -1,4 +1,3 @@
-# views/stock_out.py
 import pandas as pd
 import streamlit as st
 from database import get_db, init_db
@@ -12,7 +11,7 @@ def render_stock_out(user_name, user_role):
 
     init_db()
 
-    # Flash notification from previous rerun
+    # Flash notification handling from previous rerun
     if "flash_msg" in st.session_state:
         msg_type, msg_text = st.session_state.pop("flash_msg")
         if msg_type == "success":
@@ -58,10 +57,11 @@ def render_stock_out(user_name, user_role):
                 st.divider()
                 col_info1, col_info2, col_info3 = st.columns(3)
                 col_info1.metric("Current Available Stock", f"{current_available:,.2f} {unit}")
-                col_info2.metric("Category", item_row["category"])
+                col_info2.metric("Category", str(item_row["category"]))
                 col_info3.metric("Minimum Threshold", f"{min_thresh:,.2f} {unit}")
 
-                if current_available <= 0:
+                is_out_of_stock = current_available <= 0
+                if is_out_of_stock:
                     st.error(f"⚠️ **{selected_item_name}** is OUT OF STOCK. Submissions are disabled.")
 
                 st.divider()
@@ -75,29 +75,32 @@ def render_stock_out(user_name, user_role):
                             value=1.00,
                             step=1.00,
                             format="%.2f",
-                            disabled=(current_available <= 0)
+                            disabled=is_out_of_stock
                         )
                     with col_d:
                         recipient = st.text_input(
                             "Issued To / Department / Project*",
                             placeholder="e.g., Site Phase 2 / John Doe",
-                            disabled=(current_available <= 0)
+                            disabled=is_out_of_stock
                         )
 
                     notes = st.text_input(
                         "Purpose / Requisition Details",
                         placeholder="e.g., Formwork preparation, Maintenance release",
-                        disabled=(current_available <= 0)
+                        disabled=is_out_of_stock
                     )
 
                     submit_btn = st.form_submit_button(
                         "📤 Submit Stock Out", 
                         use_container_width=True,
-                        disabled=(current_available <= 0)
+                        disabled=is_out_of_stock
                     )
 
                     if submit_btn:
-                        if not recipient.strip():
+                        clean_recipient = recipient.strip()
+                        clean_notes = notes.strip()
+
+                        if not clean_recipient:
                             st.error("⚠️ Please specify the recipient, department, or project.")
                         elif quantity_out <= 0:
                             st.error("⚠️ Quantity to issue must be greater than zero.")
@@ -106,7 +109,7 @@ def render_stock_out(user_name, user_role):
                                 with get_db() as conn_trans:
                                     cursor = conn_trans.cursor()
 
-                                    # Atomic deduction
+                                    # Atomic deduction check
                                     cursor.execute(
                                         """
                                         UPDATE master_items 
@@ -130,9 +133,9 @@ def render_stock_out(user_name, user_role):
                                         )
                                     else:
                                         formatted_notes = (
-                                            f"Issued to: {recipient.strip()} | Notes: {notes.strip()}"
-                                            if notes.strip()
-                                            else f"Issued to: {recipient.strip()}"
+                                            f"Issued to: {clean_recipient} | Notes: {clean_notes}"
+                                            if clean_notes
+                                            else f"Issued to: {clean_recipient}"
                                         )
 
                                         cursor.execute(
@@ -156,10 +159,9 @@ def render_stock_out(user_name, user_role):
                                         updated_stock = cursor.fetchone()[0]
                                         conn_trans.commit()
 
-                                        # Set success message and trigger rerun
                                         msg = f"✅ Issued {quantity_out:,.2f} {unit} of {selected_item_name}. Remaining: {updated_stock:,.2f} {unit}."
                                         if updated_stock <= min_thresh:
-                                            msg += f" 🔔 Low Stock Alert triggered!"
+                                            msg += " 🔔 Low Stock Alert triggered!"
                                         
                                         st.session_state["flash_msg"] = ("success", msg)
                                         st.rerun()
