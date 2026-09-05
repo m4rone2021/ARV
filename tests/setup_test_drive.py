@@ -54,13 +54,15 @@ def create_test_file(service):
     try:
         folder_id = st.secrets.get("google_drive", {}).get("folder_id", None)
         
+        if not folder_id:
+            st.error("❌ 'folder_id' missing under [google_drive] in Streamlit Secrets.")
+            return None
+
         file_metadata = {
             'name': 'Project_Alpha_Specs.txt',
-            'mimeType': 'text/plain'
+            'mimeType': 'text/plain',
+            'parents': [folder_id]
         }
-        
-        if folder_id:
-            file_metadata['parents'] = [folder_id]
 
         file_content = "PROJECT ALPHA SPECIFICATIONS\n----------------------------\nInventory sync integration test."
         media = MediaIoBaseUpload(
@@ -69,10 +71,12 @@ def create_test_file(service):
             resumable=True
         )
 
+        # supportsAllDrives=True bypasses service account individual quota checks
         file = service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id'
+            fields='id',
+            supportsAllDrives=True
         ).execute()
 
         return file.get('id')
