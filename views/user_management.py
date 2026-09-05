@@ -1,8 +1,7 @@
-# views/user_management.py
 import sqlite3
 import pandas as pd
 import streamlit as st
-from database import get_db, hash_password, init_db
+from database import get_db, hash_password, init_db, backup_db_to_gdrive
 
 
 def render_user_management(user_name, user_role):
@@ -50,7 +49,16 @@ def render_user_management(user_name, user_role):
                         "role": "Role / Access Level",
                     }
                 )
-                st.dataframe(df_display, use_container_width=True, hide_index=True)
+                st.dataframe(
+                    df_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "User ID": st.column_config.NumberColumn("User ID", format="%d"),
+                        "Username": st.column_config.TextColumn("Username"),
+                        "Role / Access Level": st.column_config.TextColumn("Role / Access Level"),
+                    }
+                )
 
                 st.divider()
                 st.subheader("🗑️ Delete User Account")
@@ -97,6 +105,9 @@ def render_user_management(user_name, user_role):
                                         (target_user,),
                                     )
                                     conn.commit()
+
+                                # Sync updated database state to Google Drive
+                                backup_db_to_gdrive()
 
                                 st.session_state["user_mgmt_flash"] = (
                                     "success",
@@ -157,6 +168,9 @@ def render_user_management(user_name, user_role):
                                 (clean_user, hashed_pass, new_role),
                             )
                             conn.commit()
+
+                        # Sync updated database state to Google Drive
+                        backup_db_to_gdrive()
 
                         st.session_state["user_mgmt_flash"] = (
                             "success",
@@ -220,6 +234,9 @@ def render_user_management(user_name, user_role):
                                     (hashed_reset, selected_user),
                                 )
                                 conn.commit()
+
+                            # Sync updated database state to Google Drive
+                            backup_db_to_gdrive()
 
                             st.session_state["user_mgmt_flash"] = (
                                 "success",
