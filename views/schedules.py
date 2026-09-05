@@ -196,7 +196,6 @@ def render_dispatch_card(dispatch_id, items_df):
                             cursor = conn_update.cursor()
                             old_status = first_row["status"]
 
-                            # Wrap inventory updates in an atomic single execution
                             for _, item_row in items_df.iterrows():
                                 qty = float(item_row["quantity"])
                                 item_name = item_row["item_name"]
@@ -254,7 +253,6 @@ def render_dispatch_card(dispatch_id, items_df):
 
                             conn_update.commit()
 
-                        # Trigger automated Google Drive backup sync after database update
                         backup_db_to_gdrive()
 
                         st.toast(
@@ -677,18 +675,12 @@ def render_schedules(user_name, user_role):
                                     )
                                 else:
                                     dispatch_code = f"DISP-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:4].upper()}"
-                                    h = st.session_state.current_dispatch_header
+                                    header = st.session_state.current_dispatch_header
 
                                     with get_db() as conn_save:
                                         cursor = conn_save.cursor()
 
                                         for item in updated_cart:
-                                            item_name = item["item_name"]
-                                            unit = item["unit"]
-                                            qty = float(item["quantity"])
-                                            notes = item["notes"]
-
-                                            # Insert delivery record
                                             cursor.execute(
                                                 """
                                                 INSERT INTO deliveries (
@@ -699,50 +691,45 @@ def render_schedules(user_name, user_role):
                                             """,
                                                 (
                                                     dispatch_code,
-                                                    item_name,
-                                                    qty,
-                                                    unit,
-                                                    str(h["scheduled_date"]),
-                                                    h["status"],
-                                                    notes,
-                                                    h["requested_by"],
-                                                    h["destination"],
-                                                    h["project"],
-                                                    1 if h["is_priority"] else 0,
-                                                    h["driver_name"],
+                                                    item["item_name"],
+                                                    float(item["quantity"]),
+                                                    item["unit"],
+                                                    str(header["scheduled_date"]),
+                                                    header["status"],
+                                                    item["notes"],
+                                                    header["requested_by"],
+                                                    header["destination"],
+                                                    header["project"],
+                                                    1 if header["is_priority"] else 0,
+                                                    header["driver_name"],
                                                 ),
                                             )
 
-                                            # Increment reserved_stock in master_items
                                             cursor.execute(
                                                 """
                                                 UPDATE master_items
                                                 SET reserved_stock = COALESCE(reserved_stock, 0) + ?
                                                 WHERE item_name = ?
                                             """,
-                                                (qty, item_name),
+                                                (float(item["quantity"]), item["item_name"]),
                                             )
 
                                         conn_save.commit()
 
-                                    # Trigger automated Google Drive backup sync after database update
                                     backup_db_to_gdrive()
 
                                     st.session_state.delivery_cart = []
                                     st.session_state.current_dispatch_header = None
-                                    st.toast(
-                                        f"Dispatch {dispatch_code} successfully scheduled and synced to Google Drive!",
-                                        icon="🎉",
+
+                                    st.success(
+                                        f"🎉 Dispatch batch **{dispatch_code}** scheduled successfully!"
                                     )
                                     st.rerun()
-
                             except Exception as e:
                                 st.error(
-                                    f"Error finalizing dispatch schedule: {e}"
+                                    f"Error scheduling dispatch batch: {e}"
                                 )
-
             else:
-                st.info("No items found in master inventory.")
-
-        catch Exception as e:
-            st.error(f"Error loading dispatch scheduling form: {e}")
+                st.warning("No master items found in the database. Please add items to inventory first.")
+        except Exception as e:
+            st.error(f"Error loading master items: {e}")
