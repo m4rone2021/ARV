@@ -100,7 +100,10 @@ def render_stock_in(user_name, user_role):
             )
 
             if submit_btn:
-                if not supplier_source.strip():
+                supplier_clean = supplier_source.strip()
+                remarks_clean = remarks.strip()
+
+                if not supplier_clean:
                     st.error("⚠️ 'Supplier / Source / DR No.' is required.")
                 elif quantity <= 0:
                     st.error("⚠️ Received quantity must be greater than zero.")
@@ -122,9 +125,9 @@ def render_stock_in(user_name, user_role):
 
                     try:
                         # Build standard notes string
-                        notes_parts = [f"Supplier/DR: {supplier_source.strip()}"]
-                        if remarks.strip():
-                            notes_parts.append(f"Remarks: {remarks.strip()}")
+                        notes_parts = [f"Supplier/DR: {supplier_clean}"]
+                        if remarks_clean:
+                            notes_parts.append(f"Remarks: {remarks_clean}")
                         if attachment_filename:
                             notes_parts.append(f"Attachment: {attachment_filename}")
 
@@ -160,8 +163,9 @@ def render_stock_in(user_name, user_role):
 
                             conn.commit()
 
-                        st.success(
-                            f"✅ Successfully received **{quantity:,.2f} {unit}** of **{selected_item}**."
+                        st.toast(
+                            f"✅ Successfully received {quantity:,.2f} {unit} of {selected_item}.",
+                            icon="📥",
                         )
                         st.rerun()
 
@@ -201,6 +205,31 @@ def render_stock_in(user_name, user_role):
                     use_container_width=True,
                     hide_index=True,
                 )
+
+                # Option to inspect and download attachments referenced in history
+                with st.expander("📎 Download / View Log Attachments"):
+                    attachment_rows = history_df[
+                        history_df["notes"].str.contains("Attachment: ", na=False)
+                    ]
+                    if not attachment_rows.empty:
+                        for _, row in attachment_rows.iterrows():
+                            # Extract attachment filename from notes
+                            notes_str = row["notes"]
+                            att_file = notes_str.split("Attachment: ")[-1].split(" | ")[0].strip()
+                            file_path = os.path.join(UPLOAD_DIR, att_file)
+
+                            if os.path.exists(file_path):
+                                with open(file_path, "rb") as f:
+                                    st.download_button(
+                                        label=f"📄 Download {att_file} (Log #{row['id']} - {row['item_name']})",
+                                        data=f.read(),
+                                        file_name=att_file,
+                                        key=f"dl_btn_{row['id']}",
+                                    )
+                            else:
+                                st.caption(f"⚠️ Attachment `{att_file}` not found on server disk.")
+                    else:
+                        st.info("No attachments logged in the recent history entries.")
             else:
                 st.info("No recent Stock IN transactions recorded yet.")
         except Exception as e:
