@@ -23,6 +23,9 @@ __all__ = [
     "get_drive_service",
     "create_test_file_in_gdrive",
     "get_db",
+    "register_item",
+    "add_stock_transaction",
+    "resolve_discrepancy",
     "DB_FILE",
 ]
 
@@ -65,14 +68,10 @@ def clean_private_key(key_str: str) -> str:
     if not key_str:
         return key_str
 
-    # Strip surrounding whitespace and accidental wrapping quotes
     key_str = key_str.strip('\'" ')
-
-    # Convert literal '\n' characters into real newline breaks
     if "\\n" in key_str:
         key_str = key_str.replace("\\n", "\n")
 
-    # Ensure clean header boundary
     if "-----BEGIN PRIVATE KEY-----" in key_str and not key_str.startswith("-----BEGIN PRIVATE KEY-----"):
         key_str = "-----BEGIN PRIVATE KEY-----" + key_str.split("-----BEGIN PRIVATE KEY-----")[-1]
 
@@ -82,8 +81,7 @@ def clean_private_key(key_str: str) -> str:
 def get_drive_service():
     """
     Authenticates and builds Google Drive API service.
-    Supports Streamlit Secrets (GCP Service Account & OAuth token) or local token/credentials.
-    Returns: (service_instance, auth_type_string) or (None, None)
+    Supports Streamlit Secrets or local token/credentials.
     """
     SCOPES = ['https://www.googleapis.com/auth/drive']
 
@@ -221,7 +219,6 @@ def backup_db_to_gdrive():
         if st and hasattr(st, "secrets"):
             folder_id = st.secrets.get("google_drive", {}).get("folder_id", None)
 
-        # 1. Create a safe temporary backup file (prevents DB lock issues)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         backup_filename = f"inventory_backup_{timestamp}.db"
         temp_dir = tempfile.gettempdir()
@@ -234,7 +231,6 @@ def backup_db_to_gdrive():
         bck_conn.close()
         src_conn.close()
 
-        # 2. Upload to Google Drive
         file_metadata = {'name': backup_filename}
         if folder_id:
             file_metadata['parents'] = [folder_id]
@@ -260,9 +256,102 @@ def backup_db_to_gdrive():
         print(f"[Backup Error] Failed to backup: {e}")
         return None
     finally:
-        # Clean up temporary file
         if temp_backup_path and temp_backup_path.exists():
             temp_backup_path.unlink()
+
+
+# -----------------------------------------------------------------------------
+# TRANSACTION & SYNCHRONIZATION HANDLERS
+# -----------------------------------------------------------------------------
+def register_item(item_name: str, category: str, unit: str, initial_stock: float = 0.0, min_threshold: float = 10.0, remarks: str = ""):
+    """Registers a new item in the master catalog and syncs the updated DB to Google Drive."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold, remarks)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (item_name, category, unit, initial_stock, min_threshold, remarks))
+        conn.commit()
+
+    print(f"[DB Update] Item '{item_name}' added.")
+    backup_db_to_gdrive()
+
+
+def add_stock_transaction(trans_type: str, item_name: str, quantity: float, unit: str, handled_by: str, notes: str = ""):
+    """
+    Executes stock transactions (IN, OUT, ADJUSTMENT), updates stock levels atomically,
+    logs the transaction record, and triggers an automated Drive sync.
+    """
+    trans_type = trans_type.upper()
+    if trans_type not in ["IN", "OUT", "ADJUSTMENT"]:
+        raise ValueError("Transaction type must be 'IN', 'OUT', or 'ADJUSTMENT'")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Check item existence
+        cursor.execute("SELECT current_stock FROM master_items WHERE item_name = ?", (item_name,))
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError(f"Item '{item_name}' does not exist in master catalog.")
+
+        current_stock = row["current_stock"]
+
+        # Calculate new stock level
+        if trans_type == "IN":
+            new_stock = current_stock + quantity
+        elif trans_type == "OUT":
+            if current_stock < quantity:
+                raise ValueError(f"Insufficient stock for '{item_name}'. Current: {current_stock}, Requested: {quantity}")
+            new_stock = current_stock - quantity
+        elif trans_type == "ADJUSTMENT":
+            new_stock = quantity
+
+        # Update master stock
+        cursor.execute("UPDATE master_items SET current_stock = ? WHERE item_name = ?", (new_stock, item_name))
+
+        # Log transaction record
+        cursor.execute("""
+            INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (trans_type, item_name, quantity, unit, handled_by, notes))
+
+        conn.commit()
+
+    print(f"[DB Update] Transaction '{trans_type}' recorded for {item_name}. New stock: {new_stock}")
+    backup_db_to_gdrive()
+
+
+def resolve_discrepancy(discrepancy_id: int, resolved_by: str, resolution_notes: str, approve_adjustment: bool = True):
+    """Resolves pending stock discrepancies, adjusts real inventory if approved, and triggers sync."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM discrepancies WHERE id = ?", (discrepancy_id,))
+        disc = cursor.fetchone()
+
+        if not disc:
+            raise ValueError(f"Discrepancy record {discrepancy_id} not found.")
+
+        status = "RESOLVED_ADJUSTED" if approve_adjustment else "REJECTED"
+
+        cursor.execute("""
+            UPDATE discrepancies 
+            SET status = ?, resolved_by = ?, resolved_timestamp = CURRENT_TIMESTAMP, resolution_notes = ?
+            WHERE id = ?
+        """, (status, resolved_by, resolution_notes, discrepancy_id))
+
+        if approve_adjustment:
+            cursor.execute("UPDATE master_items SET current_stock = ? WHERE item_name = ?", (disc["physical_count"], disc["item_name"]))
+            cursor.execute("""
+                INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
+                VALUES ('ADJUSTMENT', ?, ?, ?, ?, ?)
+            """, (disc["item_name"], disc["physical_count"], disc["unit"], resolved_by, f"Discrepancy Audit #{discrepancy_id}: {resolution_notes}"))
+
+        conn.commit()
+
+    print(f"[DB Update] Discrepancy #{discrepancy_id} marked as {status}.")
+    backup_db_to_gdrive()
 
 
 # -----------------------------------------------------------------------------
@@ -283,10 +372,7 @@ def init_db():
             )
         """)
 
-        # Default admin password hashed
         admin_hashed = hash_password('admin123')
-
-        # Update or create default admin
         cursor.execute("SELECT id FROM users WHERE username = 'admin'")
         existing_admin = cursor.fetchone()
 
@@ -316,7 +402,6 @@ def init_db():
             )
         """)
 
-        # Schema Migration: Ensure reserved_stock column exists in master_items for existing DBs
         cursor.execute("PRAGMA table_info(master_items)")
         columns = [column[1] for column in cursor.fetchall()]
         if 'reserved_stock' not in columns:
