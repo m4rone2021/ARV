@@ -3,6 +3,7 @@ import os
 import hashlib
 from pathlib import Path
 from contextlib import contextmanager
+from datetime import datetime
 
 # 1. Define folder path on local Disk D
 DATA_DIR = Path(r"D:\Inventory System Files")
@@ -28,6 +29,42 @@ def get_db():
         yield conn
     finally:
         conn.close()
+
+
+def backup_db_to_gdrive():
+    """
+    Uploads/Backs up the local inventory.db to Google Drive.
+    Requires credentials settings file 'settings.yaml' or service account key 
+    in 'D:\\Inventory System Files\\'.
+    """
+    if not DB_FILE.exists():
+        print(f"[Backup Warning] Database file not found at {DB_FILE}")
+        return False
+
+    try:
+        from pydrive2.auth import GoogleAuth
+        from pydrive2.drive import GoogleDrive
+
+        # Configure Google Drive Auth looking in local D: drive folder
+        settings_file = DATA_DIR / "settings.yaml"
+        gauth = GoogleAuth(settings_file=str(settings_file) if settings_file.exists() else None)
+        gauth.LocalWebserverAuth() # Authenticates via local browser session if token not saved
+        drive = GoogleDrive(gauth)
+
+        # File metadata for upload
+        backup_filename = f"inventory_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        gfile = drive.CreateFile({'title': backup_filename})
+        gfile.SetContentFile(str(DB_FILE))
+        gfile.Upload()
+
+        print(f"[Backup Success] Successfully uploaded {backup_filename} to Google Drive.")
+        return True
+    except ImportError:
+        print("[Backup Error] PyDrive2 library not installed. Run: pip install PyDrive2")
+        return False
+    except Exception as e:
+        print(f"[Backup Error] Failed to backup to Google Drive: {e}")
+        return False
 
 
 def init_db():
