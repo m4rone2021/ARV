@@ -163,7 +163,7 @@ def render_dashboard(user_name, user_role):
             )
             tables = [row[0] for row in cursor.fetchall()]
 
-            # 3. Fetch Pending Scheduled Deliveries with metadata
+            # 3. Fetch Pending Scheduled Deliveries with full metadata
             delivery_table = next(
                 (t for t in ["scheduled_deliveries", "deliveries"] if t in tables), None
             )
@@ -189,13 +189,7 @@ def render_dashboard(user_name, user_role):
                 status_col = next((c for c in ["status", "delivery_status", "state"] if c in del_cols), "'Pending'")
                 requestor_col = next((c for c in ["requestor", "requested_by", "requested_person"] if c in del_cols), "'N/A'")
                 project_col = next((c for c in ["project_name", "project", "site_name"] if c in del_cols), "'Main Site'")
-
-                # Use actual database column if present; otherwise default to logged-in user (user_name)
-                created_by_col = (
-                    "created_by"
-                    if "created_by" in del_cols
-                    else f"'{user_name}'"
-                )
+                created_by_col = next((c for c in ["created_by", "created_user", "author"] if c in del_cols), "'System'")
 
                 query_del = f"""
                     SELECT id, 
