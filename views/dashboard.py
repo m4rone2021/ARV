@@ -7,23 +7,25 @@ from database import get_db
 
 
 def apply_calm_dashboard_theme():
-    """Injects custom CSS for a calm, professional dashboard theme with warm accents."""
+    """Injects custom CSS optimized for both Desktop and Mobile viewports."""
     st.markdown(
         """
         <style>
             /* Color Variables */
             :root {
-                --primary-accent: #E65100;      /* Warm Deep Orange */
-                --secondary-accent: #00897B;    /* Calm Teal */
-                --alert-bg: #FFF3E0;            /* Soft Orange Tint */
-                --card-bg: #FAFAFA;             /* Crisp Neutral Light Card */
+                --primary-accent: #E65100;
+                --secondary-accent: #00897B;
+                --alert-bg: #FFF3E0;
+                --card-bg: #FAFAFA;
                 --border-color: #E0E0E0;
             }
 
-            /* Main Page Adjustments */
+            /* Mobile-first Padding Adjustments */
             .main .block-container {
-                padding-top: 1.5rem;
-                padding-bottom: 2rem;
+                padding-top: 1rem !important;
+                padding-bottom: 2rem !important;
+                padding-left: 0.8rem !important;
+                padding-right: 0.8rem !important;
             }
 
             /* Custom KPI Card Styling */
@@ -32,46 +34,50 @@ def apply_calm_dashboard_theme():
                 border: 1px solid var(--border-color);
                 border-left: 5px solid var(--secondary-accent);
                 border-radius: 8px;
-                padding: 12px 16px;
+                padding: 10px 12px;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.02);
             }
 
-            /* Primary Action / Filter Buttons */
+            /* Touch-Friendly Buttons & Popovers */
             div.stButton > button,
-            div.stFormSubmitButton > button {
+            div.stFormSubmitButton > button,
+            div[data-testid="stPopover"] > button {
                 background-color: var(--primary-accent) !important;
                 color: #FFFFFF !important;
                 border: none !important;
                 border-radius: 6px !important;
                 font-weight: 600 !important;
+                min-height: 44px !important; /* Mobile touch target size */
+                font-size: 14px !important;
                 transition: all 0.2s ease-in-out;
             }
 
             div.stButton > button:hover,
-            div.stFormSubmitButton > button:hover {
+            div.stFormSubmitButton > button:hover,
+            div[data-testid="stPopover"] > button:hover {
                 background-color: #BF360C !important;
-                box-shadow: 0 4px 8px rgba(191, 54, 12, 0.25) !important;
-                transform: translateY(-1px);
             }
 
-            /* Selectboxes and Inputs focus borders */
-            div[data-baseweb="select"] > div,
-            input[type="text"] {
-                border-radius: 6px !important;
-                border-color: var(--border-color) !important;
+            /* Mobile Card Container Styling */
+            .mobile-item-card {
+                background: #FFFFFF;
+                border: 1px solid var(--border-color);
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 10px;
             }
 
-            /* Expander Styling */
-            div[data-testid="stExpander"] {
-                border: 1px solid var(--border-color) !important;
-                border-radius: 8px !important;
-                background-color: #FFFFFF;
-            }
-
-            /* Soften Tables */
-            .stDataFrame {
-                border-radius: 6px;
-                overflow: hidden;
+            /* Media queries for small screens */
+            @media (max-width: 640px) {
+                div[data-testid="stMetricValue"] {
+                    font-size: 1.3rem !important;
+                }
+                div[data-testid="stMetricLabel"] {
+                    font-size: 0.8rem !important;
+                }
+                .stSelectbox, .stTextInput {
+                    margin-bottom: 8px;
+                }
             }
         </style>
         """,
@@ -102,15 +108,13 @@ def calculate_days_left(due_date_str):
 
 
 def render_dashboard(user_name, user_role):
-    # Apply Visual Theme
+    # Apply Responsive Theme
     apply_calm_dashboard_theme()
 
     st.title("📊 Executive Dashboard")
 
     is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
-    st.caption(
-        "Real-time summary of stock levels, reserved stock, item distributions, and task reminders."
-    )
+    st.caption("Real-time summary of stock levels, reserved stock, and task reminders.")
 
     categories = st.session_state.get(
         "categories",
@@ -156,7 +160,7 @@ def render_dashboard(user_name, user_role):
                     ]
                 )
 
-            # 2. Fetch active tasks/reminders safely
+            # 2. Fetch active tasks/reminders
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'reminders')"
@@ -221,7 +225,7 @@ def render_dashboard(user_name, user_role):
         else 0
     )
 
-    # 1. Top Metrics Cards Grid
+    # 1. Top Metrics Cards Grid (2x2 Layout for Mobile)
     m_col1, m_col2 = st.columns(2)
     m_col1.metric(label="📦 Unique Items", value=f"{total_items:,}")
     m_col2.metric(label="📊 Physical Stock", value=f"{total_units_stocked:,.1f}")
@@ -244,7 +248,7 @@ def render_dashboard(user_name, user_role):
 
     st.divider()
 
-    # 2. Interactive Action Items Table
+    # 2. Action Items & Reminders
     st.subheader(
         "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({user_name})"
     )
@@ -272,7 +276,11 @@ def render_dashboard(user_name, user_role):
             }
         )
 
-        st.dataframe(display_reminders, use_container_width=True, hide_index=True)
+        st.dataframe(
+            display_reminders,
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
         st.success("✅ No pending tasks found.")
 
@@ -282,7 +290,7 @@ def render_dashboard(user_name, user_role):
     st.subheader("⚠️ Critical Low Stock Warnings")
     if not low_stock_df.empty:
         st.warning(
-            f"Attention: {low_stock_count} item(s) are at or below safety threshold based on effective stock!"
+            f"Attention: {low_stock_count} item(s) are at or below safety threshold!"
         )
 
         low_stock_display = low_stock_df[
@@ -322,7 +330,7 @@ def render_dashboard(user_name, user_role):
 
     st.divider()
 
-    # 4. Enhanced Interactive Plotly Stock Chart
+    # 4. Mobile-Optimized Stock Chart (Horizontal Bars for Easy Touch Scrolling)
     st.subheader("📦 Stock Breakdown per Item")
     if not df.empty:
         chart_cat_filter = st.selectbox(
@@ -349,30 +357,29 @@ def render_dashboard(user_name, user_role):
                 {"reserved_stock": "Reserved Stock"}
             )
 
-            # High-Contrast Soft Palette for visual clarity
+            # Mobile Horizontal Bar Chart prevents squished x-axis text
             fig = px.bar(
                 chart_df,
-                x="item_name",
-                y="Quantity",
+                y="item_name",
+                x="Quantity",
                 color="Stock Type",
+                orientation="h",
                 hover_data=["category"],
-                labels={"item_name": "Item Description", "Quantity": "Units"},
+                labels={"item_name": "Item", "Quantity": "Units"},
                 text_auto=".1f",
                 color_discrete_map={
-                    "Available Stock": "#00897B",  # Soft Teal
-                    "Reserved Stock": "#E65100",   # Warm Orange Accent
+                    "Available Stock": "#00897B",
+                    "Reserved Stock": "#E65100",
                 },
             )
 
-            # Calm background and clean typography
             fig.update_layout(
                 barmode="stack",
-                xaxis_tickangle=-45,
-                height=360,
+                height=max(300, len(chart_source) * 40), # Dynamic height for small screens
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="#F9F9F9",
-                font=dict(family="sans-serif", size=12, color="#333333"),
-                margin=dict(l=10, r=10, t=20, b=60),
+                font=dict(family="sans-serif", size=11, color="#333333"),
+                margin=dict(l=10, r=10, t=10, b=10),
                 legend=dict(
                     orientation="h",
                     yanchor="bottom",
@@ -382,33 +389,29 @@ def render_dashboard(user_name, user_role):
                     title_text="",
                 ),
             )
-            fig.update_yaxes(showgrid=True, gridcolor="#E5E5E5")
+            fig.update_xaxes(showgrid=True, gridcolor="#E5E5E5")
 
             st.plotly_chart(fig, use_container_width=True, config={"responsive": True})
         else:
             st.info("No items found for the selected category filter.")
-    else:
-        st.info("ℹ️ No items currently registered in the Master Catalog.")
 
     st.divider()
 
-    # 5. Category Overview with Popover Detail Boxes
+    # 5. Mobile-Optimized Stock Overview with Touch Popover Buttons
     st.subheader("📋 Current Stock Levels Overview")
 
     if not df.empty:
-        f_col1, f_col2 = st.columns([1, 1])
-        with f_col1:
-            cat_filter = st.selectbox(
-                "Filter Category",
-                ["All Categories"] + categories,
-                key="dash_cat_filter",
-            )
-        with f_col2:
-            dash_search = st.text_input(
-                "🔍 Quick Search Item",
-                placeholder="Type item name...",
-                key="dash_search",
-            )
+        cat_filter = st.selectbox(
+            "Filter Category",
+            ["All Categories"] + categories,
+            key="dash_cat_filter",
+        )
+
+        dash_search = st.text_input(
+            "🔍 Quick Search Item",
+            placeholder="Type item name...",
+            key="dash_search",
+        )
 
         filtered_df = df.copy()
 
@@ -429,68 +432,60 @@ def render_dashboard(user_name, user_role):
                 cat_items = filtered_df[filtered_df["category"] == cat]
 
                 with st.expander(f"📁 {cat} ({len(cat_items)} items)", expanded=True):
-                    # Header Row
-                    h1, h2, h3 = st.columns([3, 2, 2])
-                    h1.markdown("**Item Description (Click for details)**")
-                    h2.markdown("**Available Stock**")
-                    h3.markdown("**Status**")
-                    st.divider()
-
-                    # Item Row List with Popover trigger buttons
                     for _, row in cat_items.iterrows():
-                        p_col1, p_col2, p_col3 = st.columns([3, 2, 2])
+                        # Vertical Card Block for seamless Mobile View
+                        st.markdown('<div class="mobile-item-card">', unsafe_allow_html=True)
+                        
+                        # Large Touch Popover Trigger Button
+                        with st.popover(
+                            f"📦 {row['item_name']}",
+                            help="Tap to view full item details",
+                            use_container_width=True,
+                        ):
+                            st.markdown(f"### 📦 {row['item_name']}")
+                            st.caption(f"Category: **{row['category']}**")
+                            st.divider()
 
-                        with p_col1:
-                            # Popover Trigger Button
-                            with st.popover(
-                                f"📦 {row['item_name']}",
-                                help="Click to view full item details",
-                                use_container_width=True,
-                            ):
-                                st.markdown(f"### 📦 {row['item_name']}")
-                                st.caption(f"Category: **{row['category']}**")
-                                st.divider()
-
-                                m_col1, m_col2 = st.columns(2)
-                                with m_col1:
-                                    st.metric(
-                                        "Effective Available",
-                                        f"{row['effective_stock']:,.2f} {row['unit']}",
-                                    )
-                                    st.metric(
-                                        "Reserved Stock",
-                                        f"{row['reserved_stock']:,.2f} {row['unit']}",
-                                    )
-                                with m_col2:
-                                    st.metric(
-                                        "Total Physical Stock",
-                                        f"{row['current_stock']:,.2f} {row['unit']}",
-                                    )
-                                    st.metric(
-                                        "Safety Threshold",
-                                        f"{row['min_threshold']:,.2f} {row['unit']}",
-                                    )
-
-                                st.divider()
-                                if row["effective_stock"] <= row["min_threshold"]:
-                                    st.error("⚠️ Status: Low Stock Alert")
-                                else:
-                                    st.success("✅ Status: Healthy Stock Level")
-
-                                st.caption(
-                                    "💡 *Tap anywhere outside or click the button again to dismiss.*"
-                                )
-
-                        with p_col2:
-                            st.write(
-                                f"**{row['effective_stock']:,.2f}** {row['unit']}"
+                            st.metric(
+                                "Effective Available",
+                                f"{row['effective_stock']:,.2f} {row['unit']}",
+                            )
+                            st.metric(
+                                "Reserved Stock",
+                                f"{row['reserved_stock']:,.2f} {row['unit']}",
+                            )
+                            st.metric(
+                                "Total Physical Stock",
+                                f"{row['current_stock']:,.2f} {row['unit']}",
+                            )
+                            st.metric(
+                                "Safety Threshold",
+                                f"{row['min_threshold']:,.2f} {row['unit']}",
                             )
 
-                        with p_col3:
+                            st.divider()
+                            if row["effective_stock"] <= row["min_threshold"]:
+                                st.error("⚠️ Status: Low Stock Alert")
+                            else:
+                                st.success("✅ Status: Healthy Stock Level")
+
+                            st.caption(
+                                "💡 *Tap anywhere outside or tap the button again to dismiss.*"
+                            )
+
+                        # Inline Stock Summary beneath popover button
+                        sc1, sc2 = st.columns([1, 1])
+                        with sc1:
+                            st.caption("Available Stock")
+                            st.write(f"**{row['effective_stock']:,.2f}** {row['unit']}")
+                        with sc2:
+                            st.caption("Status")
                             if row["effective_stock"] <= row["min_threshold"]:
                                 st.error("Low Stock")
                             else:
                                 st.success("Healthy")
+
+                        st.markdown('</div>', unsafe_allow_html=True)
         else:
             st.info("No matching stock items found.")
     else:
