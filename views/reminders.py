@@ -112,6 +112,16 @@ def render_reminders(user_name: str = "", user_role: str = ""):
                 open_df = df[df["status"].isin(["OPEN", "PENDING"])].copy()
                 closed_df = df[df["status"].isin(["COMPLETED", "CANCELLED"])].copy()
 
+                # View toggle switch for mobile UI optimization
+                view_mode = st.radio(
+                    "Display Format",
+                    ["📱 Cards (Mobile Friendly)", "📊 Full Data Table"],
+                    horizontal=True,
+                    key="tasks_view_mode",
+                )
+
+                st.divider()
+
                 # SECTION 1: OPEN / ACTIVE TASKS
                 st.subheader("🟡 Open & Pending Tasks")
                 if not open_df.empty:
@@ -124,69 +134,78 @@ def render_reminders(user_name: str = "", user_role: str = ""):
                         lambda x: "🚨 HIGH" if x == "HIGH" else "NORMAL"
                     )
 
-                    df_open_display = open_df[
-                        [
-                            "id",
-                            "due_date",
-                            "days_left_str",
-                            "Priority Display",
-                            "task",
-                            "assigned_to",
-                            "status",
-                        ]
-                    ].rename(
-                        columns={
-                            "id": "ID",
-                            "due_date": "Due Date",
-                            "days_left_str": "Days Left",
-                            "Priority Display": "Priority",
-                            "task": "Task Description",
-                            "assigned_to": "Assigned To",
-                            "status": "Status",
-                        }
-                    )
-                    st.dataframe(
-                        df_open_display,
-                        use_container_width=True,
-                        hide_index=True,
-                    )
+                    if view_mode == "📱 Cards (Mobile Friendly)":
+                        for _, row in open_df.iterrows():
+                            p_tag = "🚨" if row["priority"] == "HIGH" else "🔹"
+                            with st.expander(
+                                f"{p_tag} #{row['id']} - {row['task']} ({row['days_left_str']})"
+                            ):
+                                st.write(f"**Due Date:** `{row['due_date']}`")
+                                st.write(f"**Assigned To:** {row['assigned_to']}")
+                                st.write(f"**Priority:** {row['Priority Display']}")
+                                st.write(f"**Status:** `{row['status']}`")
+                    else:
+                        df_open_display = open_df[
+                            [
+                                "id",
+                                "due_date",
+                                "days_left_str",
+                                "Priority Display",
+                                "task",
+                                "assigned_to",
+                                "status",
+                            ]
+                        ].rename(
+                            columns={
+                                "id": "ID",
+                                "due_date": "Due Date",
+                                "days_left_str": "Days Left",
+                                "Priority Display": "Priority",
+                                "task": "Task Description",
+                                "assigned_to": "Assigned To",
+                                "status": "Status",
+                            }
+                        )
+                        st.dataframe(
+                            df_open_display,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
 
-                    # UPDATE ACTION FORM
+                    # UPDATE ACTION FORM (Vertical stacked inputs for small touch screens)
+                    st.markdown("---")
                     st.markdown("#### 🔄 Update Task Status / Schedule")
                     with st.form("update_open_task_form", clear_on_submit=False):
-                        col1, col2 = st.columns(2)
+                        task_options = {
+                            f"#{row['id']} [{row['priority']}] - {row['task']} ({row['days_left_str']})": row[
+                                "id"
+                            ]
+                            for _, row in open_df.iterrows()
+                        }
+                        selected_label = st.selectbox(
+                            "Select Task to Update*",
+                            list(task_options.keys()),
+                        )
 
-                        with col1:
-                            task_options = {
-                                f"#{row['id']} [{row['priority']}] - {row['task']} ({row['days_left_str']})": row[
-                                    "id"
-                                ]
-                                for _, row in open_df.iterrows()
-                            }
-                            selected_label = st.selectbox(
-                                "Select Task to Update",
-                                list(task_options.keys()),
-                            )
+                        action_type = st.selectbox(
+                            "Action*",
+                            [
+                                "MARK COMPLETED",
+                                "MOVE DUE DATE (RESCHEDULE)",
+                                "SET AS HIGH PRIORITY",
+                                "SET AS NORMAL PRIORITY",
+                                "MARK PENDING",
+                                "CANCEL TASK",
+                            ],
+                        )
 
-                        with col2:
-                            action_type = st.selectbox(
-                                "Action",
-                                [
-                                    "MARK COMPLETED",
-                                    "MOVE DUE DATE (RESCHEDULE)",
-                                    "SET AS HIGH PRIORITY",
-                                    "SET AS NORMAL PRIORITY",
-                                    "MARK PENDING",
-                                    "CANCEL TASK",
-                                ],
-                            )
-                            new_due_date = st.date_input(
-                                "Select New Target Date (If Rescheduling)",
-                                value=date.today(),
-                            )
+                        new_due_date = st.date_input(
+                            "Select New Target Date (If Rescheduling)",
+                            value=date.today(),
+                        )
 
                         submit_update = st.form_submit_button(
-                            "Submit Update", use_container_width=True
+                            "💾 Submit Update", use_container_width=True
                         )
 
                         if submit_update and selected_label:
@@ -249,22 +268,37 @@ def render_reminders(user_name: str = "", user_role: str = ""):
                 st.subheader("✅ Completed & Cancelled History")
                 if not closed_df.empty:
                     closed_df = closed_df.sort_values(by="id", ascending=False)
-                    df_closed_display = closed_df[
-                        ["id", "due_date", "task", "assigned_to", "status"]
-                    ].rename(
-                        columns={
-                            "id": "ID",
-                            "due_date": "Due Date",
-                            "task": "Task Description",
-                            "assigned_to": "Assigned To",
-                            "status": "Status",
-                        }
-                    )
-                    st.dataframe(
-                        df_closed_display,
-                        use_container_width=True,
-                        hide_index=True,
-                    )
+
+                    if view_mode == "📱 Cards (Mobile Friendly)":
+                        for _, row in closed_df.iterrows():
+                            status_flag = (
+                                "🟢 COMPLETED"
+                                if row["status"] == "COMPLETED"
+                                else "⚪ CANCELLED"
+                            )
+                            with st.expander(
+                                f"#{row['id']} - {row['task']} ({status_flag})"
+                            ):
+                                st.write(f"**Due Date:** `{row['due_date']}`")
+                                st.write(f"**Assigned To:** {row['assigned_to']}")
+                                st.write(f"**Status:** `{row['status']}`")
+                    else:
+                        df_closed_display = closed_df[
+                            ["id", "due_date", "task", "assigned_to", "status"]
+                        ].rename(
+                            columns={
+                                "id": "ID",
+                                "due_date": "Due Date",
+                                "task": "Task Description",
+                                "assigned_to": "Assigned To",
+                                "status": "Status",
+                            }
+                        )
+                        st.dataframe(
+                            df_closed_display,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
                 else:
                     st.info("No completed or cancelled tasks found.")
 
@@ -285,22 +319,21 @@ def render_reminders(user_name: str = "", user_role: str = ""):
         st.subheader("Create New Task or Reminder")
 
         with st.form("add_reminder_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
+            # Single-column vertical stacking for fast typing and tapping on phones
+            task_desc = st.text_input(
+                "Task Description*",
+                placeholder="e.g., Weekly Fuel Reserve Audit",
+            )
 
-            with col1:
-                task_desc = st.text_input(
-                    "Task Description*",
-                    placeholder="e.g., Weekly Fuel Reserve Audit",
-                )
-                due_date = st.date_input("Target Due Date*", value=date.today())
+            due_date = st.date_input("Target Due Date*", value=date.today())
 
-            with col2:
-                assigned_to = st.text_input(
-                    "Assigned Personnel / Team",
-                    value=active_user,
-                    placeholder="e.g., Warehouse Team",
-                )
-                is_high_priority = st.checkbox("🚨 Mark as High Priority", value=False)
+            assigned_to = st.text_input(
+                "Assigned Personnel / Team",
+                value=active_user,
+                placeholder="e.g., Warehouse Team",
+            )
+
+            is_high_priority = st.checkbox("🚨 Mark as High Priority", value=False)
 
             submit_add = st.form_submit_button(
                 "💾 Save Task / Reminder", use_container_width=True
