@@ -60,53 +60,49 @@ def render_physical_inventory(user_name, user_role):
 
                 st.divider()
 
-                col_sys, col_input = st.columns(2)
-                with col_sys:
-                    st.markdown("### **System Record**")
-                    st.metric(
-                        label=f"Expected Stock ({unit})",
-                        value=f"{system_stock:,.2f}",
-                    )
-                    st.write(f"**Category:** {item_row['category']}")
+                # Single column flow on mobile for clear touch inputs
+                st.markdown("### **System Record**")
+                st.metric(
+                    label=f"Expected Stock ({unit})",
+                    value=f"{system_stock:,.2f}",
+                )
+                st.write(f"**Category:** {item_row['category']}")
 
-                with col_input:
-                    st.markdown("### **Physical Count**")
-                    # Key ensures default value resets whenever the selected item changes
-                    physical_count = st.number_input(
-                        f"Actual Counted Stock ({unit})*",
-                        min_value=0.0,
-                        value=system_stock,
-                        step=1.0,
-                        format="%.2f",
-                        key=f"physical_input_{selected_item_name}",
-                    )
+                st.markdown("---")
+                st.markdown("### **Physical Count**")
+                physical_count = st.number_input(
+                    f"Actual Counted Stock ({unit})*",
+                    min_value=0.0,
+                    value=system_stock,
+                    step=1.0,
+                    format="%.2f",
+                    key=f"physical_input_{selected_item_name}",
+                )
 
                 variance = physical_count - system_stock
 
                 st.divider()
                 st.subheader("🔍 Variance Summary")
 
-                v_col1, v_col2 = st.columns(2)
-                with v_col1:
-                    if variance == 0:
-                        st.success(
-                            "✅ **Zero Variance**: Physical count matches system stock."
-                        )
-                    elif variance > 0:
-                        st.warning(
-                            f"📈 **Surplus (+{variance:,.2f} {unit})**: Pending Admin verification."
-                        )
-                    else:
-                        st.error(
-                            f"📉 **Deficit ({variance:,.2f} {unit})**: Pending Admin investigation."
-                        )
-
-                with v_col2:
-                    submission_notes = st.text_input(
-                        "Observation / Cause of Discrepancy*",
-                        placeholder="e.g., Damaged materials found during count",
-                        key=f"notes_{selected_item_name}",
+                # Stacked notifications and notes entry for mobile screen width
+                if variance == 0:
+                    st.success(
+                        "✅ **Zero Variance**: Physical count matches system stock."
                     )
+                elif variance > 0:
+                    st.warning(
+                        f"📈 **Surplus (+{variance:,.2f} {unit})**: Pending Admin verification."
+                    )
+                else:
+                    st.error(
+                        f"📉 **Deficit ({variance:,.2f} {unit})**: Pending Admin investigation."
+                    )
+
+                submission_notes = st.text_input(
+                    "Observation / Cause of Discrepancy*",
+                    placeholder="e.g., Damaged materials found during count",
+                    key=f"notes_{selected_item_name}",
+                )
 
                 st.divider()
 
@@ -203,19 +199,20 @@ def render_physical_inventory(user_name, user_role):
                         with st.expander(
                             f"📌 Request #{disc_id}: {row['item_name']} ({var_type}: {var_val:+.2f} {row['unit']})"
                         ):
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric(
+                            # Stack metrics vertically on mobile viewports
+                            st.metric(
                                 "System Stock (At Audit)",
                                 f"{row['system_stock']} {row['unit']}",
                             )
-                            c2.metric(
+                            st.metric(
                                 "Physical Count",
                                 f"{row['physical_count']} {row['unit']}",
                             )
-                            c3.metric(
+                            st.metric(
                                 "Variance", f"{var_val:+.2f} {row['unit']}"
                             )
 
+                            st.markdown("---")
                             st.write(
                                 f"**Submitted By:** {row['submitted_by']} on `{row['timestamp']}`"
                             )
@@ -232,124 +229,119 @@ def render_physical_inventory(user_name, user_role):
                                 placeholder="e.g., Investigation confirmed leakage; adjusting stock balance.",
                             )
 
-                            btn_approve, btn_reject = st.columns(2)
+                            # Full-width stacked buttons for easier tapping on mobile
+                            if st.button(
+                                "✅ Approve & Apply Stock Change",
+                                key=f"app_{disc_id}",
+                                use_container_width=True,
+                            ):
+                                if not resolution_reason.strip():
+                                    st.error(
+                                        "⚠️ You must provide a resolution reason before approving."
+                                    )
+                                else:
+                                    try:
+                                        with get_db() as conn_action:
+                                            cursor = conn_action.cursor()
 
-                            # APPROVE DISCREPANCY
-                            with btn_approve:
-                                if st.button(
-                                    "✅ Approve & Apply Stock Change",
-                                    key=f"app_{disc_id}",
-                                    use_container_width=True,
-                                ):
-                                    if not resolution_reason.strip():
-                                        st.error(
-                                            "⚠️ You must provide a resolution reason before approving."
-                                        )
-                                    else:
-                                        try:
-                                            with get_db() as conn_action:
-                                                cursor = conn_action.cursor()
-
-                                                # Atomic updates inside explicit transaction
-                                                cursor.execute(
-                                                    "UPDATE master_items SET current_stock = ? WHERE item_name = ?",
-                                                    (
-                                                        row["physical_count"],
-                                                        row["item_name"],
-                                                    ),
-                                                )
-
-                                                cursor.execute(
-                                                    """
-                                                    UPDATE discrepancies
-                                                    SET status = 'APPROVED', resolved_by = ?, resolved_timestamp = CURRENT_TIMESTAMP, resolution_notes = ?
-                                                    WHERE id = ?
-                                                """,
-                                                    (
-                                                        user_name,
-                                                        resolution_reason.strip(),
-                                                        disc_id,
-                                                    ),
-                                                )
-
-                                                audit_note = f"Discrepancy Approved. Diff: {var_val:+.2f} {row['unit']}. Reason: {resolution_reason.strip()}"
-                                                cursor.execute(
-                                                    """
-                                                    INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
-                                                    VALUES (?, ?, ?, ?, ?, ?)
-                                                """,
-                                                    (
-                                                        f"RECONCILIATION ({var_type})",
-                                                        row["item_name"],
-                                                        abs(var_val),
-                                                        row["unit"],
-                                                        user_name,
-                                                        audit_note,
-                                                    ),
-                                                )
-
-                                                conn_action.commit()
-
-                                                # Trigger automated Drive Backup
-                                                backup_db_to_gdrive()
-
-                                                st.toast(
-                                                    f"✅ Approved Request #{disc_id}",
-                                                    icon="✅",
-                                                )
-                                                st.success(
-                                                    f"Request #{disc_id} Approved. Stock updated to {row['physical_count']} {row['unit']}."
-                                                )
-                                                st.rerun()
-                                        except Exception as e:
-                                            st.error(
-                                                f"Error approving discrepancy: {e}"
+                                            # Atomic updates inside explicit transaction
+                                            cursor.execute(
+                                                "UPDATE master_items SET current_stock = ? WHERE item_name = ?",
+                                                (
+                                                    row["physical_count"],
+                                                    row["item_name"],
+                                                ),
                                             )
 
-                            # REJECT DISCREPANCY
-                            with btn_reject:
-                                if st.button(
-                                    "❌ Reject (Keep System Stock)",
-                                    key=f"rej_{disc_id}",
-                                    use_container_width=True,
-                                ):
-                                    if not resolution_reason.strip():
-                                        st.error(
-                                            "⚠️ You must provide a resolution reason before rejecting."
-                                        )
-                                    else:
-                                        try:
-                                            with get_db() as conn_action:
-                                                cursor = conn_action.cursor()
-                                                cursor.execute(
-                                                    """
-                                                    UPDATE discrepancies
-                                                    SET status = 'REJECTED', resolved_by = ?, resolved_timestamp = CURRENT_TIMESTAMP, resolution_notes = ?
-                                                    WHERE id = ?
-                                                """,
-                                                    (
-                                                        user_name,
-                                                        resolution_reason.strip(),
-                                                        disc_id,
-                                                    ),
-                                                )
-                                                conn_action.commit()
-
-                                                # Trigger automated Drive Backup
-                                                backup_db_to_gdrive()
-
-                                                st.toast(
-                                                    f"❌ Rejected Request #{disc_id}",
-                                                    icon="❌",
-                                                )
-                                                st.warning(
-                                                    f"Request #{disc_id} Rejected. System stock preserved."
-                                                )
-                                                st.rerun()
-                                        except Exception as e:
-                                            st.error(
-                                                f"Error rejecting discrepancy: {e}"
+                                            cursor.execute(
+                                                """
+                                                UPDATE discrepancies
+                                                SET status = 'APPROVED', resolved_by = ?, resolved_timestamp = CURRENT_TIMESTAMP, resolution_notes = ?
+                                                WHERE id = ?
+                                            """,
+                                                (
+                                                    user_name,
+                                                    resolution_reason.strip(),
+                                                    disc_id,
+                                                ),
                                             )
+
+                                            audit_note = f"Discrepancy Approved. Diff: {var_val:+.2f} {row['unit']}. Reason: {resolution_reason.strip()}"
+                                            cursor.execute(
+                                                """
+                                                INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
+                                                VALUES (?, ?, ?, ?, ?, ?)
+                                            """,
+                                                (
+                                                    f"RECONCILIATION ({var_type})",
+                                                    row["item_name"],
+                                                    abs(var_val),
+                                                    row["unit"],
+                                                    user_name,
+                                                    audit_note,
+                                                ),
+                                            )
+
+                                            conn_action.commit()
+
+                                            # Trigger automated Drive Backup
+                                            backup_db_to_gdrive()
+
+                                            st.toast(
+                                                f"✅ Approved Request #{disc_id}",
+                                                icon="✅",
+                                            )
+                                            st.success(
+                                                f"Request #{disc_id} Approved. Stock updated to {row['physical_count']} {row['unit']}."
+                                            )
+                                            st.rerun()
+                                    except Exception as e:
+                                        st.error(
+                                            f"Error approving discrepancy: {e}"
+                                        )
+
+                            if st.button(
+                                "❌ Reject (Keep System Stock)",
+                                key=f"rej_{disc_id}",
+                                use_container_width=True,
+                            ):
+                                if not resolution_reason.strip():
+                                    st.error(
+                                        "⚠️ You must provide a resolution reason before rejecting."
+                                    )
+                                else:
+                                    try:
+                                        with get_db() as conn_action:
+                                            cursor = conn_action.cursor()
+                                            cursor.execute(
+                                                """
+                                                UPDATE discrepancies
+                                                SET status = 'REJECTED', resolved_by = ?, resolved_timestamp = CURRENT_TIMESTAMP, resolution_notes = ?
+                                                WHERE id = ?
+                                            """,
+                                                (
+                                                    user_name,
+                                                    resolution_reason.strip(),
+                                                    disc_id,
+                                                ),
+                                            )
+                                            conn_action.commit()
+
+                                            # Trigger automated Drive Backup
+                                            backup_db_to_gdrive()
+
+                                            st.toast(
+                                                f"❌ Rejected Request #{disc_id}",
+                                                icon="❌",
+                                            )
+                                            st.warning(
+                                                f"Request #{disc_id} Rejected. System stock preserved."
+                                            )
+                                            st.rerun()
+                                    except Exception as e:
+                                        st.error(
+                                            f"Error rejecting discrepancy: {e}"
+                                        )
 
                 else:
                     st.success(
@@ -392,14 +384,51 @@ def render_physical_inventory(user_name, user_role):
                         "resolution_notes": "Admin Resolution Reason",
                     }
                 )
-                st.dataframe(
-                    df_display,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Variance": st.column_config.NumberColumn(format="%.2f")
-                    },
+
+                # Mobile Card View vs Full Table selector to prevent horizontal overflow on phone screens
+                view_mode = st.radio(
+                    "Display Mode",
+                    ["Cards (Mobile)", "Full Table"],
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key="history_display_mode",
                 )
+
+                if view_mode == "Cards (Mobile)":
+                    for _, row in df_display.iterrows():
+                        status_flag = (
+                            "🟢 APPROVED"
+                            if row["Status"] == "APPROVED"
+                            else (
+                                "🔴 REJECTED"
+                                if row["Status"] == "REJECTED"
+                                else "🟡 PENDING"
+                            )
+                        )
+                        var_val = float(row["Variance"])
+                        
+                        with st.expander(
+                            f"#{row['Req ID']} - {row['Item Name']} ({status_flag})"
+                        ):
+                            st.markdown(f"**Variance:** `{var_val:+.2f} {row['Unit']}`")
+                            st.markdown(f"**Audited By:** {row['Audited By']} on `{row['Submitted Date']}`")
+                            if row["Audit Notes"]:
+                                st.caption(f"Audit Notes: {row['Audit Notes']}")
+                            
+                            if row["Status"] != "PENDING":
+                                st.markdown("---")
+                                st.markdown(f"**Resolved By:** {row['Resolved By']} on `{row['Resolution Date']}`")
+                                if row["Admin Resolution Reason"]:
+                                    st.caption(f"Reason: {row['Admin Resolution Reason']}")
+                else:
+                    st.dataframe(
+                        df_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Variance": st.column_config.NumberColumn(format="%.2f")
+                        },
+                    )
             else:
                 st.info("No audit history recorded yet.")
 
