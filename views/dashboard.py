@@ -1,5 +1,5 @@
-import sqlite3
 from datetime import date, datetime
+import sqlite3
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -82,7 +82,7 @@ def apply_calm_dashboard_theme():
 def calculate_days_left(due_date_str):
     """Calculate days remaining from today until the due date safely handling timestamps."""
     if not due_date_str:
-        return 9999, "No Date"
+        return 9999, "Unknown"
     try:
         clean_date = str(due_date_str).strip().split(" ")[0]
         due_dt = datetime.strptime(clean_date, "%Y-%m-%d").date()
@@ -90,15 +90,15 @@ def calculate_days_left(due_date_str):
         days_diff = (due_dt - today).days
 
         if days_diff < 0:
-            return days_diff, f"🔴 OVERDUE ({abs(days_diff)}d ago)"
+            return days_diff, f"⚠️ Overdue ({abs(days_diff)}d)"
         elif days_diff == 0:
-            return days_diff, "🟠 DUE TODAY"
+            return days_diff, "⚡ Due Today"
         elif days_diff == 1:
-            return days_diff, "🟡 1 day left"
+            return days_diff, "⏳ 1 day left"
         else:
-            return days_diff, f"🟢 {days_diff} days left"
+            return days_diff, f"⏳ {days_diff} days left"
     except Exception:
-        return 9999, "Invalid Date"
+        return 9999, "Unknown"
 
 
 def render_dashboard(user_name="Guest", user_role="User"):
@@ -123,7 +123,6 @@ def render_dashboard(user_name="Guest", user_role="User"):
     )
 
     deliveries_df = pd.DataFrame()
-    grouped_dispatches = pd.DataFrame()
     reminders_df = pd.DataFrame()
 
     clean_user = str(user_name).strip() if user_name else "Guest"
@@ -175,12 +174,39 @@ def render_dashboard(user_name="Guest", user_role="User"):
                 cursor.execute(f"PRAGMA table_info({delivery_table})")
                 del_cols = [col[1] for col in cursor.fetchall()]
 
-                date_col = next((c for c in ["due_date", "delivery_date", "expected_date", "date"] if c in del_cols), "NULL")
-                item_col = next((c for c in ["item_name", "item", "description", "title"] if c in del_cols), "'N/A'")
-                
+                date_col = next(
+                    (
+                        c
+                        for c in ["due_date", "delivery_date", "expected_date", "date"]
+                        if c in del_cols
+                    ),
+                    "NULL",
+                )
+                item_col = next(
+                    (
+                        c
+                        for c in ["item_name", "item", "description", "title"]
+                        if c in del_cols
+                    ),
+                    "'N/A'",
+                )
+
                 # Dynamic detection for dispatch grouping column
-                dispatch_id_col = next((c for c in ["dispatch_id", "dispatch_no", "po_number", "delivery_ref", "group_id"] if c in del_cols), None)
-                
+                dispatch_id_col = next(
+                    (
+                        c
+                        for c in [
+                            "dispatch_id",
+                            "dispatch_no",
+                            "po_number",
+                            "delivery_ref",
+                            "group_id",
+                        ]
+                        if c in del_cols
+                    ),
+                    None,
+                )
+
                 if "quantity" in del_cols:
                     qty_col = "quantity"
                 elif "qty" in del_cols:
@@ -190,13 +216,40 @@ def render_dashboard(user_name="Guest", user_role="User"):
                 else:
                     qty_col = "1"
 
-                supplier_col = next((c for c in ["supplier", "vendor", "source"] if c in del_cols), "'Unspecified'")
-                status_col = next((c for c in ["status", "delivery_status", "state"] if c in del_cols), "'Pending'")
-                requestor_col = next((c for c in ["requestor", "requested_by", "requested_person"] if c in del_cols), "'N/A'")
-                project_col = next((c for c in ["project_name", "project", "site_name"] if c in del_cols), "'Main Site'")
-                created_by_col = next((c for c in ["created_by", "created_user", "author"] if c in del_cols), "'System'")
+                supplier_col = next(
+                    (c for c in ["supplier", "vendor", "source"] if c in del_cols),
+                    "'Unspecified'",
+                )
+                status_col = next(
+                    (c for c in ["status", "delivery_status", "state"] if c in del_cols),
+                    "'Pending'",
+                )
+                requestor_col = next(
+                    (
+                        c
+                        for c in ["requestor", "requested_by", "requested_person"]
+                        if c in del_cols
+                    ),
+                    "'N/A'",
+                )
+                project_col = next(
+                    (c for c in ["project_name", "project", "site_name"] if c in del_cols),
+                    "'Main Site'",
+                )
+                created_by_col = next(
+                    (
+                        c
+                        for c in ["created_by", "created_user", "author"]
+                        if c in del_cols
+                    ),
+                    "'System'",
+                )
 
-                dispatch_select = f"{dispatch_id_col} AS dispatch_ref," if dispatch_id_col else "NULL AS dispatch_ref,"
+                dispatch_select = (
+                    f"{dispatch_id_col} AS dispatch_ref,"
+                    if dispatch_id_col
+                    else "NULL AS dispatch_ref,"
+                )
 
                 query_del = f"""
                     SELECT id, 
@@ -215,26 +268,36 @@ def render_dashboard(user_name="Guest", user_role="User"):
                 deliveries_df = pd.read_sql_query(query_del, conn)
 
                 if not deliveries_df.empty:
-                    # Fallback grouping key if dispatch_id column isn't defined in DB schema
-                    if deliveries_df["dispatch_ref"].isnull().all():
+                    # Fallback grouping key if dispatch_id column isn't populated in DB schema
+                    if (
+                        "dispatch_ref" not in deliveries_df.columns
+                        or deliveries_df["dispatch_ref"].isnull().all()
+                    ):
                         deliveries_df["dispatch_key"] = (
-                            deliveries_df["due_date"].astype(str) + " | " + 
-                            deliveries_df["supplier"].astype(str) + " | " + 
-                            deliveries_df["project_name"].astype(str)
+                            deliveries_df["due_date"].astype(str)
+                            + " | "
+                            + deliveries_df["supplier"].astype(str)
+                            + " | "
+                            + deliveries_df["project_name"].astype(str)
                         )
                     else:
                         deliveries_df["dispatch_key"] = deliveries_df["dispatch_ref"].astype(str)
 
             # 4. Fetch Active Tasks
-            task_table = next(
-                (t for t in ["tasks", "reminders"] if t in tables), None
-            )
+            task_table = next((t for t in ["tasks", "reminders"] if t in tables), None)
 
             if task_table:
                 cursor.execute(f"PRAGMA table_info({task_table})")
                 rem_cols = [col[1] for col in cursor.fetchall()]
 
-                task_col = next((c for c in ["task_description", "task", "description", "title"] if c in rem_cols), "'Task'")
+                task_col = next(
+                    (
+                        c
+                        for c in ["task_description", "task", "description", "title"]
+                        if c in rem_cols
+                    ),
+                    "'Task'",
+                )
                 has_priority = "priority" in rem_cols
                 select_priority = ", priority" if has_priority else ""
 
@@ -270,7 +333,9 @@ def render_dashboard(user_name="Guest", user_role="User"):
     )
     low_stock_count = len(low_stock_df)
     total_units_stocked = df["current_stock"].sum() if not df.empty else 0.0
-    pending_dispatches_count = deliveries_df["dispatch_key"].nunique() if not deliveries_df.empty else 0
+    pending_dispatches_count = (
+        deliveries_df["dispatch_key"].nunique() if not deliveries_df.empty else 0
+    )
 
     # 1. Metric Cards Grid
     m_col1, m_col2 = st.columns(2)
@@ -293,11 +358,11 @@ def render_dashboard(user_name="Guest", user_role="User"):
 
     st.divider()
 
-    # 2. Scheduled Dispatches Log (Grouped per Dispatch)
+    # 2. Scheduled Dispatches Log (Grouped per Dispatch Event)
     st.subheader("🚚 Scheduled Dispatches Log")
     if not deliveries_df.empty:
 
-        filter_col, sort_col = st.columns([3, 2])
+        filter_col, sort_col, order_col = st.columns([2, 2, 1])
 
         with filter_col:
             delivery_view_mode = st.radio(
@@ -310,27 +375,46 @@ def render_dashboard(user_name="Guest", user_role="User"):
 
         if delivery_view_mode == f"My Dispatches ({clean_user})":
             filtered_del_df = deliveries_df[
-                (deliveries_df["requestor"].astype(str).str.lower() == clean_user.lower())
-                | (deliveries_df["created_by"].astype(str).str.lower() == clean_user.lower())
+                (
+                    deliveries_df["requestor"].astype(str).str.lower()
+                    == clean_user.lower()
+                )
+                | (
+                    deliveries_df["created_by"].astype(str).str.lower()
+                    == clean_user.lower()
+                )
             ].copy()
         else:
             filtered_del_df = deliveries_df.copy()
 
         if not filtered_del_df.empty:
-            # Grouping deliveries by dispatch key
-            grouped = filtered_del_df.groupby("dispatch_key").agg({
-                "due_date": "first",
-                "supplier": "first",
-                "project_name": "first",
-                "item_name": lambda items: ", ".join(items.unique()),
-                "quantity": ["count", "sum"],
-                "requestor": lambda reqs: ", ".join(reqs.unique()),
-                "created_by": "first"
-            }).reset_index()
+            # Group raw line items into consolidated dispatch summaries
+            grouped = (
+                filtered_del_df.groupby("dispatch_key")
+                .agg(
+                    {
+                        "due_date": "first",
+                        "supplier": "first",
+                        "project_name": "first",
+                        "item_name": lambda items: ", ".join(items.unique()),
+                        "quantity": ["count", "sum"],
+                        "requestor": lambda reqs: ", ".join(reqs.unique()),
+                        "created_by": "first",
+                    }
+                )
+                .reset_index()
+            )
 
             grouped.columns = [
-                "dispatch_key", "due_date", "supplier", "project_name", 
-                "items_summary", "item_count", "total_qty", "requestor", "created_by"
+                "dispatch_key",
+                "due_date",
+                "supplier",
+                "project_name",
+                "items_summary",
+                "item_count",
+                "total_qty",
+                "requestor",
+                "created_by",
             ]
 
             parsed_del_dates = grouped["due_date"].apply(calculate_days_left)
@@ -340,21 +424,44 @@ def render_dashboard(user_name="Guest", user_role="User"):
             with sort_col:
                 sort_field = st.selectbox(
                     "Sort By",
-                    options=["due_date", "supplier", "project_name", "item_count"],
+                    options=[
+                        "due_date",
+                        "supplier",
+                        "project_name",
+                        "item_count",
+                        "total_qty",
+                    ],
                     format_func=lambda x: {
                         "due_date": "Due Date",
                         "supplier": "Supplier",
                         "project_name": "Project",
-                        "item_count": "Total Line Items",
+                        "item_count": "Total Item Types",
+                        "total_qty": "Total Quantity",
                     }.get(x, x),
                     key="delivery_sort_field",
                 )
 
-            grouped = grouped.sort_values(by=sort_field, ascending=True)
+            with order_col:
+                sort_order = st.radio(
+                    "Order",
+                    options=["Asc", "Desc"],
+                    horizontal=True,
+                    key="delivery_sort_order",
+                )
 
-            grouped_display = grouped[
+            is_ascending = sort_order == "Asc"
+            grouped = grouped.sort_values(by=sort_field, ascending=is_ascending)
+
+            st.caption(
+                f"Sorted by **{sort_field.replace('_', ' ').title()}** ({'Ascending' if is_ascending else 'Descending'})"
+            )
+
+            grouped["Due Date"] = grouped["due_date"].apply(lambda d: f"**{d}**")
+
+            display_log = grouped[
                 [
-                    "due_date",
+                    "dispatch_key",
+                    "Due Date",
                     "days_left_str",
                     "project_name",
                     "supplier",
@@ -365,7 +472,7 @@ def render_dashboard(user_name="Guest", user_role="User"):
                 ]
             ].rename(
                 columns={
-                    "due_date": "Due Date",
+                    "dispatch_key": "Dispatch Ref",
                     "days_left_str": "Status",
                     "project_name": "Project",
                     "supplier": "Supplier / Vendor",
@@ -376,37 +483,47 @@ def render_dashboard(user_name="Guest", user_role="User"):
                 }
             )
 
+            table_key = f"del_tbl_{delivery_view_mode}_{sort_field}_{sort_order}"
+
             st.dataframe(
-                grouped_display,
+                display_log,
                 use_container_width=True,
                 hide_index=True,
+                key=table_key,
                 column_config={
-                    "Total Qty": st.column_config.NumberColumn(format="%.1f"),
+                    "Due Date": st.column_config.TextColumn(
+                        "Due Date", help="Target dispatch arrival date"
+                    ),
                     "Item Types": st.column_config.NumberColumn(format="%d"),
+                    "Total Qty": st.column_config.NumberColumn(format="%.1f"),
                 },
             )
 
-            # Detailed Expandable View per Dispatch
-            with st.expander("🔍 Inspect Line Items per Dispatch", expanded=False):
+            # Detailed Line-Item Breakdown Expander
+            with st.expander("🔍 Inspect Dispatch Line Items", expanded=False):
                 selected_dispatch = st.selectbox(
-                    "Select a dispatch to view detailed breakdown:",
+                    "Select a dispatch reference to view individual items:",
                     options=grouped["dispatch_key"].unique(),
-                    key="select_dispatch_detail"
+                    key="dispatch_detail_select",
                 )
-                
+
                 if selected_dispatch:
                     items_in_dispatch = filtered_del_df[
                         filtered_del_df["dispatch_key"] == selected_dispatch
-                    ][["item_name", "quantity", "requestor", "created_by", "status"]].rename(
+                    ][
+                        ["item_name", "quantity", "requestor", "created_by", "status"]
+                    ].rename(
                         columns={
                             "item_name": "Item Description",
                             "quantity": "Quantity",
                             "requestor": "Requested By",
                             "created_by": "Created By",
-                            "status": "Status"
+                            "status": "Status",
                         }
                     )
-                    st.dataframe(items_in_dispatch, use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        items_in_dispatch, use_container_width=True, hide_index=True
+                    )
 
         else:
             st.info(f"No pending dispatches found specifically for {clean_user}.")
