@@ -311,6 +311,7 @@ def render_schedules(user_name, user_role):
                                 "destination": input_destination.strip(),
                                 "project": input_project.strip() or "N/A",
                                 "scheduled_date": str(input_scheduled_date),
+                                "created_by": user_name,
                                 "is_priority": 1 if input_is_priority else 0,
                             }
 
@@ -348,10 +349,11 @@ def render_schedules(user_name, user_role):
                         use_container_width=True,
                     ):
                         try:
-                            # Call the database helper function
+                            # Call the database helper function with created_by
                             save_dispatch_batch(
                                 st.session_state.current_dispatch_header,
                                 st.session_state.delivery_cart,
+                                created_by=user_name,
                             )
 
                             # Sync database backup
