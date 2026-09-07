@@ -537,7 +537,7 @@ def init_db():
         """
         )
 
-        # Deliveries Table Schema Creation
+        # Deliveries Table Initial Schema Creation
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS deliveries (
@@ -561,7 +561,7 @@ def init_db():
         """
         )
 
-        # Migration logic for existing 'deliveries' table to add missing dispatch columns dynamically
+        # Migration logic with safe SQLite ALTER TABLE types (no dynamic default functions)
         cursor.execute("PRAGMA table_info(deliveries)")
         delivery_cols = [col[1] for col in cursor.fetchall()]
 
@@ -573,7 +573,7 @@ def init_db():
             "project": "TEXT",
             "is_priority": "INTEGER DEFAULT 0",
             "driver_name": "TEXT",
-            "created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+            "created_at": "DATETIME",
         }
 
         for col_name, col_type in missing_columns.items():
@@ -581,6 +581,10 @@ def init_db():
                 cursor.execute(
                     f"ALTER TABLE deliveries ADD COLUMN {col_name} {col_type}"
                 )
+                if col_name == "created_at":
+                    cursor.execute(
+                        "UPDATE deliveries SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
+                    )
 
         # Tasks Table
         cursor.execute(
