@@ -315,13 +315,99 @@ def render_schedules(user_name, user_role):
 
                     if not active_df.empty:
                         for disp_id, group in active_dispatches:
-                            # Render dispatch card directly without wrapping in an extra st.expander
                             render_dispatch_card(
                                 disp_id,
                                 group,
                                 get_due_status_label,
                                 add_item_to_dispatch,
                             )
+                            # Integrated second expander for modifying or adding items directly
+                            with st.expander(f"➕ Add / Modify Items for Batch #{disp_id}"):
+                                with get_db() as conn_master:
+                                    master_df = pd.read_sql_query(
+                                        "SELECT item_name, unit, (current_stock - COALESCE(reserved_stock, 0)) AS available_stock FROM master_items ORDER BY item_name ASC",
+                                        conn_master,
+                                    )
+
+                                first_row = group.iloc[0].to_dict()
+
+                                if not master_df.empty:
+                                    with st.form(f"add_item_to_existing_{disp_id}", clear_on_submit=True):
+                                        st.markdown("##### Add Item to Existing Batch")
+                                        sel_item = st.selectbox(
+                                            "Select Item",
+                                            master_df["item_name"].tolist(),
+                                            key=f"item_sel_{disp_id}"
+                                        )
+                                        item_rec = master_df[master_df["item_name"] == sel_item].iloc[0]
+                                        avail_qty = float(item_rec["available_stock"])
+                                        unit = str(item_rec["unit"])
+
+                                        st.caption(f"Available Stock in Shop: **{avail_qty:,.2f} {unit}**")
+
+                                        add_qty = st.number_input(
+                                            f"Quantity ({unit})",
+                                            min_value=0.01,
+                                            value=1.0,
+                                            step=1.0,
+                                            key=f"add_qty_{disp_id}"
+                                        )
+                                        add_notes = st.text_input(
+                                            "Item Notes / Specifications",
+                                            placeholder="Optional details...",
+                                            key=f"add_notes_{disp_id}"
+                                        )
+
+                                        if st.form_submit_button("➕ Add Item to Batch"):
+                                            if add_qty > avail_qty:
+                                                st.error(f"Cannot add {add_qty}. Only {avail_qty} available.")
+                                            else:
+                                                add_item_to_dispatch(
+                                                    disp_id,
+                                                    sel_item,
+                                                    unit,
+                                                    add_qty,
+                                                    add_notes,
+                                                    first_row,
+                                                )
+
+                                st.divider()
+                                st.markdown("##### Modify Existing Item Quantities")
+                                existing_items = group["item_name"].tolist()
+                                if existing_items:
+                                    with st.form(f"mod_item_qty_{disp_id}", clear_on_submit=True):
+                                        mod_item = st.selectbox(
+                                            "Select Item in Batch",
+                                            existing_items,
+                                            key=f"mod_item_sel_{disp_id}"
+                                        )
+                                        mod_action = st.radio(
+                                            "Action",
+                                            ["Increase Batch", "Decrease Batch"],
+                                            horizontal=True,
+                                            key=f"mod_act_{disp_id}"
+                                        )
+                                        mod_qty = st.number_input(
+                                            "Quantity Change",
+                                            min_value=0.01,
+                                            value=1.0,
+                                            step=1.0,
+                                            key=f"mod_qty_{disp_id}"
+                                        )
+                                        mod_notes = st.text_input(
+                                            "Update Notes",
+                                            placeholder="Reason for change...",
+                                            key=f"mod_notes_{disp_id}"
+                                        )
+
+                                        if st.form_submit_button("Update Quantity"):
+                                            update_dispatch_item_quantity(
+                                                disp_id,
+                                                mod_item,
+                                                mod_action,
+                                                mod_qty,
+                                                mod_notes,
+                                            )
                     else:
                         st.info("No active dispatches found.")
 
