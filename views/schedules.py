@@ -561,7 +561,7 @@ def render_schedules(user_name, user_role):
                             sched_val = input_scheduled_date
                             stat_val = input_status
                             driver_val = input_driver.strip()
-                            prio_val = input_priority
+                            prio_val = 1 if input_priority else 0
                         else:
                             req_val = header_data.get("requested_by")
                             dest_val = header_data.get("destination")
@@ -591,7 +591,7 @@ def render_schedules(user_name, user_role):
                                         "requested_by": req_val,
                                         "destination": dest_val,
                                         "project": proj_val,
-                                        "scheduled_date": sched_val,
+                                        "scheduled_date": str(sched_val),
                                         "status": stat_val,
                                         "driver_name": driver_val,
                                         "is_priority": prio_val,
@@ -680,28 +680,34 @@ def render_schedules(user_name, user_role):
                                     with get_db() as conn_save:
                                         cursor = conn_save.cursor()
 
-                                        for item in updated_cart:
+                                        for row in updated_cart:
+                                            item_n = row["item_name"]
+                                            unit_n = row["unit"]
+                                            qty_val = float(row["quantity"])
+                                            note_val = row["notes"]
+
                                             cursor.execute(
                                                 """
                                                 INSERT INTO deliveries (
-                                                    dispatch_id, item_name, expected_quantity, unit,
-                                                    expected_date, status, notes, requested_by,
-                                                    destination, project, is_priority, driver_name
-                                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                    dispatch_id, item_name, unit, expected_quantity,
+                                                    expected_date, supplier, destination, requested_by,
+                                                    project, status, is_priority, driver_name, notes
+                                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                             """,
                                                 (
                                                     dispatch_code,
-                                                    item["item_name"],
-                                                    float(item["quantity"]),
-                                                    item["unit"],
-                                                    str(header["scheduled_date"]),
-                                                    header["status"],
-                                                    item["notes"],
-                                                    header["requested_by"],
+                                                    item_n,
+                                                    unit_n,
+                                                    qty_val,
+                                                    header["scheduled_date"],
                                                     header["destination"],
+                                                    header["destination"],
+                                                    header["requested_by"],
                                                     header["project"],
-                                                    1 if header["is_priority"] else 0,
+                                                    header["status"],
+                                                    header["is_priority"],
                                                     header["driver_name"],
+                                                    note_val,
                                                 ),
                                             )
 
@@ -711,7 +717,7 @@ def render_schedules(user_name, user_role):
                                                 SET reserved_stock = COALESCE(reserved_stock, 0) + ?
                                                 WHERE item_name = ?
                                             """,
-                                                (float(item["quantity"]), item["item_name"]),
+                                                (qty_val, item_n),
                                             )
 
                                         conn_save.commit()
@@ -721,15 +727,18 @@ def render_schedules(user_name, user_role):
                                     st.session_state.delivery_cart = []
                                     st.session_state.current_dispatch_header = None
 
-                                    st.success(
-                                        f"🎉 Dispatch batch **{dispatch_code}** scheduled successfully!"
+                                    st.toast(
+                                        f"Batch {dispatch_code} scheduled successfully!",
+                                        icon="🎉",
                                     )
                                     st.rerun()
+
                             except Exception as e:
                                 st.error(
-                                    f"Error scheduling dispatch batch: {e}"
+                                    f"Failed to process dispatch batch: {e}"
                                 )
+
             else:
-                st.warning("No master items found in the database. Please add items to inventory first.")
+                st.warning("No master inventory items available.")
         except Exception as e:
-            st.error(f"Error loading master items: {e}")
+            st.error(f"Error loading inventory items: {e}")
