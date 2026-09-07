@@ -7,7 +7,7 @@ from database import get_db
 
 
 def apply_calm_dashboard_theme():
-    """Injects custom CSS optimized for both Desktop and Mobile viewports."""
+    """Injects fluid, responsive CSS optimized for touch controls and mobile containers."""
     st.markdown(
         """
         <style>
@@ -19,22 +19,25 @@ def apply_calm_dashboard_theme():
                 --border-color: #E0E0E0;
             }
 
+            /* Responsive container padding */
             .main .block-container {
                 padding-top: 1rem !important;
                 padding-bottom: 2rem !important;
-                padding-left: 0.8rem !important;
-                padding-right: 0.8rem !important;
+                padding-left: 0.5rem !important;
+                padding-right: 0.5rem !important;
             }
 
+            /* Metric Cards Flex Styling */
             div[data-testid="stMetric"] {
                 background-color: var(--card-bg);
                 border: 1px solid var(--border-color);
-                border-left: 5px solid var(--secondary-accent);
+                border-left: 4px solid var(--secondary-accent);
                 border-radius: 8px;
-                padding: 10px 12px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+                padding: 8px 10px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
             }
 
+            /* Touch-Friendly Button Heights */
             div.stButton > button,
             div.stFormSubmitButton > button,
             div[data-testid="stPopover"] > button {
@@ -43,34 +46,53 @@ def apply_calm_dashboard_theme():
                 border: none !important;
                 border-radius: 6px !important;
                 font-weight: 600 !important;
-                min-height: 44px !important;
-                font-size: 14px !important;
-                transition: all 0.2s ease-in-out;
+                min-height: 48px !important;
+                width: 100% !important;
+                font-size: 15px !important;
             }
 
-            div.stButton > button:hover,
-            div.stFormSubmitButton > button:hover,
-            div[data-testid="stPopover"] > button:hover {
-                background-color: #BF360C !important;
-            }
-
-            .dispatch-card {
+            /* Native Card Design for Mobile Data */
+            .mobile-card {
                 background: #FFFFFF;
                 border: 1px solid var(--border-color);
                 border-radius: 8px;
-                padding: 12px 16px;
-                margin-bottom: 8px;
+                padding: 12px;
+                margin-bottom: 10px;
+                box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+            }
+            .mobile-card-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                border-bottom: 1px solid #F0F0F0;
+                padding-bottom: 6px;
+                margin-bottom: 6px;
+            }
+            .mobile-card-title {
+                font-weight: bold;
+                font-size: 0.95rem;
+                color: #333;
+            }
+            .mobile-card-badge {
+                background: #E0F2F1;
+                color: #004D40;
+                font-size: 0.75rem;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-weight: 600;
             }
 
+            /* Mobile Breakpoints & Fluid Typography */
             @media (max-width: 640px) {
                 div[data-testid="stMetricValue"] {
-                    font-size: 1.3rem !important;
+                    font-size: 1.1rem !important;
                 }
                 div[data-testid="stMetricLabel"] {
-                    font-size: 0.8rem !important;
+                    font-size: 0.75rem !important;
                 }
-                .stSelectbox, .stTextInput {
-                    margin-bottom: 8px;
+                /* Stacks radio options for easier touch selection */
+                div[data-testid="stRadio"] > div {
+                    flex-direction: column !important;
                 }
             }
         </style>
@@ -191,7 +213,6 @@ def render_dashboard(user_name="Guest", user_role="User"):
                     "'N/A'",
                 )
 
-                # Dynamic detection for dispatch grouping column
                 dispatch_id_col = next(
                     (
                         c
@@ -207,15 +228,11 @@ def render_dashboard(user_name="Guest", user_role="User"):
                     None,
                 )
 
-                if "quantity" in del_cols:
-                    qty_col = "quantity"
-                elif "qty" in del_cols:
-                    qty_col = "qty"
-                elif "amount" in del_cols:
-                    qty_col = "amount"
-                else:
-                    qty_col = "1"
-
+                qty_col = (
+                    "quantity"
+                    if "quantity" in del_cols
+                    else "qty" if "qty" in del_cols else "amount" if "amount" in del_cols else "1"
+                )
                 supplier_col = next(
                     (c for c in ["supplier", "vendor", "source"] if c in del_cols),
                     "'Unspecified'",
@@ -268,7 +285,6 @@ def render_dashboard(user_name="Guest", user_role="User"):
                 deliveries_df = pd.read_sql_query(query_del, conn)
 
                 if not deliveries_df.empty:
-                    # Fallback grouping key if dispatch_id column isn't populated in DB schema
                     if (
                         "dispatch_ref" not in deliveries_df.columns
                         or deliveries_df["dispatch_ref"].isnull().all()
@@ -337,58 +353,51 @@ def render_dashboard(user_name="Guest", user_role="User"):
         deliveries_df["dispatch_key"].nunique() if not deliveries_df.empty else 0
     )
 
-    # 1. Metric Cards Grid
+    # 1. Metric Cards Grid (2x2 Grid for Mobile Balance)
     m_col1, m_col2 = st.columns(2)
     m_col1.metric(label="📦 Unique Items", value=f"{total_items:,}")
     m_col2.metric(label="📊 Physical Stock", value=f"{total_units_stocked:,.1f}")
 
     m_col3, m_col4 = st.columns(2)
     m_col3.metric(
-        label="⚠️ Low Stock Alerts",
+        label="⚠️ Low Stock",
         value=f"{low_stock_count}",
         delta=f"-{low_stock_count}" if low_stock_count > 0 else "Optimal",
         delta_color="inverse" if low_stock_count > 0 else "normal",
     )
     m_col4.metric(
-        label="🚚 Pending Dispatches",
+        label="🚚 Pending",
         value=f"{pending_dispatches_count}",
-        delta="Action Required" if pending_dispatches_count > 0 else "None",
+        delta="Required" if pending_dispatches_count > 0 else "None",
         delta_color="off",
     )
 
     st.divider()
 
-    # 2. Scheduled Dispatches Log (Grouped per Dispatch Event)
+    # View Mode Switcher for Dispatches Log
     st.subheader("🚚 Scheduled Dispatches Log")
+    
+    use_mobile_cards = st.toggle("📱 Mobile Card View", value=True, key="mobile_card_toggle")
+
     if not deliveries_df.empty:
-
-        filter_col, sort_col, order_col = st.columns([2, 2, 1])
-
-        with filter_col:
-            delivery_view_mode = st.radio(
-                "Filter View",
-                options=["All Dispatches", f"My Dispatches ({clean_user})"],
-                index=0,
-                key="delivery_filter_radio",
-                horizontal=True,
-            )
+        # Full-width container stacking for touch devices
+        delivery_view_mode = st.radio(
+            "Filter View",
+            options=["All Dispatches", f"My Dispatches ({clean_user})"],
+            index=0,
+            key="delivery_filter_radio",
+            horizontal=True,
+        )
 
         if delivery_view_mode == f"My Dispatches ({clean_user})":
             filtered_del_df = deliveries_df[
-                (
-                    deliveries_df["requestor"].astype(str).str.lower()
-                    == clean_user.lower()
-                )
-                | (
-                    deliveries_df["created_by"].astype(str).str.lower()
-                    == clean_user.lower()
-                )
+                (deliveries_df["requestor"].astype(str).str.lower() == clean_user.lower())
+                | (deliveries_df["created_by"].astype(str).str.lower() == clean_user.lower())
             ].copy()
         else:
             filtered_del_df = deliveries_df.copy()
 
         if not filtered_del_df.empty:
-            # Group raw line items into consolidated dispatch summaries
             grouped = (
                 filtered_del_df.groupby("dispatch_key")
                 .agg(
@@ -421,16 +430,11 @@ def render_dashboard(user_name="Guest", user_role="User"):
             grouped["days_left_num"] = [d[0] for d in parsed_del_dates]
             grouped["days_left_str"] = [d[1] for d in parsed_del_dates]
 
-            with sort_col:
+            c1, c2 = st.columns([2, 1])
+            with c1:
                 sort_field = st.selectbox(
                     "Sort By",
-                    options=[
-                        "due_date",
-                        "supplier",
-                        "project_name",
-                        "item_count",
-                        "total_qty",
-                    ],
+                    options=["due_date", "supplier", "project_name", "item_count", "total_qty"],
                     format_func=lambda x: {
                         "due_date": "Due Date",
                         "supplier": "Supplier",
@@ -440,127 +444,84 @@ def render_dashboard(user_name="Guest", user_role="User"):
                     }.get(x, x),
                     key="delivery_sort_field",
                 )
+            with c2:
+                sort_order = st.radio("Order", options=["Asc", "Desc"], key="delivery_sort_order", horizontal=True)
 
-            with order_col:
-                sort_order = st.radio(
-                    "Order",
-                    options=["Asc", "Desc"],
-                    horizontal=True,
-                    key="delivery_sort_order",
-                )
+            grouped = grouped.sort_values(by=sort_field, ascending=(sort_order == "Asc"))
 
-            is_ascending = sort_order == "Asc"
-            grouped = grouped.sort_values(by=sort_field, ascending=is_ascending)
-
-            st.caption(
-                f"Sorted by **{sort_field.replace('_', ' ').title()}** ({'Ascending' if is_ascending else 'Descending'})"
-            )
-
-            grouped["Due Date"] = grouped["due_date"].apply(lambda d: f"**{d}**")
-
-            display_log = grouped[
-                [
-                    "dispatch_key",
-                    "Due Date",
-                    "days_left_str",
-                    "project_name",
-                    "supplier",
-                    "items_summary",
-                    "item_count",
-                    "total_qty",
-                    "requestor",
+            # Mobile Native Responsive Cards Output
+            if use_mobile_cards:
+                for _, row in grouped.iterrows():
+                    st.markdown(
+                        f"""
+                        <div class="mobile-card">
+                            <div class="mobile-card-header">
+                                <span class="mobile-card-title">{row['supplier']} ({row['project_name']})</span>
+                                <span class="mobile-card-badge">{row['days_left_str']}</span>
+                            </div>
+                            <div style="font-size: 0.85rem; color: #555;">
+                                📅 <b>Due:</b> {row['due_date']}<br>
+                                📦 <b>Items:</b> {row['items_summary']}<br>
+                                🔢 <b>Qty:</b> {row['total_qty']} ({row['item_count']} types)<br>
+                                👤 <b>Requestor:</b> {row['requestor']}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+            else:
+                display_log = grouped[
+                    ["dispatch_key", "due_date", "days_left_str", "project_name", "supplier", "items_summary", "item_count", "total_qty", "requestor"]
                 ]
-            ].rename(
-                columns={
-                    "dispatch_key": "Dispatch Ref",
-                    "days_left_str": "Status",
-                    "project_name": "Project",
-                    "supplier": "Supplier / Vendor",
-                    "items_summary": "Included Items",
-                    "item_count": "Item Types",
-                    "total_qty": "Total Qty",
-                    "requestor": "Requestor(s)",
-                }
-            )
+                st.dataframe(display_log, use_container_width=True, hide_index=True)
 
-            table_key = f"del_tbl_{delivery_view_mode}_{sort_field}_{sort_order}"
-
-            st.dataframe(
-                display_log,
-                use_container_width=True,
-                hide_index=True,
-                key=table_key,
-                column_config={
-                    "Due Date": st.column_config.TextColumn(
-                        "Due Date", help="Target dispatch arrival date"
-                    ),
-                    "Item Types": st.column_config.NumberColumn(format="%d"),
-                    "Total Qty": st.column_config.NumberColumn(format="%.1f"),
-                },
-            )
-
-            # Detailed Line-Item Breakdown Expander
-            with st.expander("🔍 Inspect Dispatch Line Items", expanded=False):
+            with st.expander("🔍 Inspect Dispatch Details", expanded=False):
                 selected_dispatch = st.selectbox(
-                    "Select a dispatch reference to view individual items:",
+                    "Select reference:",
                     options=grouped["dispatch_key"].unique(),
                     key="dispatch_detail_select",
                 )
-
                 if selected_dispatch:
                     items_in_dispatch = filtered_del_df[
                         filtered_del_df["dispatch_key"] == selected_dispatch
-                    ][
-                        ["item_name", "quantity", "requestor", "created_by", "status"]
-                    ].rename(
-                        columns={
-                            "item_name": "Item Description",
-                            "quantity": "Quantity",
-                            "requestor": "Requested By",
-                            "created_by": "Created By",
-                            "status": "Status",
-                        }
-                    )
-                    st.dataframe(
-                        items_in_dispatch, use_container_width=True, hide_index=True
-                    )
+                    ][["item_name", "quantity", "requestor", "status"]]
+                    st.dataframe(items_in_dispatch, use_container_width=True, hide_index=True)
 
         else:
-            st.info(f"No pending dispatches found specifically for {clean_user}.")
+            st.info(f"No dispatches found for {clean_user}.")
     else:
-        st.success("✅ No pending scheduled dispatches found.")
+        st.success("✅ No pending scheduled dispatches.")
 
     st.divider()
 
     # 3. Action Items & Reminders
-    st.subheader(
-        "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({user_name})"
-    )
+    st.subheader("📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({user_name})")
     if not reminders_df.empty:
         parsed_dates = reminders_df["due_date"].apply(calculate_days_left)
         reminders_df["days_left_num"] = [d[0] for d in parsed_dates]
         reminders_df["days_left_str"] = [d[1] for d in parsed_dates]
 
-        reminders_df = reminders_df.sort_values(
-            by=["days_left_num", "priority"], ascending=[True, False]
-        )
+        reminders_df = reminders_df.sort_values(by=["days_left_num", "priority"], ascending=[True, False])
 
-        display_reminders = reminders_df[
-            ["due_date", "days_left_str", "task", "assigned_to"]
-        ].rename(
-            columns={
-                "due_date": "Due Date",
-                "days_left_str": "Status / Days Left",
-                "task": "Task Description",
-                "assigned_to": "Assigned",
-            }
-        )
-
-        st.dataframe(
-            display_reminders,
-            use_container_width=True,
-            hide_index=True,
-        )
+        if use_mobile_cards:
+            for _, row in reminders_df.iterrows():
+                st.markdown(
+                    f"""
+                    <div class="mobile-card">
+                        <div class="mobile-card-header">
+                            <span class="mobile-card-title">{row['task']}</span>
+                            <span class="mobile-card-badge">{row['days_left_str']}</span>
+                        </div>
+                        <div style="font-size: 0.85rem; color: #555;">
+                            📅 <b>Due:</b> {row['due_date']} | 👤 <b>Assigned:</b> {row['assigned_to']}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            display_reminders = reminders_df[["due_date", "days_left_str", "task", "assigned_to"]]
+            st.dataframe(display_reminders, use_container_width=True, hide_index=True)
     else:
         st.success("✅ No pending tasks found.")
 
@@ -569,52 +530,38 @@ def render_dashboard(user_name="Guest", user_role="User"):
     # 4. Critical Low Stock Warnings
     st.subheader("⚠️ Critical Low Stock Warnings")
     if not low_stock_df.empty:
-        st.warning(
-            f"Attention: {low_stock_count} item(s) are at or below safety threshold!"
-        )
+        st.warning(f"Attention: {low_stock_count} item(s) below threshold!")
 
-        low_stock_display = low_stock_df[
-            [
-                "item_name",
-                "category",
-                "current_stock",
-                "reserved_stock",
-                "effective_stock",
-                "unit",
-                "min_threshold",
-            ]
-        ].rename(
-            columns={
-                "item_name": "Item Description",
-                "category": "Category",
-                "current_stock": "Total Stock",
-                "reserved_stock": "Reserved",
-                "effective_stock": "Available",
-                "unit": "Unit",
-                "min_threshold": "Limit",
-            }
-        )
-        st.dataframe(
-            low_stock_display,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Total Stock": st.column_config.NumberColumn(format="%.2f"),
-                "Reserved": st.column_config.NumberColumn(format="%.2f"),
-                "Available": st.column_config.NumberColumn(format="%.2f"),
-                "Limit": st.column_config.NumberColumn(format="%.2f"),
-            },
-        )
+        if use_mobile_cards:
+            for _, row in low_stock_df.iterrows():
+                st.markdown(
+                    f"""
+                    <div class="mobile-card" style="border-left: 4px solid var(--primary-accent);">
+                        <div class="mobile-card-header">
+                            <span class="mobile-card-title">{row['item_name']}</span>
+                            <span class="mobile-card-badge" style="background: var(--alert-bg); color: var(--primary-accent);">Limit: {row['min_threshold']}</span>
+                        </div>
+                        <div style="font-size: 0.85rem; color: #555;">
+                            📂 <b>Category:</b> {row['category']}<br>
+                            📊 <b>Available:</b> {row['effective_stock']} {row['unit']} (Reserved: {row['reserved_stock']})
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            low_stock_display = low_stock_df[["item_name", "category", "current_stock", "reserved_stock", "effective_stock", "unit", "min_threshold"]]
+            st.dataframe(low_stock_display, use_container_width=True, hide_index=True)
     else:
-        st.success("✅ All stock items are currently above safety thresholds.")
+        st.success("✅ Stock levels optimal.")
 
     st.divider()
 
-    # 5. Mobile Horizontal Bar Chart for Breakdown
+    # 5. Mobile Horizontal Bar Chart Breakdown
     st.subheader("📦 Stock Breakdown per Item")
     if not df.empty:
         chart_cat_filter = st.selectbox(
-            "Filter Chart Category",
+            "Filter Category",
             ["All Categories"] + categories,
             key="item_chart_cat_filter",
         )
@@ -633,9 +580,7 @@ def render_dashboard(user_name="Guest", user_role="User"):
                 var_name="Stock Type",
                 value_name="Quantity",
             )
-            chart_df["Stock Type"] = chart_df["Stock Type"].replace(
-                {"reserved_stock": "Reserved Stock"}
-            )
+            chart_df["Stock Type"] = chart_df["Stock Type"].replace({"reserved_stock": "Reserved Stock"})
 
             fig = px.bar(
                 chart_df,
@@ -652,22 +597,23 @@ def render_dashboard(user_name="Guest", user_role="User"):
                 },
             )
 
+            # Mobile view optimization for Plotly Chart
             fig.update_layout(
                 barmode="stack",
-                height=max(300, len(chart_source) * 40),
+                height=max(320, len(chart_source) * 45),
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="#F9F9F9",
-                font=dict(family="sans-serif", size=11, color="#333333"),
-                margin=dict(l=10, r=10, t=10, b=10),
+                font=dict(family="sans-serif", size=10, color="#333333"),
+                margin=dict(l=5, r=5, t=30, b=10),
                 legend=dict(
                     orientation="h",
                     yanchor="bottom",
                     y=1.02,
-                    xanchor="right",
-                    x=1,
+                    xanchor="left",
+                    x=0,
                     title_text="",
                 ),
             )
             fig.update_xaxes(showgrid=True, gridcolor="#E5E5E5")
 
-            st.plotly_chart(fig, use_container_width=True, config={"responsive": True})
+            st.plotly_chart(fig, use_container_width=True, config={"responsive": True, "displayModeBar": False})
