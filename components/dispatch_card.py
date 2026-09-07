@@ -9,12 +9,12 @@ from database import backup_db_to_gdrive, get_db
 def render_dispatch_card(
     dispatch_id, items_df, get_due_status_label_fn, add_item_to_dispatch_fn
 ):
-    """Renders a single dispatch card with integrated review, editing, status management, 
-    and item removal directly inside a single expandable dropdown card.
+    """Renders a single unified dispatch card with integrated metrics, review, editing,
+    status management, and item removal inside a SINGLE expandable container.
     """
 
     def fetch_latest_items_df(d_id):
-        """Helper to re-fetch the latest items for this dispatch batch directly from DB."""
+        """Helper to re-fetch latest items for this dispatch directly from DB."""
         with get_db() as conn_fetch:
             return pd.read_sql_query(
                 """
@@ -29,10 +29,18 @@ def render_dispatch_card(
                 params=(d_id,),
             )
 
-    # Always ensure fresh state
-    current_items_df = fetch_latest_items_df(dispatch_id) if items_df is None or items_df.empty else items_df.copy()
+    # Fetch latest data state
+    current_items_df = (
+        fetch_latest_items_df(dispatch_id)
+        if items_df is None or items_df.empty
+        else items_df.copy()
+    )
 
-    # Initialize version state for data editor to force UI sync
+    if current_items_df.empty:
+        st.warning(f"No records found for Dispatch #{dispatch_id}")
+        return
+
+    # Track data editor versioning
     if f"editor_ver_{dispatch_id}" not in st.session_state:
         st.session_state[f"editor_ver_{dispatch_id}"] = 0
 
@@ -51,11 +59,9 @@ def render_dispatch_card(
     due_status = get_due_status_label_fn(first_row["scheduled_date"])
     header_label = f"{prio_badge}🚛 Dispatch #{dispatch_id} | {req_info}{project_info} ➔ {first_row['destination']} [{first_row['status']}] ({due_status})"
 
-    # Setting expanded=False isolates each dispatch card inside its own single dropdown
+    # THE ONLY EXPANDER FOR THIS DISPATCH CARD
     with st.expander(header_label, expanded=False):
-        # -------------------------------------------------------------
-        # 1. DISPATCH METRICS HEADER
-        # -------------------------------------------------------------
+        # 1. DISPATCH DETAILS HEADER
         c1, c2, c3, c4 = st.columns(4)
 
         requested_date_val = first_row.get(
@@ -63,10 +69,10 @@ def render_dispatch_card(
         )
 
         c1.markdown(f"**Dispatch ID:** `{dispatch_id}`")
-        c1.markdown(f"**Requested By:** {first_row['requested_by'] if first_row['requested_by'] else 'N/A'}")
+        c1.markdown(f"**Requested By:** {first_row['requested_by'] or 'N/A'}")
         c1.markdown(f"**Destination:** {first_row['destination']}")
 
-        c2.markdown(f"**Project:** {first_row['project'] if first_row['project'] else 'N/A'}")
+        c2.markdown(f"**Project:** {first_row['project'] or 'N/A'}")
         c2.markdown(f"**Total Items:** `{len(current_items_df)}`")
 
         c3.markdown(f"**Requested Date:** `{requested_date_val}`")
@@ -80,9 +86,7 @@ def render_dispatch_card(
 
         st.divider()
 
-        # -------------------------------------------------------------
         # 2. INTEGRATED EDIT & REVIEW FORM
-        # -------------------------------------------------------------
         st.markdown("##### 📦 Edit & Review Batch Details")
 
         with st.form(key=f"update_dispatch_form_{dispatch_id}"):
@@ -192,7 +196,6 @@ def render_dispatch_card(
                             if add_notes_input:
                                 final_notes = f"{edited_note} [{add_notes_input}]".strip()
 
-                            # Update delivery record
                             cursor.execute(
                                 """
                                 UPDATE deliveries 
@@ -209,7 +212,6 @@ def render_dispatch_card(
                                 ),
                             )
 
-                            # Stock recalculations
                             if old_status in ["Pending", "In Transit"]:
                                 if new_status in ["Pending", "In Transit"]:
                                     if qty_diff != 0:
@@ -253,9 +255,7 @@ def render_dispatch_card(
 
         st.divider()
 
-        # -------------------------------------------------------------
         # 3. INTEGRATED ITEM REMOVAL
-        # -------------------------------------------------------------
         col_del_item, _ = st.columns([2, 1])
         with col_del_item:
             item_to_remove = st.selectbox(
@@ -268,23 +268,16 @@ def render_dispatch_card(
             )
             if st.button("🗑️ Remove Selected Item", key=f"btn_remove_{dispatch_id}"):
                 if len(current_items_df) <= 1:
-                    st.error(
-                        "Cannot remove the only item in a dispatch batch. Cancel the dispatch status instead."
-                    )
+                    st.error("Cannot remove the only item in a dispatch batch. Cancel the dispatch status instead.")
                 else:
                     try:
-                        rem_row = current_items_df[
-                            current_items_df["id"] == item_to_remove
-                        ].iloc[0]
+                        rem_row = current_items_df[current_items_df["id"] == item_to_remove].iloc[0]
                         rem_qty = float(rem_row["quantity"])
                         rem_name = rem_row["item_name"]
 
                         with get_db() as conn_rem:
                             cursor = conn_rem.cursor()
-                            cursor.execute(
-                                "DELETE FROM deliveries WHERE id = ?",
-                                (item_to_remove,),
-                            )
+                            cursor.execute("DELETE FROM deliveries WHERE id = ?", (item_to_remove,))
 
                             if first_row["status"] in ["Pending", "In Transit"]:
                                 cursor.execute(
@@ -299,10 +292,7 @@ def render_dispatch_card(
 
                         st.session_state[f"editor_ver_{dispatch_id}"] += 1
                         backup_db_to_gdrive()
-                        st.toast(
-                            f"Removed {rem_name} from Dispatch #{dispatch_id}.",
-                            icon="🗑️",
-                        )
+                        st.toast(f"Removed {rem_name} from Dispatch #{dispatch_id}.", icon="🗑️")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error removing item: {e}")
