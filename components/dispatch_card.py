@@ -10,7 +10,7 @@ def render_dispatch_card(
     dispatch_id, items_df, get_due_status_label_fn, add_item_to_dispatch_fn
 ):
     """Renders a single dispatch card with integrated review, editing, status management, 
-    and item removal directly inside the card body.
+    and item removal directly inside a single expandable dropdown card.
     """
 
     def fetch_latest_items_df(d_id):
@@ -51,7 +51,8 @@ def render_dispatch_card(
     due_status = get_due_status_label_fn(first_row["scheduled_date"])
     header_label = f"{prio_badge}🚛 Dispatch #{dispatch_id} | {req_info}{project_info} ➔ {first_row['destination']} [{first_row['status']}] ({due_status})"
 
-    with st.expander(header_label, expanded=True):
+    # Setting expanded=False isolates each dispatch card inside its own single dropdown
+    with st.expander(header_label, expanded=False):
         # -------------------------------------------------------------
         # 1. DISPATCH METRICS HEADER
         # -------------------------------------------------------------
@@ -191,7 +192,7 @@ def render_dispatch_card(
                             if add_notes_input:
                                 final_notes = f"{edited_note} [{add_notes_input}]".strip()
 
-                            # 1. Update delivery row
+                            # Update delivery record
                             cursor.execute(
                                 """
                                 UPDATE deliveries 
@@ -208,7 +209,7 @@ def render_dispatch_card(
                                 ),
                             )
 
-                            # 2. Inventory and Reserved Stock recalculation logic
+                            # Stock recalculations
                             if old_status in ["Pending", "In Transit"]:
                                 if new_status in ["Pending", "In Transit"]:
                                     if qty_diff != 0:
