@@ -9,7 +9,7 @@ from components.dispatch_card import (
     get_due_status_label,
     render_dispatch_card,
 )
-from database import backup_db_to_gdrive, get_db, init_db
+from database import backup_db_to_gdrive, get_db, init_db, save_dispatch_batch
 
 
 def render_schedules(user_name, user_role):
@@ -348,50 +348,19 @@ def render_schedules(user_name, user_role):
                         use_container_width=True,
                     ):
                         try:
-                            with get_db() as conn_save:
-                                cursor = conn_save.cursor()
-                                for item in st.session_state.delivery_cart:
-                                    cursor.execute(
-                                        """
-                                        INSERT INTO deliveries (
-                                            dispatch_id, item_name, unit, expected_quantity,
-                                            expected_date, destination, requested_by,
-                                            project, status, is_priority, notes
-                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
-                                    """,
-                                        (
-                                            hdr["dispatch_id"],
-                                            item["item_name"],
-                                            item["unit"],
-                                            item["quantity"],
-                                            hdr["scheduled_date"],
-                                            hdr["destination"],
-                                            hdr["requested_by"],
-                                            hdr["project"],
-                                            hdr["is_priority"],
-                                            item["notes"],
-                                        ),
-                                    )
-
-                                    cursor.execute(
-                                        """
-                                        UPDATE master_items 
-                                        SET reserved_stock = COALESCE(reserved_stock, 0) + ? 
-                                        WHERE item_name = ?
-                                    """,
-                                        (
-                                            item["quantity"],
-                                            item["item_name"],
-                                        ),
-                                    )
-
-                                conn_save.commit()
-
-                            backup_db_to_gdrive()
-                            st.session_state.delivery_cart = []
-                            st.session_state.current_dispatch_header = (
-                                None
+                            # Call the database helper function
+                            save_dispatch_batch(
+                                st.session_state.current_dispatch_header,
+                                st.session_state.delivery_cart,
                             )
+
+                            # Sync database backup
+                            backup_db_to_gdrive()
+
+                            # Reset session state variables
+                            st.session_state.delivery_cart = []
+                            st.session_state.current_dispatch_header = None
+
                             st.success(
                                 f"Successfully created dispatch order `{hdr['dispatch_id']}`!"
                             )
