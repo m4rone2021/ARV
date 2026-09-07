@@ -1,9 +1,180 @@
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 import pandas as pd
 import streamlit as st
-
 from database import backup_db_to_gdrive, get_db
+
+
+def ensure_schedule_columns():
+    """Ensure Stock Out fields exist on the deliveries table within a single connection."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(deliveries)")
+            existing_cols = [col[1] for col in cursor.fetchall()]
+
+            new_cols = {
+                "dispatch_id": "TEXT",
+                "requested_by": "TEXT",
+                "destination": "TEXT",
+                "project": "TEXT",
+                "is_priority": "INTEGER DEFAULT 0",
+                "driver_name": "TEXT",
+            }
+
+            for col_name, col_type in new_cols.items():
+                if col_name not in existing_cols:
+                    cursor.execute(
+                        f"ALTER TABLE deliveries ADD COLUMN {col_name} {col_type}"
+                    )
+
+            conn.commit()
+    except Exception as e:
+        st.error(f"Error initializing delivery schema: {e}")
+
+
+def get_due_status_label(scheduled_date_str):
+    """Calculate remaining days, today status, or overdue status."""
+    if not scheduled_date_str:
+        return "No Date Set"
+
+    try:
+        if isinstance(scheduled_date_str, (datetime, date)):
+            target_date = (
+                scheduled_date_str.date()
+                if isinstance(scheduled_date_str, datetime)
+                else scheduled_date_str
+            )
+        else:
+            target_date = datetime.strptime(
+                str(scheduled_date_str).split()[0], "%Y-%m-%d"
+            ).date()
+
+        today = date.today()
+        days_left = (target_date - today).days
+
+        if days_left == 0:
+            return "📅 Due Today"
+        elif days_left < 0:
+            return f"⚠️ Overdue ({abs(days_left)} days)"
+        else:
+            return f"⏳ In {days_left} days"
+    except Exception:
+        return f"📅 {scheduled_date_str}"
+
+
+def add_item_to_dispatch(
+    dispatch_id, item_name, unit, quantity, notes, first_row
+):
+    """Helper function to insert a new item into an existing dispatch batch and reserve stock."""
+    try:
+        scheduled_date = first_row.get("scheduled_date") or first_row.get("expected_date")
+        destination = first_row.get("destination") or ""
+        requested_by = first_row.get("requested_by") or ""
+        project = first_row.get("project") or ""
+        status = first_row.get("status") or "Pending"
+        is_priority = first_row.get("is_priority", 0)
+        driver_name = first_row.get("driver_name") or ""
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO deliveries (
+                    dispatch_id, item_name, unit, expected_quantity,
+                    expected_date, destination, requested_by,
+                    project, status, is_priority, driver_name, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    dispatch_id,
+                    item_name,
+                    unit,
+                    quantity,
+                    scheduled_date,
+                    destination,
+                    requested_by,
+                    project,
+                    status,
+                    is_priority,
+                    driver_name,
+                    notes,
+                ),
+            )
+
+            # Update reserved stock in master inventory
+            cursor.execute(
+                """
+                UPDATE master_items
+                SET reserved_stock = COALESCE(reserved_stock, 0) + ?
+                WHERE item_name = ?
+            """,
+                (quantity, item_name),
+            )
+            conn.commit()
+
+        backup_db_to_gdrive()
+        st.toast(f"Added {item_name} to dispatch batch!", icon="✅")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Error adding item to dispatch: {e}")
+
+
+def update_dispatch_item_quantity(dispatch_id, item_name, action, change_qty, notes):
+    """Updates batch item quantity, keeps reserved_stock synced, and refreshes UI."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT expected_quantity FROM deliveries WHERE dispatch_id = ? AND item_name = ?",
+                (dispatch_id, item_name),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                st.error("Selected item not found in dispatch batch.")
+                return
+
+            current_qty = float(row[0])
+
+            if action == "Increase Batch":
+                qty_delta = change_qty
+                new_qty = current_qty + change_qty
+            else:
+                qty_delta = -min(current_qty, change_qty)
+                new_qty = max(0.0, current_qty - change_qty)
+
+            if new_qty == 0:
+                cursor.execute(
+                    "DELETE FROM deliveries WHERE dispatch_id = ? AND item_name = ?",
+                    (dispatch_id, item_name),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE deliveries 
+                    SET expected_quantity = ?, notes = COALESCE(?, notes)
+                    WHERE dispatch_id = ? AND item_name = ?
+                    """,
+                    (new_qty, notes.strip() if notes else None, dispatch_id, item_name),
+                )
+
+            # Adjust reserved stock in master inventory
+            cursor.execute(
+                """
+                UPDATE master_items
+                SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) + ?)
+                WHERE item_name = ?
+                """,
+                (qty_delta, item_name),
+            )
+            conn.commit()
+
+        backup_db_to_gdrive()
+        st.toast(f"Updated {item_name} batch quantity to {new_qty:.2f}", icon="✅")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Error modifying dispatch item: {e}")
 
 
 def render_dispatch_card(
@@ -20,7 +191,7 @@ def render_dispatch_card(
                 """
                 SELECT id, dispatch_id, item_name, unit, 
                        expected_quantity AS quantity, notes, status,
-                       destination, scheduled_date, requested_by, project,
+                       destination, expected_date AS scheduled_date, requested_by, project,
                        is_priority, driver_name, created_at
                 FROM deliveries 
                 WHERE dispatch_id = ?
@@ -59,7 +230,7 @@ def render_dispatch_card(
     due_status = get_due_status_label_fn(first_row["scheduled_date"])
     header_label = f"{prio_badge}🚛 Dispatch #{dispatch_id} | {req_info}{project_info} ➔ {first_row['destination']} [{first_row['status']}] ({due_status})"
 
-    # SINGLE UNIFIED EXPANDER
+    # Single Expander Container
     with st.expander(header_label, expanded=False):
         # 1. DISPATCH DETAILS HEADER
         c1, c2, c3, c4 = st.columns(4)
@@ -86,213 +257,39 @@ def render_dispatch_card(
 
         st.divider()
 
-        # 2. INTEGRATED EDIT & REVIEW FORM
-        st.markdown("##### 📦 Edit & Review Batch Details")
-
-        with st.form(key=f"update_dispatch_form_{dispatch_id}"):
-            current_date = pd.to_datetime(first_row["scheduled_date"]).date()
-            new_sched_date = st.date_input(
-                "Reschedule Delivery Date",
-                value=current_date,
-                key=f"resched_date_{dispatch_id}",
-            )
-
-            st.caption("Edit item quantities and notes directly in the review table below:")
-
-            editable_df = current_items_df[
-                ["id", "item_name", "quantity", "unit", "notes"]
-            ].copy()
-
-            editor_key = f"editor_{dispatch_id}_v{st.session_state[f'editor_ver_{dispatch_id}']}"
-
-            edited_data = st.data_editor(
-                editable_df,
-                column_config={
-                    "id": None,
-                    "item_name": st.column_config.TextColumn("Item Name", disabled=True),
-                    "quantity": st.column_config.NumberColumn(
-                        "Dispatch Quantity",
-                        min_value=0.01,
-                        step=1.0,
-                        format="%.2f",
-                        disabled=False,
-                    ),
-                    "unit": st.column_config.TextColumn("Unit", disabled=True),
-                    "notes": st.column_config.TextColumn(
-                        "Notes / Instructions",
-                        disabled=False,
-                    ),
-                },
-                disabled=["id", "item_name", "unit"],
-                use_container_width=True,
-                hide_index=True,
-                key=editor_key,
-            )
-
-            st.divider()
-            st.markdown("##### 🚦 Dispatch Status & Driver Details")
-
-            status_options = ["Pending", "In Transit", "Completed", "Cancelled"]
-            current_idx = (
-                status_options.index(first_row["status"])
-                if first_row["status"] in status_options
-                else 0
-            )
-
-            col_status_sel, col_driver_sel = st.columns(2)
-
-            with col_status_sel:
-                new_status = st.selectbox(
-                    "Update Status",
-                    status_options,
-                    index=current_idx,
-                    key=f"status_select_{dispatch_id}",
+        # 2. INTEGRATED EDIT & REVIEW BATCH DETAILS
+        items_in_batch = current_items_df["item_name"].unique().tolist()
+        if items_in_batch:
+            st.markdown("##### ➕ Modify Batch Quantities")
+            key_suffix = f"card_{dispatch_id}"
+            mod_col1, mod_col2 = st.columns(2)
+            with mod_col1:
+                target_item = st.selectbox(
+                    "Select Batch Item", options=items_in_batch, key=f"sel_{key_suffix}"
+                )
+                action_type = st.radio(
+                    "Action", ["Increase Batch", "Decrease Batch"], key=f"act_{key_suffix}"
+                )
+            with mod_col2:
+                change_q = st.number_input(
+                    "Quantity Change", min_value=0.01, value=1.0, step=1.0, key=f"qty_{key_suffix}"
+                )
+                mod_notes = st.text_input(
+                    "Update Notes", placeholder="Optional batch notes...", key=f"notes_{key_suffix}"
                 )
 
-            with col_driver_sel:
-                driver_input = st.text_input(
-                    "Driver Name",
-                    value=first_row["driver_name"] or "",
-                    placeholder="e.g., John Doe",
-                    key=f"driver_input_{dispatch_id}",
-                ).strip()
+            if st.button("💾 Apply Changes to Batch Item", key=f"btn_{key_suffix}", type="primary"):
+                update_dispatch_item_quantity(
+                    dispatch_id, target_item, action_type, change_q, mod_notes
+                )
 
-            add_notes_input = st.text_input(
-                "Overall Batch Remarks / Site Notes",
-                placeholder="Optional delivery details, gate passes, site instructions...",
-                key=f"add_notes_{dispatch_id}",
-            ).strip()
-
-            submit_dispatch_update = st.form_submit_button(
-                f"💾 Save Changes for Dispatch #{dispatch_id}",
-                use_container_width=True,
-                type="primary",
-            )
-
-        if submit_dispatch_update:
-            if new_status == "Completed" and not driver_input:
-                st.error("⚠️ Please specify the Driver Name before marking the dispatch as Completed.")
-            else:
-                try:
-                    with get_db() as conn:
-                        cursor = conn.cursor()
-                        old_status = first_row["status"]
-
-                        for _, edited_row in edited_data.iterrows():
-                            item_id = edited_row["id"]
-                            new_qty = float(edited_row["quantity"])
-                            edited_note = (
-                                str(edited_row["notes"]).strip()
-                                if pd.notna(edited_row["notes"]) and str(edited_row["notes"]).strip()
-                                else ""
-                            )
-
-                            orig_row = current_items_df[current_items_df["id"] == item_id].iloc[0]
-                            old_qty = float(orig_row["quantity"])
-                            item_name = orig_row["item_name"]
-                            qty_diff = new_qty - old_qty
-
-                            final_notes = edited_note
-                            if add_notes_input:
-                                final_notes = f"{edited_note} [{add_notes_input}]".strip()
-
-                            cursor.execute(
-                                """
-                                UPDATE deliveries 
-                                SET expected_quantity = ?, scheduled_date = ?, status = ?, driver_name = ?, notes = ? 
-                                WHERE id = ?
-                            """,
-                                (
-                                    new_qty,
-                                    str(new_sched_date),
-                                    new_status,
-                                    driver_input,
-                                    final_notes,
-                                    item_id,
-                                ),
-                            )
-
-                            if old_status in ["Pending", "In Transit"]:
-                                if new_status in ["Pending", "In Transit"]:
-                                    if qty_diff != 0:
-                                        cursor.execute(
-                                            """
-                                            UPDATE master_items 
-                                            SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) + ?)
-                                            WHERE item_name = ?
-                                        """,
-                                            (qty_diff, item_name),
-                                        )
-                                elif new_status == "Completed":
-                                    cursor.execute(
-                                        """
-                                        UPDATE master_items 
-                                        SET current_stock = current_stock - ?,
-                                            reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
-                                        WHERE item_name = ?
-                                    """,
-                                        (new_qty, old_qty, item_name),
-                                    )
-                                elif new_status == "Cancelled":
-                                    cursor.execute(
-                                        """
-                                        UPDATE master_items 
-                                        SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
-                                        WHERE item_name = ?
-                                    """,
-                                        (old_qty, item_name),
-                                    )
-
-                        conn.commit()
-
-                    st.session_state[f"editor_ver_{dispatch_id}"] += 1
-                    backup_db_to_gdrive()
-                    st.toast(f"Dispatch #{dispatch_id} successfully updated!", icon="✅")
-                    st.rerun()
-
-                except Exception as e:
-                    st.error(f"Error updating dispatch batch: {e}")
-
-        st.divider()
-
-        # 3. INTEGRATED ITEM REMOVAL
-        col_del_item, _ = st.columns([2, 1])
-        with col_del_item:
-            item_to_remove = st.selectbox(
-                "Remove Item from Batch",
-                options=current_items_df["id"].tolist(),
-                format_func=lambda x: current_items_df[
-                    current_items_df["id"] == x
-                ]["item_name"].values[0],
-                key=f"select_remove_{dispatch_id}",
-            )
-            if st.button("🗑️ Remove Selected Item", key=f"btn_remove_{dispatch_id}"):
-                if len(current_items_df) <= 1:
-                    st.error("Cannot remove the only item in a dispatch batch. Cancel the dispatch status instead.")
-                else:
-                    try:
-                        rem_row = current_items_df[current_items_df["id"] == item_to_remove].iloc[0]
-                        rem_qty = float(rem_row["quantity"])
-                        rem_name = rem_row["item_name"]
-
-                        with get_db() as conn_rem:
-                            cursor = conn_rem.cursor()
-                            cursor.execute("DELETE FROM deliveries WHERE id = ?", (item_to_remove,))
-
-                            if first_row["status"] in ["Pending", "In Transit"]:
-                                cursor.execute(
-                                    """
-                                    UPDATE master_items 
-                                    SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?) 
-                                    WHERE item_name = ?
-                                """,
-                                    (rem_qty, rem_name),
-                                )
-                            conn_rem.commit()
-
-                        st.session_state[f"editor_ver_{dispatch_id}"] += 1
-                        backup_db_to_gdrive()
-                        st.toast(f"Removed {rem_name} from Dispatch #{dispatch_id}.", icon="🗑️")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error removing item: {e}")
+        st.markdown("##### 📦 Current Batch Items To Be Dispatched")
+        review_df = current_items_df[["item_name", "quantity", "unit", "notes"]].rename(
+            columns={
+                "item_name": "Item Name",
+                "quantity": "Total Quantity To Dispatch",
+                "unit": "Unit",
+                "notes": "Notes / Instructions",
+            }
+        )
+        st.dataframe(review_df, use_container_width=True)
