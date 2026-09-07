@@ -4,7 +4,73 @@ import streamlit as st
 from database import backup_db_to_gdrive, get_db, hash_password, init_db
 
 
+def apply_orange_theme():
+    st.markdown(
+        """
+        <style>
+            /* Primary theme colors - Orange Variation */
+            :root {
+                --primary-orange: #FF6F00;
+                --hover-orange: #E65100;
+                --light-orange-bg: #FFF3E0;
+                --border-orange: #FFB74D;
+            }
+
+            /* Style Streamlit Tabs */
+            button[data-baseweb="tab"] {
+                background-color: #FAFAFA;
+                border-radius: 8px 8px 0px 0px;
+                padding: 10px 16px;
+                color: #555555 !important;
+                font-weight: 600;
+                border: 1px solid #E0E0E0;
+                border-bottom: none;
+                margin-right: 4px;
+            }
+
+            /* Hover state for tabs */
+            button[data-baseweb="tab"]:hover {
+                background-color: var(--light-orange-bg);
+                color: var(--hover-orange) !important;
+            }
+
+            /* Active Selected Tab */
+            button[data-baseweb="tab"][aria-selected="true"] {
+                background-color: var(--primary-orange) !important;
+                color: #FFFFFF !important;
+                border-color: var(--primary-orange) !important;
+            }
+
+            /* Active Tab highlight bar below text */
+            div[data-baseweb="tab-highlight"] {
+                background-color: var(--hover-orange) !important;
+            }
+
+            /* Form Submit Buttons - Orange Theme */
+            div.stButton > button[kind="primary"],
+            div.stFormSubmitButton > button {
+                background-color: var(--primary-orange) !important;
+                color: white !important;
+                border: none !important;
+                border-radius: 6px;
+                font-weight: 600;
+            }
+
+            div.stButton > button[kind="primary"]:hover,
+            div.stFormSubmitButton > button:hover {
+                background-color: var(--hover-orange) !important;
+                box-shadow: 0px 4px 10px rgba(230, 81, 0, 0.3);
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_user_management(user_name, user_role):
+    # Apply Orange Theme Styling
+    apply_orange_theme()
+
     st.title("👤 User Management")
     st.caption("Manage site operator accounts, permissions, and security credentials.")
 
@@ -132,7 +198,6 @@ def render_user_management(user_name, user_role):
         st.subheader("Add Site Account")
 
         with st.form("create_user_form", clear_on_submit=True):
-            # Stacked single-column input layout optimized for mobile screens
             new_username = st.text_input("Username*")
             new_role = st.selectbox("Role / Access Level*", ["User", "Admin"])
             new_password = st.text_input(
@@ -198,7 +263,6 @@ def render_user_management(user_name, user_role):
 
         if user_list:
             with st.form("reset_password_form", clear_on_submit=True):
-                # Single-column vertical stacking to avoid side-by-side cramped inputs
                 selected_user = st.selectbox("Select Account", user_list)
                 reset_pass = st.text_input("New Password*", type="password")
                 confirm_reset_pass = st.text_input(
