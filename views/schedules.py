@@ -4,7 +4,7 @@ from datetime import datetime, date
 import pandas as pd
 import streamlit as st
 from database import get_db, init_db, backup_db_to_gdrive
-from dispatch_card import render_dispatch_card
+from ARV.components.dispatch_card import render_dispatch_card
 
 
 def ensure_schedule_columns():
@@ -376,7 +376,154 @@ def render_schedules(user_name, user_role):
                                 placeholder="e.g., PRJ-2026-A",
                             )
 
-                    # Form items continue here...
+                        with col2:
+                            input_scheduled_date = st.date_input(
+                                "Scheduled Delivery Date*",
+                                value=date.today(),
+                            )
+                            input_is_priority = st.checkbox(
+                                "🔥 Mark as High Priority Dispatch"
+                            )
+
+                    st.markdown("##### 📦 2. Item Details")
+                    col_q, col_n = st.columns([1, 2])
+                    with col_q:
+                        input_quantity = st.number_input(
+                            f"Dispatch Quantity ({unit_name})*",
+                            min_value=0.01,
+                            value=1.0,
+                            step=1.0,
+                        )
+                    with col_n:
+                        input_notes = st.text_input(
+                            "Item Notes / Handling Instructions",
+                            placeholder="Optional site notes, batch specs...",
+                        )
+
+                    btn_add_to_cart = st.form_submit_button(
+                        "➕ Add Item to Dispatch Batch", type="primary"
+                    )
+
+                if btn_add_to_cart:
+                    if input_quantity > stock_available:
+                        st.error(
+                            f"Cannot stage {input_quantity:.2f} {unit_name}. Only {stock_available:.2f} {unit_name} is available."
+                        )
+                    else:
+                        if not has_active_batch:
+                            if not input_requested_by.strip() or not input_destination.strip():
+                                st.error(
+                                    "Please fill in all required fields marked with *."
+                                )
+                                st.stop()
+
+                            st.session_state.current_dispatch_header = {
+                                "dispatch_id": f"DISP-{uuid.uuid4().hex[:6].upper()}",
+                                "requested_by": input_requested_by.strip(),
+                                "destination": input_destination.strip(),
+                                "project": input_project.strip() or "N/A",
+                                "scheduled_date": str(input_scheduled_date),
+                                "is_priority": 1 if input_is_priority else 0,
+                            }
+
+                        st.session_state.delivery_cart.append(
+                            {
+                                "item_name": selected_item_name,
+                                "unit": unit_name,
+                                "quantity": input_quantity,
+                                "notes": input_notes.strip(),
+                            }
+                        )
+                        st.toast(
+                            f"Added {selected_item_name} to staging batch!",
+                            icon="🛒",
+                        )
+                        st.rerun()
+
+                # Staging area display & save block
+                if st.session_state.delivery_cart:
+                    st.divider()
+                    st.markdown("### 🛒 Staged Dispatch Batch")
+
+                    hdr = st.session_state.current_dispatch_header
+                    st.caption(
+                        f"**Batch ID:** `{hdr['dispatch_id']}` | **Requester:** {hdr['requested_by']} | **Destination:** {hdr['destination']} | **Date:** {hdr['scheduled_date']}"
+                    )
+
+                    cart_df = pd.DataFrame(st.session_state.delivery_cart)
+                    st.dataframe(cart_df, use_container_width=True)
+
+                    btn_col1, btn_col2 = st.columns([2, 1])
+
+                    with btn_col1:
+                        if st.button(
+                            "💾 Confirm & Create Dispatch Order",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            try:
+                                with get_db() as conn_save:
+                                    cursor = conn_save.cursor()
+                                    for item in st.session_state.delivery_cart:
+                                        cursor.execute(
+                                            """
+                                            INSERT INTO deliveries (
+                                                dispatch_id, item_name, unit, expected_quantity,
+                                                expected_date, supplier, destination, requested_by,
+                                                project, status, is_priority, notes
+                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
+                                        """,
+                                            (
+                                                hdr["dispatch_id"],
+                                                item["item_name"],
+                                                item["unit"],
+                                                item["quantity"],
+                                                hdr["scheduled_date"],
+                                                hdr["destination"],
+                                                hdr["destination"],
+                                                hdr["requested_by"],
+                                                hdr["project"],
+                                                hdr["is_priority"],
+                                                item["notes"],
+                                            ),
+                                        )
+
+                                        cursor.execute(
+                                            """
+                                            UPDATE master_items 
+                                            SET reserved_stock = COALESCE(reserved_stock, 0) + ? 
+                                            WHERE item_name = ?
+                                        """,
+                                            (
+                                                item["quantity"],
+                                                item["item_name"],
+                                            ),
+                                        )
+
+                                    conn_save.commit()
+
+                                backup_db_to_gdrive()
+                                st.session_state.delivery_cart = []
+                                st.session_state.current_dispatch_header = (
+                                    None
+                                )
+                                st.success(
+                                    f"Successfully created dispatch order `{hdr['dispatch_id']}`!"
+                                )
+                                st.rerun()
+
+                            except Exception as e:
+                                st.error(f"Error creating dispatch order: {e}")
+
+                    with btn_col2:
+                        if st.button(
+                            "🗑️ Clear Batch Staging",
+                            use_container_width=True,
+                        ):
+                            st.session_state.delivery_cart = []
+                            st.session_state.current_dispatch_header = None
+                            st.rerun()
+
             else:
                 st.info(
                     "No items available in Master Inventory to schedule dispatches."
