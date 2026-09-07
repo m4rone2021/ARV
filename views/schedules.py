@@ -70,29 +70,36 @@ def add_item_to_dispatch(
 ):
     """Helper function to insert a new item into an existing dispatch batch and reserve stock."""
     try:
+        scheduled_date = first_row.get("scheduled_date") or first_row.get("expected_date")
+        destination = first_row.get("destination") or ""
+        requested_by = first_row.get("requested_by") or ""
+        project = first_row.get("project") or ""
+        status = first_row.get("status") or "Pending"
+        is_priority = first_row.get("is_priority", 0)
+        driver_name = first_row.get("driver_name") or ""
+
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 INSERT INTO deliveries (
                     dispatch_id, item_name, unit, expected_quantity,
-                    expected_date, supplier, destination, requested_by,
+                    expected_date, destination, requested_by,
                     project, status, is_priority, driver_name, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     dispatch_id,
                     item_name,
                     unit,
                     quantity,
-                    first_row["scheduled_date"],
-                    first_row["destination"],
-                    first_row["destination"],
-                    first_row["requested_by"],
-                    first_row["project"],
-                    first_row["status"],
-                    first_row["is_priority"],
-                    first_row["driver_name"],
+                    scheduled_date,
+                    destination,
+                    requested_by,
+                    project,
+                    status,
+                    is_priority,
+                    driver_name,
                     notes,
                 ),
             )
@@ -307,7 +314,7 @@ def render_schedules(user_name, user_role):
                     st.divider()
 
                     if not active_df.empty:
-                        for disp_id, group in active_dispatches:
+                        for idx, (disp_id, group) in enumerate(active_dispatches):
                             render_dispatch_card(
                                 disp_id,
                                 group,
@@ -315,7 +322,8 @@ def render_schedules(user_name, user_role):
                                 add_item_to_dispatch,
                             )
                             
-                            # Integrated Batch Items Editor & Direct Review Table
+                            # Unique key index suffix prevents DuplicateWidgetID errors
+                            key_suffix = f"{disp_id}_{idx}"
                             with st.expander(f"✏️ Edit & Review Batch Details ({disp_id})", expanded=False):
                                 items_in_batch = group["item_name"].unique().tolist()
                                 if items_in_batch:
@@ -323,20 +331,20 @@ def render_schedules(user_name, user_role):
                                     mod_col1, mod_col2 = st.columns(2)
                                     with mod_col1:
                                         target_item = st.selectbox(
-                                            "Select Batch Item", options=items_in_batch, key=f"sel_{disp_id}"
+                                            "Select Batch Item", options=items_in_batch, key=f"sel_{key_suffix}"
                                         )
                                         action_type = st.radio(
-                                            "Action", ["Increase Batch", "Decrease Batch"], key=f"act_{disp_id}"
+                                            "Action", ["Increase Batch", "Decrease Batch"], key=f"act_{key_suffix}"
                                         )
                                     with mod_col2:
                                         change_q = st.number_input(
-                                            "Quantity Change", min_value=0.01, value=1.0, step=1.0, key=f"qty_{disp_id}"
+                                            "Quantity Change", min_value=0.01, value=1.0, step=1.0, key=f"qty_{key_suffix}"
                                         )
                                         mod_notes = st.text_input(
-                                            "Update Notes", placeholder="Optional batch notes...", key=f"notes_{disp_id}"
+                                            "Update Notes", placeholder="Optional batch notes...", key=f"notes_{key_suffix}"
                                         )
 
-                                    if st.button("💾 Apply Changes to Batch Item", key=f"btn_{disp_id}", type="primary"):
+                                    if st.button("💾 Apply Changes to Batch Item", key=f"btn_{key_suffix}", type="primary"):
                                         update_dispatch_item_quantity(
                                             disp_id, target_item, action_type, change_q, mod_notes
                                         )
@@ -562,9 +570,9 @@ def render_schedules(user_name, user_role):
                                             """
                                             INSERT INTO deliveries (
                                                 dispatch_id, item_name, unit, expected_quantity,
-                                                expected_date, supplier, destination, requested_by,
+                                                expected_date, destination, requested_by,
                                                 project, status, is_priority, notes
-                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
+                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
                                         """,
                                             (
                                                 hdr["dispatch_id"],
@@ -572,7 +580,6 @@ def render_schedules(user_name, user_role):
                                                 item["unit"],
                                                 item["quantity"],
                                                 hdr["scheduled_date"],
-                                                hdr["destination"],
                                                 hdr["destination"],
                                                 hdr["requested_by"],
                                                 hdr["project"],
