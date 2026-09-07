@@ -1,705 +1,381 @@
-import hashlib
-import io
-import os
 import sqlite3
+import hashlib
+import os
 import tempfile
-from contextlib import contextmanager
+import json
 from datetime import datetime
-from pathlib import Path
+import streamlit as st
 
-# Streamlit import for secrets retrieval in Cloud
+# Google Drive API Dependencies
 try:
-    import streamlit as st
+    from google.oauth2.credentials import Credentials
+    from google.oauth2 import service_account
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+    GDRIVE_AVAILABLE = True
 except ImportError:
-    st = None
+    GDRIVE_AVAILABLE = False
 
-# -----------------------------------------------------------------------------
-# EXPORTED MODULE API
-# -----------------------------------------------------------------------------
-__all__ = [
-    "init_db",
-    "login_user",
-    "backup_db_to_gdrive",
-    "upload_file_to_gdrive",
-    "get_drive_service",
-    "create_test_file_in_gdrive",
-    "get_db",
-    "register_item",
-    "add_stock_transaction",
-    "resolve_discrepancy",
-    "update_dispatch_status",
-    "DB_FILE",
-    "UPLOAD_DIR",
-]
+DB_NAME = "inventory.db"
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
-# -----------------------------------------------------------------------------
-# DYNAMIC ENVIRONMENT & PATH CONFIGURATION
-# -----------------------------------------------------------------------------
-LOCAL_WIN_DIR = Path(r"D:\Inventory System Files")
+# ==========================================
+# 1. DATABASE INITIALIZATION & MIGRATIONS
+# ==========================================
 
-if LOCAL_WIN_DIR.exists() or os.name == "nt":
-    DATA_DIR = LOCAL_WIN_DIR
-else:
-    # Fallback directory for Streamlit Cloud / Linux
-    DATA_DIR = Path("./data")
-
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_FILE = DATA_DIR / "inventory.db"
-
-# Local uploads directory configuration
-UPLOAD_DIR = DATA_DIR / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
+def get_connection():
+    """Returns a connection to the SQLite database with row factory set."""
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def hash_password(password: str) -> str:
-    """Hashes passwords using SHA-256 for secure database storage."""
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Hashes a plaintext password using SHA-256."""
+    return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
+def init_db():
+    """Initializes tables, executes structural migrations, and seeds the default admin user."""
+    conn = get_connection()
+    cursor = conn.cursor()
 
-@contextmanager
-def get_db():
-    """Context manager for managing SQLite database connections cleanly."""
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
-
-
-# -----------------------------------------------------------------------------
-# GOOGLE DRIVE INTEGRATION & TESTING
-# -----------------------------------------------------------------------------
-def clean_private_key(key_str: str) -> str:
-    """Sanitizes raw private key strings into valid multi-line PEM format."""
-    if not key_str:
-        return key_str
-
-    key_str = key_str.strip("'\" ")
-    if "\\n" in key_str:
-        key_str = key_str.replace("\\n", "\n")
-
-    if (
-        "-----BEGIN PRIVATE KEY-----" in key_str
-        and not key_str.startswith("-----BEGIN PRIVATE KEY-----")
-    ):
-        key_str = (
-            "-----BEGIN PRIVATE KEY-----"
-            + key_str.split("-----BEGIN PRIVATE KEY-----")[-1]
+    # Create Tables
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'User'
         )
+    """)
 
-    return key_str.strip()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS master_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            category TEXT,
+            unit TEXT DEFAULT 'pcs',
+            current_stock REAL DEFAULT 0.0,
+            reserved_stock REAL DEFAULT 0.0,
+            min_threshold REAL DEFAULT 0.0
+        )
+    """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL,
+            type TEXT CHECK(type IN ('IN', 'OUT', 'ADJUSTMENT')) NOT NULL,
+            quantity REAL NOT NULL,
+            remarks TEXT,
+            user_id INTEGER,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (item_id) REFERENCES master_items(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
 
-def get_drive_service():
-    """Authenticates and builds Google Drive API service.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS discrepancies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL,
+            system_qty REAL NOT NULL,
+            physical_qty REAL NOT NULL,
+            difference REAL NOT NULL,
+            status TEXT CHECK(status IN ('PENDING', 'RESOLVED_ADJUSTED', 'REJECTED')) DEFAULT 'PENDING',
+            reported_by INTEGER,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (item_id) REFERENCES master_items(id),
+            FOREIGN KEY (reported_by) REFERENCES users(id)
+        )
+    """)
 
-    Supports Streamlit Secrets or local token/credentials.
-    """
-    SCOPES = ["https://www.googleapis.com/auth/drive"]
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL,
+            item_id INTEGER NOT NULL,
+            destination TEXT NOT NULL,
+            driver TEXT,
+            priority TEXT DEFAULT 'Normal',
+            status TEXT CHECK(status IN ('Pending', 'In Transit', 'Completed', 'Cancelled')) DEFAULT 'Pending',
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (item_id) REFERENCES master_items(id)
+        )
+    """)
 
-    # 1. STREAMLIT CLOUD: GCP Service Account
-    if st and hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            assigned_to TEXT,
+            due_date TEXT,
+            status TEXT CHECK(status IN ('Open', 'Closed')) DEFAULT 'Open',
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.commit()
+
+    # Delivery Table Migration Check (handles legacy 'qty' column transition)
+    cursor.execute("PRAGMA table_info(deliveries)")
+    columns = [col['name'] for col in cursor.fetchall()]
+    if 'qty' not in columns:
         try:
-            from google.oauth2 import service_account
-            from googleapiclient.discovery import build
+            cursor.execute("ALTER TABLE deliveries ADD COLUMN qty REAL DEFAULT 0.0")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            if "private_key" in creds_dict:
-                creds_dict["private_key"] = clean_private_key(
-                    creds_dict["private_key"]
-                )
+    # Default Admin Seed
+    admin_pass_hash = hash_password("admin123")
+    cursor.execute("""
+        INSERT INTO users (username, password, role) 
+        VALUES ('admin', ?, 'Admin')
+        ON CONFLICT(username) DO UPDATE SET password=excluded.password
+    """, (admin_pass_hash,))
 
+    conn.commit()
+    conn.close()
+
+# ==========================================
+# 2. GOOGLE DRIVE INTEGRATION
+# ==========================================
+
+def get_gdrive_service():
+    """Multi-tiered auth strategy checking Secrets, OAuth tokens, and local credential files."""
+    if not GDRIVE_AVAILABLE:
+        return None
+
+    creds = None
+    
+    # Tier 1: Streamlit Service Account Secrets
+    if "gcp_service_account" in st.secrets:
+        try:
+            service_account_info = dict(st.secrets["gcp_service_account"])
             creds = service_account.Credentials.from_service_account_info(
-                creds_dict, scopes=SCOPES
+                service_account_info, scopes=SCOPES
             )
-            return build("drive", "v3", credentials=creds), "Service Account"
+            return build('drive', 'v3', credentials=creds)
         except Exception as e:
-            print(f"[Drive Warning] Streamlit Service Account Auth failed: {e}")
+            st.error(f"Service Account Auth failed: {e}")
 
-    # 2. STREAMLIT CLOUD: User OAuth Refresh Token
-    if st and hasattr(st, "secrets") and "gdrive_token" in st.secrets:
+    # Tier 2: Streamlit OAuth Token Secrets
+    if "gdrive_token" in st.secrets:
         try:
-            from google.auth.transport.requests import Request
-            from google.oauth2.credentials import Credentials
-            from googleapiclient.discovery import build
-
             token_info = dict(st.secrets["gdrive_token"])
             creds = Credentials.from_authorized_user_info(token_info, SCOPES)
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            return build("drive", "v3", credentials=creds), "OAuth Token"
         except Exception as e:
-            print(f"[Drive Warning] Streamlit OAuth Token Auth failed: {e}")
+            st.error(f"Secrets OAuth token parse failed: {e}")
 
-    # 3. LOCAL ENVIRONMENT: token.json / credentials.json
-    try:
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from googleapiclient.discovery import build
-
-        creds = None
-        if os.path.exists("token.json"):
+    # Tier 3: Local OAuth Files
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
             try:
-                creds = Credentials.from_authorized_user_file(
-                    "token.json", SCOPES
-                )
-            except Exception as e:
-                print(f"[Drive Warning] Invalid token.json deleted: {e}")
-                os.remove("token.json")
-
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
-            elif os.path.exists("credentials.json"):
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    "credentials.json", SCOPES
-                )
+            except Exception:
+                creds = None
+
+        if not creds:
+            if os.path.exists('token.json'):
+                creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+            elif os.path.exists('credentials.json'):
+                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
                 creds = flow.run_local_server(port=0)
-                with open("token.json", "w") as token:
+                with open('token.json', 'w') as token:
                     token.write(creds.to_json())
-            else:
-                print("[Drive Warning] No valid credentials found.")
-                return None, None
 
-        return build("drive", "v3", credentials=creds), "Local Credentials"
-    except Exception as e:
-        print(f"[Drive Auth Error] {e}")
-        return None, None
-
-
-def upload_file_to_gdrive(
-    file_bytes: bytes,
-    file_name: str,
-    mime_type: str = "application/octet-stream",
-) -> str | None:
-    """Uploads raw file bytes to Google Drive and returns the shareable
-    webViewLink.
-    """
-    service, auth_type = get_drive_service()
-    if not service:
-        print("[Drive Upload Error] Could not initialize Drive service.")
-        return None
-
-    try:
-        from googleapiclient.http import MediaIoBaseUpload
-
-        folder_id = None
-        if st and hasattr(st, "secrets"):
-            folder_id = st.secrets.get("google_drive", {}).get(
-                "folder_id", None
-            )
-
-        file_metadata = {"name": file_name}
-        if folder_id:
-            file_metadata["parents"] = [folder_id]
-
-        media = MediaIoBaseUpload(
-            io.BytesIO(file_bytes), mimetype=mime_type, resumable=True
-        )
-
-        file = (
-            service.files()
-            .create(
-                body=file_metadata,
-                media_body=media,
-                fields="id, webViewLink",
-                supportsAllDrives=True,
-            )
-            .execute()
-        )
-
-        web_link = file.get("webViewLink")
-        print(
-            f"[Drive Upload Success] File '{file_name}' uploaded via {auth_type}. Link: {web_link}"
-        )
-        return web_link
-
-    except Exception as e:
-        print(f"[Drive Upload Error] Failed to upload '{file_name}': {e}")
-        return None
-
-
-def create_test_file_in_gdrive():
-    """Creates a sample test document in Google Drive for verification."""
-    file_content = (
-        "PROJECT ALPHA SPECIFICATIONS\n"
-        "----------------------------\n"
-        "Project Alpha budget is $50,000 using vendor ACME Corp.\n"
-        "Key Deliverable: Automated inventory sync module."
-    )
-    return upload_file_to_gdrive(
-        file_content.encode("utf-8"), "Project_Alpha_Specs.txt", "text/plain"
-    )
-
+    if creds and creds.valid:
+        return build('drive', 'v3', credentials=creds)
+    
+    return None
 
 def backup_db_to_gdrive():
-    """Uploads/Backs up the local inventory.db to Google Drive using a safe
-    online dump.
-    """
-    if not DB_FILE.exists():
-        print(f"[Backup Warning] Database file not found at {DB_FILE}")
-        return None
+    """Creates a hot backup via sqlite3 online backup API and syncs to Google Drive."""
+    service = get_gdrive_service()
+    if not service:
+        return False, "Google Drive integration unavailable or unauthenticated."
 
-    temp_backup_path = None
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_filename = f"inventory_backup_{timestamp}.db"
+        
         temp_dir = tempfile.gettempdir()
-        temp_backup_path = Path(temp_dir) / backup_filename
+        temp_backup_path = os.path.join(temp_dir, backup_filename)
 
-        src_conn = sqlite3.connect(DB_FILE)
-        bck_conn = sqlite3.connect(temp_backup_path)
-        with bck_conn:
-            src_conn.backup(bck_conn)
-        bck_conn.close()
+        # SQLite Online Backup API for thread safety
+        src_conn = get_connection()
+        dst_conn = sqlite3.connect(temp_backup_path)
+        with dst_conn:
+            src_conn.backup(dst_conn)
+        dst_conn.close()
         src_conn.close()
 
-        with open(temp_backup_path, "rb") as f:
-            file_bytes = f.read()
+        file_metadata = {
+            'name': backup_filename,
+            'mimeType': 'application/x-sqlite3'
+        }
+        
+        media = MediaFileUpload(temp_backup_path, mimetype='application/x-sqlite3', resumable=True)
+        uploaded_file = service.files().create(
+            body=file_metadata, 
+            media_body=media, 
+            fields='id'
+        ).execute()
 
-        return upload_file_to_gdrive(
-            file_bytes, backup_filename, "application/x-sqlite3"
-        )
+        if os.path.exists(temp_backup_path):
+            os.remove(temp_backup_path)
+
+        return True, uploaded_file.get('id')
 
     except Exception as e:
-        print(f"[Backup Error] Failed to backup: {e}")
-        return None
-    finally:
-        if temp_backup_path and temp_backup_path.exists():
-            temp_backup_path.unlink()
+        return False, str(e)
 
-
-# -----------------------------------------------------------------------------
-# TRANSACTION & SYNCHRONIZATION HANDLERS
-# -----------------------------------------------------------------------------
-def register_item(
-    item_name: str,
-    category: str,
-    unit: str,
-    initial_stock: float = 0.0,
-    min_threshold: float = 10.0,
-    remarks: str = "",
-):
-    """Registers a new item in the master catalog and syncs the updated DB to
-    Google Drive.
-    """
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold, remarks)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """,
-            (
-                item_name,
-                category,
-                unit,
-                initial_stock,
-                min_threshold,
-                remarks,
-            ),
-        )
-        conn.commit()
-
-    print(f"[DB Update] Item '{item_name}' added.")
-    backup_db_to_gdrive()
-
-
-def add_stock_transaction(
-    trans_type: str,
-    item_name: str,
-    quantity: float,
-    unit: str,
-    handled_by: str,
-    notes: str = "",
-):
-    """Executes stock transactions (IN, OUT, ADJUSTMENT), updates stock levels
-    atomically, logs the transaction record, and triggers an automated Drive
-    sync.
-    """
-    trans_type = trans_type.upper()
-    if trans_type not in ["IN", "OUT", "ADJUSTMENT"]:
-        raise ValueError(
-            "Transaction type must be 'IN', 'OUT', or 'ADJUSTMENT'"
-        )
-
-    with get_db() as conn:
-        cursor = conn.cursor()
-
-        # Check item existence
-        cursor.execute(
-            "SELECT current_stock FROM master_items WHERE item_name = ?",
-            (item_name,),
-        )
-        row = cursor.fetchone()
-        if not row:
-            raise ValueError(
-                f"Item '{item_name}' does not exist in master catalog."
-            )
-
-        current_stock = row["current_stock"]
-
-        # Calculate new stock level
-        if trans_type == "IN":
-            new_stock = current_stock + quantity
-        elif trans_type == "OUT":
-            if current_stock < quantity:
-                raise ValueError(
-                    f"Insufficient stock for '{item_name}'. Current: {current_stock}, Requested: {quantity}"
-                )
-            new_stock = current_stock - quantity
-        elif trans_type == "ADJUSTMENT":
-            new_stock = quantity
-
-        # Update master stock
-        cursor.execute(
-            "UPDATE master_items SET current_stock = ? WHERE item_name = ?",
-            (new_stock, item_name),
-        )
-
-        # Log transaction record
-        cursor.execute(
-            """
-            INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """,
-            (trans_type, item_name, quantity, unit, handled_by, notes),
-        )
-
-        conn.commit()
-
-    print(
-        f"[DB Update] Transaction '{trans_type}' recorded for {item_name}. New stock: {new_stock}"
-    )
-    backup_db_to_gdrive()
-
-
-def resolve_discrepancy(
-    discrepancy_id: int,
-    resolved_by: str,
-    resolution_notes: str,
-    approve_adjustment: bool = True,
-):
-    """Resolves pending stock discrepancies, adjusts real inventory if
-    approved, and triggers sync.
-    """
-    with get_db() as conn:
-        cursor = conn.cursor()
-
-        cursor.execute(
-            "SELECT * FROM discrepancies WHERE id = ?", (discrepancy_id,)
-        )
-        disc = cursor.fetchone()
-
-        if not disc:
-            raise ValueError(
-                f"Discrepancy record {discrepancy_id} not found."
-            )
-
-        status = "RESOLVED_ADJUSTED" if approve_adjustment else "REJECTED"
-
-        cursor.execute(
-            """
-            UPDATE discrepancies 
-            SET status = ?, resolved_by = ?, resolved_timestamp = CURRENT_TIMESTAMP, resolution_notes = ?
-            WHERE id = ?
-        """,
-            (status, resolved_by, resolution_notes, discrepancy_id),
-        )
-
-        if approve_adjustment:
-            cursor.execute(
-                "UPDATE master_items SET current_stock = ? WHERE item_name = ?",
-                (disc["physical_count"], disc["item_name"]),
-            )
-            cursor.execute(
-                """
-                INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
-                VALUES ('ADJUSTMENT', ?, ?, ?, ?, ?)
-            """,
-                (
-                    disc["item_name"],
-                    disc["physical_count"],
-                    disc["unit"],
-                    resolved_by,
-                    f"Discrepancy Audit #{discrepancy_id}: {resolution_notes}",
-                ),
-            )
-
-        conn.commit()
-
-    print(f"[DB Update] Discrepancy #{discrepancy_id} marked as {status}.")
-    backup_db_to_gdrive()
-
-
-def update_dispatch_status(dispatch_id: str, new_status: str, handled_by: str = "System"):
-    """
-    Updates the status of a dispatch batch in 'deliveries' and adjusts 'master_items' stock:
-    - Cancelled: Decrements reserved_stock by expected_quantity.
-    - Completed: Decrements both current_stock and reserved_stock by expected_quantity,
-                 and logs an 'OUT' transaction.
-    """
-    new_status_clean = new_status.capitalize()
-    if new_status_clean not in ["Completed", "Cancelled", "Pending", "In Transit"]:
-        raise ValueError("Invalid status provided.")
-
-    with get_db() as conn:
-        cursor = conn.cursor()
-
-        # Fetch dispatch items
-        cursor.execute(
-            "SELECT item_name, expected_quantity, unit, status FROM deliveries WHERE dispatch_id = ?",
-            (dispatch_id,)
-        )
-        items = cursor.fetchall()
-
-        if not items:
-            raise ValueError(f"No dispatch records found for ID '{dispatch_id}'.")
-
-        current_status = items[0]["status"]
-
-        # Prevent re-processing finalized orders
-        if current_status in ["Completed", "Cancelled"]:
-            raise ValueError(f"Dispatch '{dispatch_id}' is already {current_status}.")
-
-        # Adjust inventory if transitioning to Cancelled or Completed
-        for item in items:
-            item_name = item["item_name"]
-            qty = item["expected_quantity"]
-            unit = item["unit"]
-
-            if new_status_clean == "Cancelled":
-                cursor.execute(
-                    """
-                    UPDATE master_items
-                    SET reserved_stock = MAX(0.0, COALESCE(reserved_stock, 0.0) - ?)
-                    WHERE item_name = ?
-                    """,
-                    (qty, item_name)
-                )
-
-            elif new_status_clean == "Completed":
-                cursor.execute(
-                    """
-                    UPDATE master_items
-                    SET current_stock = MAX(0.0, COALESCE(current_stock, 0.0) - ?),
-                        reserved_stock = MAX(0.0, COALESCE(reserved_stock, 0.0) - ?)
-                    WHERE item_name = ?
-                    """,
-                    (qty, qty, item_name)
-                )
-
-                cursor.execute(
-                    """
-                    INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
-                    VALUES ('OUT', ?, ?, ?, ?, ?)
-                    """,
-                    (item_name, qty, unit, handled_by, f"Completed Dispatch #{dispatch_id}")
-                )
-
-        # Update status in deliveries table
-        cursor.execute(
-            "UPDATE deliveries SET status = ? WHERE dispatch_id = ?",
-            (new_status_clean, dispatch_id)
-        )
-
-        conn.commit()
-
-    print(f"[DB Update] Dispatch '{dispatch_id}' changed from {current_status} to {new_status_clean}.")
-    backup_db_to_gdrive()
-
-
-# -----------------------------------------------------------------------------
-# DATABASE INITIALIZATION & SCHEMA
-# -----------------------------------------------------------------------------
-def init_db():
-    """Initializes database tables, default admin credentials, and handles
-    schema updates.
-    """
-    with get_db() as conn:
-        cursor = conn.cursor()
-
-        # Users Table
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                role TEXT NOT NULL
-            )
-        """
-        )
-
-        admin_hashed = hash_password("admin123")
-        cursor.execute("SELECT id FROM users WHERE username = 'admin'")
-        existing_admin = cursor.fetchone()
-
-        if existing_admin:
-            cursor.execute(
-                """
-                UPDATE users 
-                SET password = ?, role = 'Admin' 
-                WHERE username = 'admin'
-            """,
-                (admin_hashed,),
-            )
-        else:
-            cursor.execute(
-                """
-                INSERT INTO users (username, password, role) 
-                VALUES ('admin', ?, 'Admin')
-            """,
-                (admin_hashed,),
-            )
-
-        # Master Items Catalog
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS master_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_name TEXT UNIQUE NOT NULL,
-                category TEXT NOT NULL,
-                unit TEXT NOT NULL,
-                current_stock REAL DEFAULT 0.0,
-                reserved_stock REAL DEFAULT 0.0,
-                min_threshold REAL DEFAULT 10.0,
-                remarks TEXT
-            )
-        """
-        )
-
-        cursor.execute("PRAGMA table_info(master_items)")
-        columns = [column[1] for column in cursor.fetchall()]
-        if "reserved_stock" not in columns:
-            cursor.execute(
-                "ALTER TABLE master_items ADD COLUMN reserved_stock REAL DEFAULT 0.0"
-            )
-
-        # Transactions Log
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                type TEXT NOT NULL,
-                item_name TEXT NOT NULL,
-                quantity REAL NOT NULL,
-                unit TEXT NOT NULL,
-                handled_by TEXT NOT NULL,
-                notes TEXT
-            )
-        """
-        )
-
-        # Physical Inventory Discrepancies
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS discrepancies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                item_name TEXT NOT NULL,
-                system_stock REAL NOT NULL,
-                physical_count REAL NOT NULL,
-                variance REAL NOT NULL,
-                unit TEXT NOT NULL,
-                submitted_by TEXT NOT NULL,
-                submission_notes TEXT,
-                status TEXT DEFAULT 'PENDING',
-                resolved_by TEXT,
-                resolved_timestamp DATETIME,
-                resolution_notes TEXT
-            )
-        """
-        )
-
-        # Deliveries Table Initial Schema Creation
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS deliveries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                dispatch_id TEXT,
-                item_name TEXT NOT NULL,
-                expected_quantity REAL NOT NULL,
-                unit TEXT NOT NULL,
-                supplier TEXT,
-                expected_date DATE,
-                scheduled_date DATE,
-                status TEXT DEFAULT 'Pending',
-                destination TEXT,
-                requested_by TEXT,
-                project TEXT,
-                is_priority INTEGER DEFAULT 0,
-                driver_name TEXT,
-                notes TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """
-        )
-
-        # Migration logic with safe SQLite ALTER TABLE types
-        cursor.execute("PRAGMA table_info(deliveries)")
-        delivery_cols = [col[1] for col in cursor.fetchall()]
-
-        missing_columns = {
-            "dispatch_id": "TEXT",
-            "expected_quantity": "REAL DEFAULT 0.0",
-            "scheduled_date": "DATE",
-            "destination": "TEXT",
-            "requested_by": "TEXT",
-            "project": "TEXT",
-            "is_priority": "INTEGER DEFAULT 0",
-            "driver_name": "TEXT",
-            "created_at": "DATETIME",
-        }
-
-        for col_name, col_type in missing_columns.items():
-            if col_name not in delivery_cols:
-                cursor.execute(
-                    f"ALTER TABLE deliveries ADD COLUMN {col_name} {col_type}"
-                )
-                if col_name == "created_at":
-                    cursor.execute(
-                        "UPDATE deliveries SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
-                    )
-
-        # Backwards compatibility fix: If existing table used 'qty', map values to 'expected_quantity'
-        if "qty" in delivery_cols and "expected_quantity" in delivery_cols:
-            cursor.execute(
-                "UPDATE deliveries SET expected_quantity = qty WHERE (expected_quantity IS NULL OR expected_quantity = 0.0) AND qty IS NOT NULL"
-            )
-
-        # Tasks Table
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_description TEXT NOT NULL,
-                assigned_to TEXT NOT NULL,
-                due_date DATE,
-                status TEXT DEFAULT 'OPEN',
-                created_by TEXT NOT NULL
-            )
-        """
-        )
-
-        conn.commit()
-
+# ==========================================
+# 3. CORE BUSINESS LOGIC FUNCTIONS
+# ==========================================
 
 def login_user(username, password):
-    """Authenticates a user against the database using hashed passwords."""
+    """Authenticates credentials against SHA-256 hashed password."""
+    conn = get_connection()
+    cursor = conn.cursor()
     hashed = hash_password(password)
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT username, role FROM users WHERE username = ? AND password = ?",
-            (username, hashed),
-        )
-        return cursor.fetchone()
+    cursor.execute("SELECT id, username, role FROM users WHERE username = ? AND password = ?", (username, hashed))
+    user = cursor.fetchone()
+    conn.close()
+    return user
 
+def register_item(sku, name, category, unit, min_threshold):
+    """Registers a new master item and triggers auto-sync."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO master_items (sku, name, category, unit, min_threshold)
+            VALUES (?, ?, ?, ?, ?)
+        """, (sku, name, category, unit, min_threshold))
+        conn.commit()
+        success = True
+    except sqlite3.IntegrityError:
+        success = False
+    finally:
+        conn.close()
 
+    if success:
+        backup_db_to_gdrive()
+    return success
+
+def add_stock_transaction(item_id, trans_type, quantity, remarks, user_id):
+    """Processes atomic stock alterations and appends to immutable ledger."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO transactions (item_id, type, quantity, remarks, user_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (item_id, trans_type, quantity, remarks, user_id))
+
+        if trans_type == 'IN':
+            cursor.execute("UPDATE master_items SET current_stock = current_stock + ? WHERE id = ?", (quantity, item_id))
+        elif trans_type == 'OUT':
+            cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE id = ?", (quantity, item_id))
+        elif trans_type == 'ADJUSTMENT':
+            cursor.execute("UPDATE master_items SET current_stock = ? WHERE id = ?", (quantity, item_id))
+
+        conn.commit()
+        success = True
+    except Exception:
+        conn.rollback()
+        success = False
+    finally:
+        conn.close()
+
+    if success:
+        backup_db_to_gdrive()
+    return success
+
+def update_dispatch_status(delivery_id, new_status):
+    """Manages delivery status lifecycle and recalculates stock reservations."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT item_id, qty, status FROM deliveries WHERE id = ?", (delivery_id,))
+        delivery = cursor.fetchone()
+
+        if not delivery:
+            conn.close()
+            return False
+
+        item_id = delivery['item_id']
+        qty = delivery['qty']
+        old_status = delivery['status']
+
+        if old_status != new_status:
+            # Transitions leaving 'Pending' status release reservations
+            if old_status == 'Pending':
+                cursor.execute("UPDATE master_items SET reserved_stock = MAX(0, reserved_stock - ?) WHERE id = ?", (qty, item_id))
+
+            # Transitions entering 'Pending' reserve stock
+            if new_status == 'Pending':
+                cursor.execute("UPDATE master_items SET reserved_stock = reserved_stock + ? WHERE id = ?", (qty, item_id))
+
+            # Completing a delivery consumes stock
+            if new_status == 'Completed' and old_status != 'Completed':
+                cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE id = ?", (qty, item_id))
+
+            cursor.execute("UPDATE deliveries SET status = ? WHERE id = ?", (new_status, delivery_id))
+            conn.commit()
+
+        success = True
+    except Exception:
+        conn.rollback()
+        success = False
+    finally:
+        conn.close()
+
+    if success:
+        backup_db_to_gdrive()
+    return success
+
+def resolve_discrepancy(discrepancy_id, action, user_id):
+    """Resolves inventory audit discrepancies with option to override physical counts."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT item_id, physical_qty, status FROM discrepancies WHERE id = ?", (discrepancy_id,))
+        disc = cursor.fetchone()
+
+        if not disc or disc['status'] != 'PENDING':
+            conn.close()
+            return False
+
+        item_id = disc['item_id']
+        physical_qty = disc['physical_qty']
+
+        if action == 'APPROVE':
+            cursor.execute("UPDATE master_items SET current_stock = ? WHERE id = ?", (physical_qty, item_id))
+            cursor.execute("UPDATE discrepancies SET status = 'RESOLVED_ADJUSTED' WHERE id = ?", (discrepancy_id,))
+            cursor.execute("""
+                INSERT INTO transactions (item_id, type, quantity, remarks, user_id)
+                VALUES (?, 'ADJUSTMENT', ?, 'Resolved via Audit Approval', ?)
+            """, (item_id, physical_qty, user_id))
+        elif action == 'REJECT':
+            cursor.execute("UPDATE discrepancies SET status = 'REJECTED' WHERE id = ?", (discrepancy_id,))
+
+        conn.commit()
+        success = True
+    except Exception:
+        conn.rollback()
+        success = False
+    finally:
+        conn.close()
+
+    if success:
+        backup_db_to_gdrive()
+    return success
+
+# Ensures initialization if imported directly
 if __name__ == "__main__":
     init_db()
-    print(f"Database initialized successfully at: {DB_FILE}")
