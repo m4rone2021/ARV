@@ -363,7 +363,7 @@ def render_dashboard(user_name, user_role):
                     "Reserved Stock": "#E65100",   # Warm Orange Accent
                 },
             )
-            
+
             # Calm background and clean typography
             fig.update_layout(
                 barmode="stack",
@@ -383,7 +383,7 @@ def render_dashboard(user_name, user_role):
                 ),
             )
             fig.update_yaxes(showgrid=True, gridcolor="#E5E5E5")
-            
+
             st.plotly_chart(fig, use_container_width=True, config={"responsive": True})
         else:
             st.info("No items found for the selected category filter.")
@@ -392,7 +392,7 @@ def render_dashboard(user_name, user_role):
 
     st.divider()
 
-    # 5. Category Overview (Clean Filterable Accordions with Frozen/Pinned Column)
+    # 5. Category Overview with Popover Detail Boxes
     st.subheader("📋 Current Stock Levels Overview")
 
     if not df.empty:
@@ -429,60 +429,68 @@ def render_dashboard(user_name, user_role):
                 cat_items = filtered_df[filtered_df["category"] == cat]
 
                 with st.expander(f"📁 {cat} ({len(cat_items)} items)", expanded=True):
-                    # Reordered columns: Effective Available, Reserved, Total Stock, Unit, Safety Limit (ID removed)
-                    display_df = cat_items[
-                        [
-                            "item_name",
-                            "effective_stock",
-                            "reserved_stock",
-                            "current_stock",
-                            "unit",
-                            "min_threshold",
-                        ]
-                    ].rename(
-                        columns={
-                            "item_name": "Item Description",
-                            "effective_stock": "Effective Available",
-                            "reserved_stock": "Reserved Stock",
-                            "current_stock": "Total Stock",
-                            "unit": "Unit",
-                            "min_threshold": "Safety Limit",
-                        }
-                    )
+                    # Header Row
+                    h1, h2, h3 = st.columns([3, 2, 2])
+                    h1.markdown("**Item Description (Click for details)**")
+                    h2.markdown("**Available Stock**")
+                    h3.markdown("**Status**")
+                    st.divider()
 
-                    st.dataframe(
-                        display_df,
-                        use_container_width=True,
-                        hide_index=True,
-                        # Pinning Item Description so it remains frozen on horizontal scroll
-                        column_order=[
-                            "Item Description",
-                            "Effective Available",
-                            "Reserved Stock",
-                            "Total Stock",
-                            "Unit",
-                            "Safety Limit",
-                        ],
-                        column_config={
-                            "Item Description": st.column_config.TextColumn(
-                                "Item Description",
-                                pinned=True,  # Freezes Item Description when scrolling right
-                            ),
-                            "Effective Available": st.column_config.NumberColumn(
-                                "Effective Available", format="%.2f"
-                            ),
-                            "Reserved Stock": st.column_config.NumberColumn(
-                                "Reserved Stock", format="%.2f"
-                            ),
-                            "Total Stock": st.column_config.NumberColumn(
-                                "Total Stock", format="%.2f"
-                            ),
-                            "Unit": st.column_config.TextColumn("Unit"),
-                            "Safety Limit": st.column_config.NumberColumn(
-                                "Safety Limit", format="%.2f"
-                            ),
-                        },
-                    )
+                    # Item Row List with Popover trigger buttons
+                    for _, row in cat_items.iterrows():
+                        p_col1, p_col2, p_col3 = st.columns([3, 2, 2])
+
+                        with p_col1:
+                            # Popover Trigger Button
+                            with st.popover(
+                                f"📦 {row['item_name']}",
+                                help="Click to view full item details",
+                                use_container_width=True,
+                            ):
+                                st.markdown(f"### 📦 {row['item_name']}")
+                                st.caption(f"Category: **{row['category']}**")
+                                st.divider()
+
+                                m_col1, m_col2 = st.columns(2)
+                                with m_col1:
+                                    st.metric(
+                                        "Effective Available",
+                                        f"{row['effective_stock']:,.2f} {row['unit']}",
+                                    )
+                                    st.metric(
+                                        "Reserved Stock",
+                                        f"{row['reserved_stock']:,.2f} {row['unit']}",
+                                    )
+                                with m_col2:
+                                    st.metric(
+                                        "Total Physical Stock",
+                                        f"{row['current_stock']:,.2f} {row['unit']}",
+                                    )
+                                    st.metric(
+                                        "Safety Threshold",
+                                        f"{row['min_threshold']:,.2f} {row['unit']}",
+                                    )
+
+                                st.divider()
+                                if row["effective_stock"] <= row["min_threshold"]:
+                                    st.error("⚠️ Status: Low Stock Alert")
+                                else:
+                                    st.success("✅ Status: Healthy Stock Level")
+
+                                st.caption(
+                                    "💡 *Tap anywhere outside or click the button again to dismiss.*"
+                                )
+
+                        with p_col2:
+                            st.write(
+                                f"**{row['effective_stock']:,.2f}** {row['unit']}"
+                            )
+
+                        with p_col3:
+                            if row["effective_stock"] <= row["min_threshold"]:
+                                st.error("Low Stock")
+                            else:
+                                st.success("Healthy")
         else:
             st.info("No matching stock items found.")
     else:
