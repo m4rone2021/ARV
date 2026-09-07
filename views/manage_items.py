@@ -42,32 +42,30 @@ def get_all_categories():
 
 def render_manage_items(user_name, user_role):
     st.title("📦 Master Item Catalog")
-    st.caption("View and maintain master site inventory, reserved allocations, and available stock levels.")
+    st.caption("View and maintain site inventory, reserved allocations, and available stock.")
 
     is_admin = user_role == "Admin"
 
     if is_admin:
         tab_view, tab_add, tab_edit, tab_delete = st.tabs([
-            "📋 View Catalog",
-            "➕ Add New Item",
-            "✏️ Edit Item / Thresholds",
-            "🗑️ Delete Item",
+            "📋 Catalog",
+            "➕ Add Item",
+            "✏️ Edit Item",
+            "🗑️ Delete",
         ])
     else:
-        (tab_view,) = st.tabs(["📋 View Catalog"])
+        (tab_view,) = st.tabs(["📋 Catalog"])
         st.info("ℹ️ Read-Only Mode: Only Administrators can create, edit, or delete master items.")
 
     available_categories = get_all_categories()
 
     # VIEW CATALOG TAB
     with tab_view:
-        st.subheader("Inventory Items & Stock Breakdown")
-        col_search, col_cat = st.columns([2, 1])
-
-        with col_search:
-            search_query = st.text_input("Search Item Name", placeholder="Type item name...")
-        with col_cat:
-            selected_cat = st.selectbox("Filter Category", ["All"] + available_categories)
+        st.subheader("Inventory & Stock Levels")
+        
+        # Stacked search inputs for mobile viewports
+        search_query = st.text_input("🔍 Search Item Name", placeholder="Type item name...")
+        selected_cat = st.selectbox("📂 Filter Category", ["All"] + available_categories)
 
         try:
             query = """
@@ -106,17 +104,38 @@ def render_manage_items(user_name, user_role):
                     "min_threshold": "Min Threshold",
                     "remarks": "Remarks",
                 })
-                st.dataframe(
-                    df_display,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Stock In Shop (Total)": st.column_config.NumberColumn(format="%.2f"),
-                        "Reserved Stock": st.column_config.NumberColumn(format="%.2f"),
-                        "Available Stock": st.column_config.NumberColumn(format="%.2f"),
-                        "Min Threshold": st.column_config.NumberColumn(format="%.2f"),
-                    },
+
+                # Mobile Card View vs Full Table selector
+                view_mode = st.radio(
+                    "Display Mode", 
+                    ["Cards (Mobile)", "Full Table"], 
+                    horizontal=True, 
+                    label_visibility="collapsed"
                 )
+
+                if view_mode == "Cards (Mobile)":
+                    for _, item in df_display.iterrows():
+                        is_low = item["Available Stock"] <= item["Min Threshold"]
+                        badge = "🔴 LOW" if is_low else "🟢 OK"
+                        
+                        with st.expander(f"{badge} {item['Item Name']} ({item['Category']})"):
+                            st.markdown(f"**Available:** `{item['Available Stock']:.2f} {item['Unit']}`")
+                            st.markdown(f"**Total In Shop:** `{item['Stock In Shop (Total)']:.2f} {item['Unit']}`")
+                            st.markdown(f"**Reserved:** `{item['Reserved Stock']:.2f}` | **Min Threshold:** `{item['Min Threshold']:.2f}`")
+                            if item["Remarks"]:
+                                st.caption(f"Remarks: {item['Remarks']}")
+                else:
+                    st.dataframe(
+                        df_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Stock In Shop (Total)": st.column_config.NumberColumn(format="%.2f"),
+                            "Reserved Stock": st.column_config.NumberColumn(format="%.2f"),
+                            "Available Stock": st.column_config.NumberColumn(format="%.2f"),
+                            "Min Threshold": st.column_config.NumberColumn(format="%.2f"),
+                        },
+                    )
             else:
                 st.info("No master items found matching your filters.")
 
@@ -129,18 +148,14 @@ def render_manage_items(user_name, user_role):
         with tab_add:
             st.subheader("Add Master Item")
             with st.form("add_item_form", clear_on_submit=True):
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    item_name = st.text_input("Item Name*")
-                    category = st.selectbox("Select Existing Category*", options=available_categories)
-                    new_category = st.text_input("Or Add New Category (Optional)", placeholder="Type new category...")
-                    unit = st.selectbox("Unit of Measure*", options=UNIT_OPTIONS)
-
-                with col2:
-                    initial_stock = st.number_input("Initial Stock Quantity*", min_value=0.0, step=1.0, value=0.0, format="%.2f")
-                    min_threshold = st.number_input("Low Stock Threshold Alert*", min_value=0.0, step=1.0, value=0.0, format="%.2f")
-                    remarks = st.text_input("Remarks / Notes (Optional)")
+                # Vertical single-column stack for mobile form entry
+                item_name = st.text_input("Item Name*")
+                category = st.selectbox("Select Existing Category*", options=available_categories)
+                new_category = st.text_input("Or Add New Category (Optional)", placeholder="Type new category...")
+                unit = st.selectbox("Unit of Measure*", options=UNIT_OPTIONS)
+                initial_stock = st.number_input("Initial Stock Quantity*", min_value=0.0, step=1.0, value=0.0, format="%.2f")
+                min_threshold = st.number_input("Low Stock Threshold Alert*", min_value=0.0, step=1.0, value=0.0, format="%.2f")
+                remarks = st.text_input("Remarks / Notes (Optional)")
 
                 submit_add = st.form_submit_button("💾 Save Item to Catalog", use_container_width=True)
 
@@ -199,18 +214,14 @@ def render_manage_items(user_name, user_role):
                     default_unit_index = edit_unit_options.index(current_unit) if current_unit in edit_unit_options else 0
 
                     with st.form(f"edit_item_form_{selected_item_name}"):
-                        col1, col2 = st.columns(2)
-
-                        with col1:
-                            edit_category = st.selectbox("Select Category*", options=edit_cat_options, index=default_cat_index)
-                            edit_new_category = st.text_input("Or Change to New Category (Optional)")
-                            edit_unit = st.selectbox("Unit*", options=edit_unit_options, index=default_unit_index)
-                            edit_stock = st.number_input("Stock In Shop (Total)*", min_value=0.0, value=float(selected_row["current_stock"]), step=1.0, format="%.2f")
-
-                        with col2:
-                            edit_reserved = st.number_input("Reserved Stock*", min_value=0.0, value=float(selected_row["reserved_stock"]), step=1.0, format="%.2f")
-                            edit_threshold = st.number_input("Min Threshold Alert*", min_value=0.0, value=float(selected_row["min_threshold"]), step=1.0, format="%.2f")
-                            edit_remarks = st.text_input("Remarks", value=selected_row["remarks"] if selected_row["remarks"] else "")
+                        # Single-column inputs for cleaner mobile layout
+                        edit_category = st.selectbox("Select Category*", options=edit_cat_options, index=default_cat_index)
+                        edit_new_category = st.text_input("Or Change to New Category (Optional)")
+                        edit_unit = st.selectbox("Unit*", options=edit_unit_options, index=default_unit_index)
+                        edit_stock = st.number_input("Stock In Shop (Total)*", min_value=0.0, value=float(selected_row["current_stock"]), step=1.0, format="%.2f")
+                        edit_reserved = st.number_input("Reserved Stock*", min_value=0.0, value=float(selected_row["reserved_stock"]), step=1.0, format="%.2f")
+                        edit_threshold = st.number_input("Min Threshold Alert*", min_value=0.0, value=float(selected_row["min_threshold"]), step=1.0, format="%.2f")
+                        edit_remarks = st.text_input("Remarks", value=selected_row["remarks"] if selected_row["remarks"] else "")
 
                         submit_edit = st.form_submit_button("🔄 Update Master Item", use_container_width=True)
 
