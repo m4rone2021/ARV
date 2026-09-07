@@ -59,7 +59,7 @@ def render_dispatch_card(
     due_status = get_due_status_label_fn(first_row["scheduled_date"])
     header_label = f"{prio_badge}🚛 Dispatch #{dispatch_id} | {req_info}{project_info} ➔ {first_row['destination']} [{first_row['status']}] ({due_status})"
 
-    # THE ONLY EXPANDER FOR THIS DISPATCH CARD
+    # SINGLE UNIFIED EXPANDER
     with st.expander(header_label, expanded=False):
         # 1. DISPATCH DETAILS HEADER
         c1, c2, c3, c4 = st.columns(4)
