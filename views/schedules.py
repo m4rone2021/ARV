@@ -321,19 +321,20 @@ def render_schedules(user_name, user_role):
                                 get_due_status_label,
                                 add_item_to_dispatch,
                             )
-                            # Integrated second expander for modifying or adding items directly
-                            with st.expander(f"➕ Add / Modify Items for Batch #{disp_id}"):
+                            # Single consolidated expander for batch item management
+                            with st.expander(f"✏️ Manage Batch Items (#{disp_id})"):
+                                first_row = group.iloc[0].to_dict()
+
+                                # SECTION 1: Add New Item to Batch
+                                st.markdown("##### ➕ Add New Item to Batch")
                                 with get_db() as conn_master:
                                     master_df = pd.read_sql_query(
                                         "SELECT item_name, unit, (current_stock - COALESCE(reserved_stock, 0)) AS available_stock FROM master_items ORDER BY item_name ASC",
                                         conn_master,
                                     )
 
-                                first_row = group.iloc[0].to_dict()
-
                                 if not master_df.empty:
-                                    with st.form(f"add_item_to_existing_{disp_id}", clear_on_submit=True):
-                                        st.markdown("##### Add Item to Existing Batch")
+                                    with st.form(f"add_item_form_{disp_id}", clear_on_submit=True):
                                         sel_item = st.selectbox(
                                             "Select Item",
                                             master_df["item_name"].tolist(),
@@ -345,20 +346,23 @@ def render_schedules(user_name, user_role):
 
                                         st.caption(f"Available Stock in Shop: **{avail_qty:,.2f} {unit}**")
 
-                                        add_qty = st.number_input(
-                                            f"Quantity ({unit})",
-                                            min_value=0.01,
-                                            value=1.0,
-                                            step=1.0,
-                                            key=f"add_qty_{disp_id}"
-                                        )
-                                        add_notes = st.text_input(
-                                            "Item Notes / Specifications",
-                                            placeholder="Optional details...",
-                                            key=f"add_notes_{disp_id}"
-                                        )
+                                        col_a1, col_a2 = st.columns([1, 2])
+                                        with col_a1:
+                                            add_qty = st.number_input(
+                                                f"Quantity ({unit})",
+                                                min_value=0.01,
+                                                value=1.0,
+                                                step=1.0,
+                                                key=f"add_qty_{disp_id}"
+                                            )
+                                        with col_a2:
+                                            add_notes = st.text_input(
+                                                "Item Notes",
+                                                placeholder="Optional details...",
+                                                key=f"add_notes_{disp_id}"
+                                            )
 
-                                        if st.form_submit_button("➕ Add Item to Batch"):
+                                        if st.form_submit_button("➕ Add Item"):
                                             if add_qty > avail_qty:
                                                 st.error(f"Cannot add {add_qty}. Only {avail_qty} available.")
                                             else:
@@ -372,12 +376,14 @@ def render_schedules(user_name, user_role):
                                                 )
 
                                 st.divider()
-                                st.markdown("##### Modify Existing Item Quantities")
+
+                                # SECTION 2: Modify Existing Batch Quantities
+                                st.markdown("##### 🔄 Modify Existing Quantities")
                                 existing_items = group["item_name"].tolist()
                                 if existing_items:
-                                    with st.form(f"mod_item_qty_{disp_id}", clear_on_submit=True):
+                                    with st.form(f"mod_item_qty_form_{disp_id}", clear_on_submit=True):
                                         mod_item = st.selectbox(
-                                            "Select Item in Batch",
+                                            "Select Batch Item",
                                             existing_items,
                                             key=f"mod_item_sel_{disp_id}"
                                         )
@@ -387,20 +393,23 @@ def render_schedules(user_name, user_role):
                                             horizontal=True,
                                             key=f"mod_act_{disp_id}"
                                         )
-                                        mod_qty = st.number_input(
-                                            "Quantity Change",
-                                            min_value=0.01,
-                                            value=1.0,
-                                            step=1.0,
-                                            key=f"mod_qty_{disp_id}"
-                                        )
-                                        mod_notes = st.text_input(
-                                            "Update Notes",
-                                            placeholder="Reason for change...",
-                                            key=f"mod_notes_{disp_id}"
-                                        )
+                                        col_m1, col_m2 = st.columns([1, 2])
+                                        with col_m1:
+                                            mod_qty = st.number_input(
+                                                "Quantity Change",
+                                                min_value=0.01,
+                                                value=1.0,
+                                                step=1.0,
+                                                key=f"mod_qty_{disp_id}"
+                                            )
+                                        with col_m2:
+                                            mod_notes = st.text_input(
+                                                "Reason / Notes",
+                                                placeholder="Optional update notes...",
+                                                key=f"mod_notes_{disp_id}"
+                                            )
 
-                                        if st.form_submit_button("Update Quantity"):
+                                        if st.form_submit_button("Update Item Quantity"):
                                             update_dispatch_item_quantity(
                                                 disp_id,
                                                 mod_item,
