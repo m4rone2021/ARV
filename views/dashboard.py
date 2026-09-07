@@ -123,6 +123,24 @@ def calculate_days_left(due_date_str):
         return 9999, "Unknown"
 
 
+# Streamlit Floating Dialog Box for Dispatch Breakdown
+@st.dialog("📦 Dispatch Detailed Items")
+def show_dispatch_modal(dispatch_key, deliveries_df):
+    st.write(f"**Reference:** `{dispatch_key}`")
+    items_in_dispatch = deliveries_df[
+        deliveries_df["dispatch_key"] == dispatch_key
+    ][["item_name", "quantity", "requestor", "status"]]
+
+    if not items_in_dispatch.empty:
+        st.dataframe(items_in_dispatch, use_container_width=True, hide_index=True)
+    else:
+        st.info("No itemized details found for this dispatch.")
+
+    if st.button("Close Details"):
+        st.session_state["active_dispatch_modal"] = None
+        st.rerun()
+
+
 def render_dashboard(user_name="Guest", user_role="User"):
     apply_calm_dashboard_theme()
 
@@ -353,7 +371,7 @@ def render_dashboard(user_name="Guest", user_role="User"):
         deliveries_df["dispatch_key"].nunique() if not deliveries_df.empty else 0
     )
 
-    # 1. Metric Cards Grid (2x2 Grid for Mobile Balance)
+    # 1. Metric Cards Grid
     m_col1, m_col2 = st.columns(2)
     m_col1.metric(label="📦 Unique Items", value=f"{total_items:,}")
     m_col2.metric(label="📊 Physical Stock", value=f"{total_units_stocked:,.1f}")
@@ -374,13 +392,12 @@ def render_dashboard(user_name="Guest", user_role="User"):
 
     st.divider()
 
-    # View Mode Switcher for Dispatches Log
+    # Scheduled Dispatches Log
     st.subheader("🚚 Scheduled Dispatches Log")
-    
+
     use_mobile_cards = st.toggle("📱 Mobile Card View", value=True, key="mobile_card_toggle")
 
     if not deliveries_df.empty:
-        # Full-width container stacking for touch devices
         delivery_view_mode = st.radio(
             "Filter View",
             options=["All Dispatches", f"My Dispatches ({clean_user})"],
@@ -449,14 +466,17 @@ def render_dashboard(user_name="Guest", user_role="User"):
 
             grouped = grouped.sort_values(by=sort_field, ascending=(sort_order == "Asc"))
 
-            # Mobile Native Responsive Cards Output
+            # Native Streamlit View (Mobile Cards or Table)
             if use_mobile_cards:
                 for _, row in grouped.iterrows():
+                    d_key = row["dispatch_key"]
                     st.markdown(
                         f"""
                         <div class="mobile-card">
                             <div class="mobile-card-header">
-                                <span class="mobile-card-title">{row['supplier']} ({row['project_name']})</span>
+                                <span class="mobile-card-title">
+                                    🚚 {row['supplier']} ({row['project_name']})
+                                </span>
                                 <span class="mobile-card-badge">{row['days_left_str']}</span>
                             </div>
                             <div style="font-size: 0.85rem; color: #555;">
@@ -469,13 +489,20 @@ def render_dashboard(user_name="Guest", user_role="User"):
                         """,
                         unsafe_allow_html=True,
                     )
+                    if st.button(f"🔍 View Details ({d_key})", key=f"btn_modal_{d_key}"):
+                        st.session_state["active_dispatch_modal"] = d_key
+                        st.rerun()
             else:
                 display_log = grouped[
                     ["dispatch_key", "due_date", "days_left_str", "project_name", "supplier", "items_summary", "item_count", "total_qty", "requestor"]
                 ]
                 st.dataframe(display_log, use_container_width=True, hide_index=True)
 
-            with st.expander("🔍 Inspect Dispatch Details", expanded=False):
+            # Session State Triggered Modal
+            if st.session_state.get("active_dispatch_modal"):
+                show_dispatch_modal(st.session_state["active_dispatch_modal"], filtered_del_df)
+
+            with st.expander("🔍 Select Dispatch Details Manually", expanded=False):
                 selected_dispatch = st.selectbox(
                     "Select reference:",
                     options=grouped["dispatch_key"].unique(),
@@ -597,7 +624,6 @@ def render_dashboard(user_name="Guest", user_role="User"):
                 },
             )
 
-            # Mobile view optimization for Plotly Chart
             fig.update_layout(
                 barmode="stack",
                 height=max(320, len(chart_source) * 45),
