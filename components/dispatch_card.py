@@ -1,34 +1,31 @@
+import sqlite3
+from datetime import datetime
 import pandas as pd
 import streamlit as st
-from datetime import datetime
 
-from database import get_db, backup_db_to_gdrive
+from database import backup_db_to_gdrive, get_db
 
 
 def render_dispatch_card(
     dispatch_id, items_df, get_due_status_label_fn, add_item_to_dispatch_fn
 ):
-    """
-    Renders a single dispatch card with dynamic key invalidation to force 
-    st.data_editor updates when quantities are modified.
+    """Renders a single dispatch card with non-editable quantities that auto-
+
+    sync via the Add/Edit item panel.
     """
     first_row = items_df.iloc[0]
 
     # Initialize a version counter in session_state for st.data_editor key reset
     editor_key_version = st.session_state.get(f"editor_ver_{dispatch_id}", 0)
 
-    prio_badge = (
-        "🔥 HIGH PRIORITY | " if first_row["is_priority"] == 1 else ""
-    )
+    prio_badge = "🔥 HIGH PRIORITY | " if first_row["is_priority"] == 1 else ""
     req_info = (
         f"Requested by: {first_row['requested_by']}"
         if first_row["requested_by"]
         else "Requested by: N/A"
     )
     project_info = (
-        f" | Project: {first_row['project']}"
-        if first_row["project"]
-        else ""
+        f" | Project: {first_row['project']}" if first_row["project"] else ""
     )
 
     due_status = get_due_status_label_fn(first_row["scheduled_date"])
@@ -65,9 +62,9 @@ def render_dispatch_card(
         st.divider()
 
         # -------------------------------------------------------------
-        # 1. ADD OR EDIT ITEM SECTION (OUTSIDE THE FORM)
+        # 1. ADD OR EDIT ITEM SECTION (MODIFIES QUANTITY & RESERVED STOCK)
         # -------------------------------------------------------------
-        with st.expander("➕ Add Item or Edit to this Dispatch Batch"):
+        with st.expander("➕ Add Item or Modify Batch Quantities"):
             try:
                 with get_db() as conn_m:
                     df_master = pd.read_sql_query(
@@ -108,9 +105,7 @@ def render_dispatch_card(
                         f"Available Stock in Inventory for **{add_item_selected}**: `{avail_qty:,.2f} {add_item_info['unit']}`"
                     )
 
-                    col_action, col_add_q, col_add_n = st.columns(
-                        [1.5, 1, 2]
-                    )
+                    col_action, col_add_q, col_add_n = st.columns([1.5, 1, 2])
 
                     with col_action:
                         adjustment_type = st.radio(
@@ -147,7 +142,9 @@ def render_dispatch_card(
                                 )
                             else:
                                 if is_existing:
-                                    item_id_to_upd = existing_match.iloc[0]["id"]
+                                    item_id_to_upd = existing_match.iloc[0][
+                                        "id"
+                                    ]
                                     new_total = current_batch_qty + adj_qty
                                     with get_db() as conn_upd:
                                         c = conn_upd.cursor()
@@ -165,9 +162,9 @@ def render_dispatch_card(
                                             )
                                         conn_upd.commit()
 
-                                    # Increment key version to force data_editor state reset
-                                    st.session_state[f"editor_ver_{dispatch_id}"] = editor_key_version + 1
-
+                                    st.session_state[
+                                        f"editor_ver_{dispatch_id}"
+                                    ] = (editor_key_version + 1)
                                     backup_db_to_gdrive()
                                     st.toast(
                                         f"Increased {add_item_selected} by {adj_qty}.",
@@ -183,7 +180,9 @@ def render_dispatch_card(
                                         add_notes,
                                         first_row,
                                     )
-                                    st.session_state[f"editor_ver_{dispatch_id}"] = editor_key_version + 1
+                                    st.session_state[
+                                        f"editor_ver_{dispatch_id}"
+                                    ] = (editor_key_version + 1)
                                     st.rerun()
 
                         elif adjustment_type == "Decrease Batch":
@@ -214,9 +213,9 @@ def render_dispatch_card(
                                         )
                                     conn_upd.commit()
 
-                                # Increment key version to force data_editor state reset
-                                st.session_state[f"editor_ver_{dispatch_id}"] = editor_key_version + 1
-
+                                st.session_state[
+                                    f"editor_ver_{dispatch_id}"
+                                ] = (editor_key_version + 1)
                                 backup_db_to_gdrive()
                                 st.toast(
                                     f"Decreased {add_item_selected} by {adj_qty}.",
@@ -230,7 +229,7 @@ def render_dispatch_card(
         st.divider()
 
         # -------------------------------------------------------------
-        # 2. MAIN UNIFIED UPDATE FORM
+        # 2. MAIN UNIFIED UPDATE FORM (READ-ONLY QUANTITY EDITOR)
         # -------------------------------------------------------------
         st.markdown("##### ✏️ Edit & Review Dispatch Details")
 
@@ -245,14 +244,13 @@ def render_dispatch_card(
             )
 
             st.markdown(
-                "###### 📦 Review & Edit Batch Items (Quantities & Notes)"
+                "###### 📦 Review Batch Items (Notes editable; Quantities are synced automatically)"
             )
 
             editable_df = items_df[
                 ["id", "item_name", "quantity", "unit", "notes"]
             ].copy()
 
-            # Dynamic key forces Streamlit to rebuild the editor on database state change
             editor_key = f"editor_{dispatch_id}_v{editor_key_version}"
 
             edited_data = st.data_editor(
@@ -266,18 +264,21 @@ def render_dispatch_card(
                         "Unit", disabled=True
                     ),
                     "quantity": st.column_config.NumberColumn(
-                        "Quantity",
-                        min_value=0.01,
-                        step=1.0,
+                        "Quantity (Auto-Synced)",
                         format="%.2f",
-                        disabled=False,
+                        disabled=True,  # Lock manual editing of quantity
                     ),
                     "notes": st.column_config.TextColumn(
                         "Notes / Instructions",
                         disabled=False,
                     ),
                 },
-                disabled=["id", "item_name", "unit"],
+                disabled=[
+                    "id",
+                    "item_name",
+                    "unit",
+                    "quantity",
+                ],  # Explicitly disable quantity
                 use_container_width=True,
                 hide_index=True,
                 key=editor_key,
@@ -342,7 +343,6 @@ def render_dispatch_card(
 
                         for _, edited_row in edited_data.iterrows():
                             item_id = edited_row["id"]
-                            new_qty = float(edited_row["quantity"])
                             edited_note = (
                                 str(edited_row["notes"]).strip()
                                 if pd.notna(edited_row["notes"])
@@ -353,8 +353,7 @@ def render_dispatch_card(
                             orig_row = items_df[
                                 items_df["id"] == item_id
                             ].iloc[0]
-                            old_qty = float(orig_row["quantity"])
-                            qty_diff = new_qty - old_qty
+                            curr_qty = float(orig_row["quantity"])
                             item_name = orig_row["item_name"]
 
                             final_notes = edited_note
@@ -366,11 +365,10 @@ def render_dispatch_card(
                             cursor.execute(
                                 """
                                 UPDATE deliveries 
-                                SET expected_quantity = ?, expected_date = ?, status = ?, driver_name = ?, notes = ? 
+                                SET expected_date = ?, status = ?, driver_name = ?, notes = ? 
                                 WHERE id = ?
                             """,
                                 (
-                                    new_qty,
                                     str(new_sched_date),
                                     new_status,
                                     driver_input,
@@ -379,6 +377,7 @@ def render_dispatch_card(
                                 ),
                             )
 
+                            # Handle stock transitions based on status changes
                             if old_status in ["Pending", "In Transit"]:
                                 if new_status == "Completed":
                                     cursor.execute(
@@ -388,7 +387,7 @@ def render_dispatch_card(
                                             reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
                                         WHERE item_name = ?
                                     """,
-                                        (new_qty, old_qty, item_name),
+                                        (curr_qty, curr_qty, item_name),
                                     )
                                 elif new_status == "Cancelled":
                                     cursor.execute(
@@ -397,27 +396,17 @@ def render_dispatch_card(
                                         SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?)
                                         WHERE item_name = ?
                                     """,
-                                        (old_qty, item_name),
-                                    )
-                                elif (
-                                    new_status in ["Pending", "In Transit"]
-                                    and qty_diff != 0
-                                ):
-                                    cursor.execute(
-                                        """
-                                        UPDATE master_items 
-                                        SET reserved_stock = COALESCE(reserved_stock, 0) + ?
-                                        WHERE item_name = ?
-                                    """,
-                                        (qty_diff, item_name),
+                                        (curr_qty, item_name),
                                     )
 
                         conn.commit()
 
-                    st.session_state[f"editor_ver_{dispatch_id}"] = editor_key_version + 1
+                    st.session_state[f"editor_ver_{dispatch_id}"] = (
+                        editor_key_version + 1
+                    )
                     backup_db_to_gdrive()
                     st.toast(
-                        "Dispatch batch and item quantities successfully updated!",
+                        "Dispatch batch successfully updated!",
                         icon="✅",
                     )
                     st.rerun()
@@ -476,7 +465,9 @@ def render_dispatch_card(
                                 )
                             conn_rem.commit()
 
-                        st.session_state[f"editor_ver_{dispatch_id}"] = editor_key_version + 1
+                        st.session_state[f"editor_ver_{dispatch_id}"] = (
+                            editor_key_version + 1
+                        )
                         backup_db_to_gdrive()
                         st.toast(
                             f"Removed {rem_name} from dispatch batch.",
