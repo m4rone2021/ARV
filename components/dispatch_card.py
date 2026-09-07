@@ -9,8 +9,8 @@ from database import backup_db_to_gdrive, get_db
 def render_dispatch_card(
     dispatch_id, items_df, get_due_status_label_fn, add_item_to_dispatch_fn
 ):
-    """Renders a single dispatch card with a unified review table where item quantities, 
-    units, notes, and dispatch status are directly editable.
+    """Renders a single dispatch card with integrated review, editing, status management, 
+    and item removal directly inside the card body.
     """
 
     def fetch_latest_items_df(d_id):
@@ -32,7 +32,7 @@ def render_dispatch_card(
     # Always ensure fresh state
     current_items_df = fetch_latest_items_df(dispatch_id) if items_df is None or items_df.empty else items_df.copy()
 
-    # Initialize state for data editor re-rendering
+    # Initialize version state for data editor to force UI sync
     if f"editor_ver_{dispatch_id}" not in st.session_state:
         st.session_state[f"editor_ver_{dispatch_id}"] = 0
 
@@ -51,7 +51,10 @@ def render_dispatch_card(
     due_status = get_due_status_label_fn(first_row["scheduled_date"])
     header_label = f"{prio_badge}🚛 Dispatch #{dispatch_id} | {req_info}{project_info} ➔ {first_row['destination']} [{first_row['status']}] ({due_status})"
 
-    with st.expander(header_label):
+    with st.expander(header_label, expanded=True):
+        # -------------------------------------------------------------
+        # 1. DISPATCH METRICS HEADER
+        # -------------------------------------------------------------
         c1, c2, c3, c4 = st.columns(4)
 
         requested_date_val = first_row.get(
@@ -63,7 +66,7 @@ def render_dispatch_card(
         c1.markdown(f"**Destination:** {first_row['destination']}")
 
         c2.markdown(f"**Project:** {first_row['project'] if first_row['project'] else 'N/A'}")
-        c2.markdown(f"**Total Items in Dispatch:** `{len(current_items_df)}`")
+        c2.markdown(f"**Total Items:** `{len(current_items_df)}`")
 
         c3.markdown(f"**Requested Date:** `{requested_date_val}`")
         c3.markdown(f"**Scheduled Date:** `{first_row['scheduled_date']}`")
@@ -72,14 +75,14 @@ def render_dispatch_card(
         c4.markdown(f"**Status:** `{first_row['status']}`")
 
         if first_row["driver_name"]:
-            st.markdown(f"🚛 **Driver Name:** {first_row['driver_name']}")
+            st.markdown(f"🚛 **Assigned Driver:** {first_row['driver_name']}")
 
         st.divider()
 
         # -------------------------------------------------------------
-        # UNIFIED EDIT & REVIEW DISPATCH DETAILS FORM
+        # 2. INTEGRATED EDIT & REVIEW FORM
         # -------------------------------------------------------------
-        st.markdown(f"##### ✏️ Edit & Review Batch Details — Dispatch #{dispatch_id}")
+        st.markdown("##### 📦 Edit & Review Batch Details")
 
         with st.form(key=f"update_dispatch_form_{dispatch_id}"):
             current_date = pd.to_datetime(first_row["scheduled_date"]).date()
@@ -89,7 +92,7 @@ def render_dispatch_card(
                 key=f"resched_date_{dispatch_id}",
             )
 
-            st.markdown("###### 📦 Dispatch Items Review Table (Edit quantities and notes directly below)")
+            st.caption("Edit item quantities and notes directly in the review table below:")
 
             editable_df = current_items_df[
                 ["id", "item_name", "quantity", "unit", "notes"]
@@ -122,7 +125,7 @@ def render_dispatch_card(
             )
 
             st.divider()
-            st.markdown("###### 🚦 Status & Assignment")
+            st.markdown("##### 🚦 Dispatch Status & Driver Details")
 
             status_options = ["Pending", "In Transit", "Completed", "Cancelled"]
             current_idx = (
@@ -135,7 +138,7 @@ def render_dispatch_card(
 
             with col_status_sel:
                 new_status = st.selectbox(
-                    "Update Status for Batch",
+                    "Update Status",
                     status_options,
                     index=current_idx,
                     key=f"status_select_{dispatch_id}",
@@ -150,14 +153,13 @@ def render_dispatch_card(
                 ).strip()
 
             add_notes_input = st.text_input(
-                "Completion / Overall Notes",
+                "Overall Batch Remarks / Site Notes",
                 placeholder="Optional delivery details, gate passes, site instructions...",
                 key=f"add_notes_{dispatch_id}",
             ).strip()
 
-            st.write("")
             submit_dispatch_update = st.form_submit_button(
-                f"💾 Save Changes to Dispatch #{dispatch_id}",
+                f"💾 Save Changes for Dispatch #{dispatch_id}",
                 use_container_width=True,
                 type="primary",
             )
@@ -189,7 +191,7 @@ def render_dispatch_card(
                             if add_notes_input:
                                 final_notes = f"{edited_note} [{add_notes_input}]".strip()
 
-                            # 1. Update delivery record
+                            # 1. Update delivery row
                             cursor.execute(
                                 """
                                 UPDATE deliveries 
@@ -206,10 +208,9 @@ def render_dispatch_card(
                                 ),
                             )
 
-                            # 2. Manage reserved stock and current inventory balance
+                            # 2. Inventory and Reserved Stock recalculation logic
                             if old_status in ["Pending", "In Transit"]:
                                 if new_status in ["Pending", "In Transit"]:
-                                    # Adjust reserved stock by the quantity difference
                                     if qty_diff != 0:
                                         cursor.execute(
                                             """
@@ -220,7 +221,6 @@ def render_dispatch_card(
                                             (qty_diff, item_name),
                                         )
                                 elif new_status == "Completed":
-                                    # Deduct current stock and clear reserved allocation
                                     cursor.execute(
                                         """
                                         UPDATE master_items 
@@ -231,7 +231,6 @@ def render_dispatch_card(
                                         (new_qty, old_qty, item_name),
                                     )
                                 elif new_status == "Cancelled":
-                                    # Clear reserved allocation
                                     cursor.execute(
                                         """
                                         UPDATE master_items 
@@ -254,12 +253,12 @@ def render_dispatch_card(
         st.divider()
 
         # -------------------------------------------------------------
-        # REMOVE ITEM SECTION
+        # 3. INTEGRATED ITEM REMOVAL
         # -------------------------------------------------------------
         col_del_item, _ = st.columns([2, 1])
         with col_del_item:
             item_to_remove = st.selectbox(
-                "Remove Single Item from Batch",
+                "Remove Item from Batch",
                 options=current_items_df["id"].tolist(),
                 format_func=lambda x: current_items_df[
                     current_items_df["id"] == x
