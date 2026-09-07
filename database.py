@@ -639,12 +639,13 @@ def init_db():
         """
         )
 
-        # Migration logic with safe SQLite ALTER TABLE types (no dynamic default functions)
+        # Migration logic with safe SQLite ALTER TABLE types
         cursor.execute("PRAGMA table_info(deliveries)")
         delivery_cols = [col[1] for col in cursor.fetchall()]
 
         missing_columns = {
             "dispatch_id": "TEXT",
+            "expected_quantity": "REAL DEFAULT 0.0",
             "scheduled_date": "DATE",
             "destination": "TEXT",
             "requested_by": "TEXT",
@@ -663,6 +664,12 @@ def init_db():
                     cursor.execute(
                         "UPDATE deliveries SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
                     )
+
+        # Backwards compatibility fix: If existing table used 'qty', map values to 'expected_quantity'
+        if "qty" in delivery_cols and "expected_quantity" in delivery_cols:
+            cursor.execute(
+                "UPDATE deliveries SET expected_quantity = qty WHERE (expected_quantity IS NULL OR expected_quantity = 0.0) AND qty IS NOT NULL"
+            )
 
         # Tasks Table
         cursor.execute(
