@@ -4,7 +4,7 @@ from datetime import datetime, date
 import pandas as pd
 import streamlit as st
 from database import get_db, init_db, backup_db_to_gdrive
-from ARV.components.dispatch_card import render_dispatch_card
+from components.dispatch_card import render_dispatch_card
 
 
 def ensure_schedule_columns():
