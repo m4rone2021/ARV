@@ -314,109 +314,52 @@ def render_schedules(user_name, user_role):
                     st.divider()
 
                     if not active_df.empty:
-                        for disp_id, group in active_dispatches:
+                        for idx, (disp_id, group) in enumerate(active_dispatches):
                             render_dispatch_card(
                                 disp_id,
                                 group,
                                 get_due_status_label,
                                 add_item_to_dispatch,
                             )
-                            # Single consolidated expander for batch item management
-                            with st.expander(f"✏️ Manage Batch Items (#{disp_id})"):
-                                first_row = group.iloc[0].to_dict()
-
-                                # SECTION 1: Add New Item to Batch
-                                st.markdown("##### ➕ Add New Item to Batch")
-                                with get_db() as conn_master:
-                                    master_df = pd.read_sql_query(
-                                        "SELECT item_name, unit, (current_stock - COALESCE(reserved_stock, 0)) AS available_stock FROM master_items ORDER BY item_name ASC",
-                                        conn_master,
-                                    )
-
-                                if not master_df.empty:
-                                    with st.form(f"add_item_form_{disp_id}", clear_on_submit=True):
-                                        sel_item = st.selectbox(
-                                            "Select Item",
-                                            master_df["item_name"].tolist(),
-                                            key=f"item_sel_{disp_id}"
+                            
+                            # Unique key index suffix prevents DuplicateWidgetID errors
+                            key_suffix = f"{disp_id}_{idx}"
+                            with st.expander(f"✏️ Edit & Review Batch Details ({disp_id})", expanded=False):
+                                items_in_batch = group["item_name"].unique().tolist()
+                                if items_in_batch:
+                                    st.markdown("##### ➕ Add Item or Modify Batch Quantities")
+                                    mod_col1, mod_col2 = st.columns(2)
+                                    with mod_col1:
+                                        target_item = st.selectbox(
+                                            "Select Batch Item", options=items_in_batch, key=f"sel_{key_suffix}"
                                         )
-                                        item_rec = master_df[master_df["item_name"] == sel_item].iloc[0]
-                                        avail_qty = float(item_rec["available_stock"])
-                                        unit = str(item_rec["unit"])
-
-                                        st.caption(f"Available Stock in Shop: **{avail_qty:,.2f} {unit}**")
-
-                                        col_a1, col_a2 = st.columns([1, 2])
-                                        with col_a1:
-                                            add_qty = st.number_input(
-                                                f"Quantity ({unit})",
-                                                min_value=0.01,
-                                                value=1.0,
-                                                step=1.0,
-                                                key=f"add_qty_{disp_id}"
-                                            )
-                                        with col_a2:
-                                            add_notes = st.text_input(
-                                                "Item Notes",
-                                                placeholder="Optional details...",
-                                                key=f"add_notes_{disp_id}"
-                                            )
-
-                                        if st.form_submit_button("➕ Add Item"):
-                                            if add_qty > avail_qty:
-                                                st.error(f"Cannot add {add_qty}. Only {avail_qty} available.")
-                                            else:
-                                                add_item_to_dispatch(
-                                                    disp_id,
-                                                    sel_item,
-                                                    unit,
-                                                    add_qty,
-                                                    add_notes,
-                                                    first_row,
-                                                )
-
-                                st.divider()
-
-                                # SECTION 2: Modify Existing Batch Quantities
-                                st.markdown("##### 🔄 Modify Existing Quantities")
-                                existing_items = group["item_name"].tolist()
-                                if existing_items:
-                                    with st.form(f"mod_item_qty_form_{disp_id}", clear_on_submit=True):
-                                        mod_item = st.selectbox(
-                                            "Select Batch Item",
-                                            existing_items,
-                                            key=f"mod_item_sel_{disp_id}"
+                                        action_type = st.radio(
+                                            "Action", ["Increase Batch", "Decrease Batch"], key=f"act_{key_suffix}"
                                         )
-                                        mod_action = st.radio(
-                                            "Action",
-                                            ["Increase Batch", "Decrease Batch"],
-                                            horizontal=True,
-                                            key=f"mod_act_{disp_id}"
+                                    with mod_col2:
+                                        change_q = st.number_input(
+                                            "Quantity Change", min_value=0.01, value=1.0, step=1.0, key=f"qty_{key_suffix}"
                                         )
-                                        col_m1, col_m2 = st.columns([1, 2])
-                                        with col_m1:
-                                            mod_qty = st.number_input(
-                                                "Quantity Change",
-                                                min_value=0.01,
-                                                value=1.0,
-                                                step=1.0,
-                                                key=f"mod_qty_{disp_id}"
-                                            )
-                                        with col_m2:
-                                            mod_notes = st.text_input(
-                                                "Reason / Notes",
-                                                placeholder="Optional update notes...",
-                                                key=f"mod_notes_{disp_id}"
-                                            )
+                                        mod_notes = st.text_input(
+                                            "Update Notes", placeholder="Optional batch notes...", key=f"notes_{key_suffix}"
+                                        )
 
-                                        if st.form_submit_button("Update Item Quantity"):
-                                            update_dispatch_item_quantity(
-                                                disp_id,
-                                                mod_item,
-                                                mod_action,
-                                                mod_qty,
-                                                mod_notes,
-                                            )
+                                    if st.button("💾 Apply Changes to Batch Item", key=f"btn_{key_suffix}", type="primary"):
+                                        update_dispatch_item_quantity(
+                                            disp_id, target_item, action_type, change_q, mod_notes
+                                        )
+
+                                st.markdown("##### 📦 Current Batch Items To Be Dispatched")
+                                review_df = group[["item_name", "quantity", "unit", "notes"]].rename(
+                                    columns={
+                                        "item_name": "Item Name",
+                                        "quantity": "Total Quantity To Dispatch",
+                                        "unit": "Unit",
+                                        "notes": "Notes / Instructions",
+                                    }
+                                )
+                                st.dataframe(review_df, use_container_width=True)
+
                     else:
                         st.info("No active dispatches found.")
 
