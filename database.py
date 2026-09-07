@@ -28,6 +28,7 @@ __all__ = [
     "add_stock_transaction",
     "resolve_discrepancy",
     "update_dispatch_status",
+    "add_scheduled_delivery",
     "DB_FILE",
     "UPLOAD_DIR",
 ]
@@ -366,6 +367,45 @@ def add_stock_transaction(
     backup_db_to_gdrive()
 
 
+def add_scheduled_delivery(
+    due_date: str,
+    project: str,
+    item_description: str,
+    qty: float,
+    requestor: str,
+    created_by: str,
+    supplier: str | None = None,
+    unit: str = "pcs",
+):
+    """Inserts a new scheduled delivery item into the database with creator attribution."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO deliveries (
+                expected_date, scheduled_date, project, item_name, 
+                expected_quantity, unit, requested_by, created_by, supplier, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
+            """,
+            (
+                due_date,
+                due_date,
+                project,
+                item_description,
+                qty,
+                unit,
+                requestor,
+                created_by,
+                supplier,
+            ),
+        )
+        conn.commit()
+
+    print(f"[DB Update] Scheduled delivery created by '{created_by}' for project '{project}'.")
+    backup_db_to_gdrive()
+
+
 def resolve_discrepancy(
     discrepancy_id: int,
     resolved_by: str,
@@ -626,6 +666,7 @@ def init_db():
                 status TEXT DEFAULT 'Pending',
                 destination TEXT,
                 requested_by TEXT,
+                created_by TEXT DEFAULT 'System',
                 project TEXT,
                 is_priority INTEGER DEFAULT 0,
                 driver_name TEXT,
@@ -645,6 +686,7 @@ def init_db():
             "scheduled_date": "DATE",
             "destination": "TEXT",
             "requested_by": "TEXT",
+            "created_by": "TEXT DEFAULT 'System'",
             "project": "TEXT",
             "is_priority": "INTEGER DEFAULT 0",
             "driver_name": "TEXT",
