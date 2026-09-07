@@ -83,7 +83,6 @@ def render_dispatch_card(
                 ["id", "item_name", "quantity", "unit", "notes"]
             ].copy()
 
-            # Ensure quantity and notes columns are explicitly enabled for editing
             edited_data = st.data_editor(
                 editable_df,
                 column_config={
@@ -99,18 +98,25 @@ def render_dispatch_card(
                         min_value=0.01,
                         step=1.0,
                         format="%.2f",
-                        disabled=False,  # Explicitly allow editing
+                        disabled=False,
                     ),
                     "notes": st.column_config.TextColumn(
                         "Notes / Instructions",
-                        disabled=False,  # Explicitly allow editing
+                        disabled=False,
                     ),
                 },
-                disabled=["id", "item_name", "unit"],  # Lock system identity fields
+                disabled=["id", "item_name", "unit"],
                 use_container_width=True,
                 hide_index=True,
                 key=f"editor_{dispatch_id}",
             )
+
+            st.markdown("---")
+
+            # -------------------------------------------------------------
+            # DISPATCH STATUS (MOVED TO BOTTOM OF FORM)
+            # -------------------------------------------------------------
+            st.markdown("###### 🚦 Dispatch Status")
 
             status_options = [
                 "Pending",
@@ -124,7 +130,6 @@ def render_dispatch_card(
                 else 0
             )
 
-            st.markdown("###### 🚦 Dispatch Status")
             col_status_sel, col_driver_sel = st.columns(2)
 
             with col_status_sel:
@@ -313,9 +318,9 @@ def render_dispatch_card(
         st.divider()
 
         # -------------------------------------------------------------
-        # ADD ITEM SECTION
+        # ADD OR EDIT ITEM SECTION
         # -------------------------------------------------------------
-        with st.expander("➕ Add Another Item to this Dispatch Batch"):
+        with st.expander("➕ Add or Edit to this Dispatch Batch"):
             try:
                 with get_db() as conn_m:
                     df_master = pd.read_sql_query(
