@@ -11,7 +11,6 @@ def apply_calm_dashboard_theme():
     st.markdown(
         """
         <style>
-            /* Color Variables */
             :root {
                 --primary-accent: #E65100;
                 --secondary-accent: #00897B;
@@ -20,7 +19,6 @@ def apply_calm_dashboard_theme():
                 --border-color: #E0E0E0;
             }
 
-            /* Mobile-first Padding Adjustments */
             .main .block-container {
                 padding-top: 1rem !important;
                 padding-bottom: 2rem !important;
@@ -28,7 +26,6 @@ def apply_calm_dashboard_theme():
                 padding-right: 0.8rem !important;
             }
 
-            /* Custom KPI Card Styling */
             div[data-testid="stMetric"] {
                 background-color: var(--card-bg);
                 border: 1px solid var(--border-color);
@@ -38,7 +35,6 @@ def apply_calm_dashboard_theme():
                 box-shadow: 0 2px 4px rgba(0,0,0,0.02);
             }
 
-            /* Touch-Friendly Buttons & Popovers */
             div.stButton > button,
             div.stFormSubmitButton > button,
             div[data-testid="stPopover"] > button {
@@ -47,7 +43,7 @@ def apply_calm_dashboard_theme():
                 border: none !important;
                 border-radius: 6px !important;
                 font-weight: 600 !important;
-                min-height: 44px !important; /* Mobile touch target size */
+                min-height: 44px !important;
                 font-size: 14px !important;
                 transition: all 0.2s ease-in-out;
             }
@@ -58,7 +54,6 @@ def apply_calm_dashboard_theme():
                 background-color: #BF360C !important;
             }
 
-            /* Mobile Card Container Styling */
             .mobile-item-card {
                 background: #FFFFFF;
                 border: 1px solid var(--border-color);
@@ -67,7 +62,6 @@ def apply_calm_dashboard_theme():
                 margin-bottom: 10px;
             }
 
-            /* Media queries for small screens */
             @media (max-width: 640px) {
                 div[data-testid="stMetricValue"] {
                     font-size: 1.3rem !important;
@@ -108,13 +102,12 @@ def calculate_days_left(due_date_str):
 
 
 def render_dashboard(user_name, user_role):
-    # Apply Responsive Theme
     apply_calm_dashboard_theme()
 
     st.title("📊 Executive Dashboard")
 
     is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
-    st.caption("Real-time summary of stock levels, reserved stock, and task reminders.")
+    st.caption("Real-time inventory, task reminders, and scheduled deliveries.")
 
     categories = st.session_state.get(
         "categories",
@@ -128,6 +121,9 @@ def render_dashboard(user_name, user_role):
             "General Site Supplies",
         ],
     )
+
+    deliveries_df = pd.DataFrame()
+    reminders_df = pd.DataFrame()
 
     try:
         with get_db() as conn:
@@ -160,18 +156,48 @@ def render_dashboard(user_name, user_role):
                     ]
                 )
 
-            # 2. Fetch active tasks/reminders
+            # 2. Check for database tables
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'reminders')"
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'reminders', 'scheduled_deliveries', 'deliveries')"
             )
             tables = [row[0] for row in cursor.fetchall()]
 
-            reminders_df = pd.DataFrame()
+            # 3. Fetch Pending/Uncompleted Scheduled Deliveries sorted by Due Date
+            delivery_table = next(
+                (t for t in ["scheduled_deliveries", "deliveries"] if t in tables), None
+            )
 
-            if "tasks" in tables or "reminders" in tables:
-                task_table = "tasks" if "tasks" in tables else "reminders"
+            if delivery_table:
+                cursor.execute(f"PRAGMA table_info({delivery_table})")
+                del_cols = [col[1] for col in cursor.fetchall()]
 
+                date_col = (
+                    "due_date"
+                    if "due_date" in del_cols
+                    else ("delivery_date" if "delivery_date" in del_cols else "expected_date")
+                )
+                item_col = "item_name" if "item_name" in del_cols else "description"
+                qty_col = "quantity" if "quantity" in del_cols else "qty"
+                supplier_col = (
+                    "supplier" if "supplier" in del_cols else "vendor"
+                )
+                status_col = "status" if "status" in del_cols else "delivery_status"
+
+                query_del = f"""
+                    SELECT id, {date_col} AS due_date, {item_col} AS item_name, 
+                           {qty_col} AS quantity, {supplier_col} AS supplier, {status_col} AS status
+                    FROM {delivery_table}
+                    WHERE UPPER({status_col}) NOT IN ('COMPLETED', 'DELIVERED', 'CANCELLED')
+                """
+                deliveries_df = pd.read_sql_query(query_del, conn)
+
+            # 4. Fetch Active Tasks
+            task_table = next(
+                (t for t in ["tasks", "reminders"] if t in tables), None
+            )
+
+            if task_table:
                 cursor.execute(f"PRAGMA table_info({task_table})")
                 rem_cols = [col[1] for col in cursor.fetchall()]
 
@@ -199,7 +225,6 @@ def render_dashboard(user_name, user_role):
                     params_rem = [user_name.strip()]
 
                 reminders_df = pd.read_sql_query(query_rem, conn, params=params_rem)
-
                 if not has_priority or "priority" not in reminders_df.columns:
                     reminders_df["priority"] = "NORMAL"
 
@@ -216,39 +241,70 @@ def render_dashboard(user_name, user_role):
     )
     low_stock_count = len(low_stock_df)
     total_units_stocked = df["current_stock"].sum() if not df.empty else 0.0
-    total_units_reserved = df["reserved_stock"].sum() if not df.empty else 0.0
+    pending_deliveries_count = len(deliveries_df)
 
-    open_tasks_count = len(reminders_df)
-    high_priority_count = (
-        len(reminders_df[reminders_df["priority"].astype(str).str.upper() == "HIGH"])
-        if not reminders_df.empty and "priority" in reminders_df.columns
-        else 0
-    )
-
-    # 1. Top Metrics Cards Grid (2x2 Layout for Mobile)
+    # 1. Metric Cards Grid
     m_col1, m_col2 = st.columns(2)
     m_col1.metric(label="📦 Unique Items", value=f"{total_items:,}")
     m_col2.metric(label="📊 Physical Stock", value=f"{total_units_stocked:,.1f}")
 
     m_col3, m_col4 = st.columns(2)
-    m_col3.metric(label="🔒 Reserved Stock", value=f"{total_units_reserved:,.1f}")
-    m_col4.metric(
-        label="⚠️ Low Stock",
+    m_col3.metric(
+        label="⚠️ Low Stock Alerts",
         value=f"{low_stock_count}",
         delta=f"-{low_stock_count}" if low_stock_count > 0 else "Optimal",
         delta_color="inverse" if low_stock_count > 0 else "normal",
     )
-
-    st.metric(
-        label="📝 Total Tasks" if is_admin else "📝 My Tasks",
-        value=f"{open_tasks_count}",
-        delta=f"🚨 {high_priority_count} High" if high_priority_count > 0 else "All Normal",
-        delta_color="inverse" if high_priority_count > 0 else "normal",
+    m_col4.metric(
+        label="🚚 Pending Deliveries",
+        value=f"{pending_deliveries_count}",
+        delta="Action Required" if pending_deliveries_count > 0 else "None",
+        delta_color="off",
     )
 
     st.divider()
 
-    # 2. Action Items & Reminders
+    # 2. Scheduled Deliveries (Sorted by Due Date)
+    st.subheader("🚚 Pending Scheduled Deliveries")
+    if not deliveries_df.empty:
+        # Calculate days left & arrange chronologically
+        parsed_del_dates = deliveries_df["due_date"].apply(calculate_days_left)
+        deliveries_df["days_left_num"] = [d[0] for d in parsed_del_dates]
+        deliveries_df["days_left_str"] = [d[1] for d in parsed_del_dates]
+
+        # Order by closest due date first
+        deliveries_df = deliveries_df.sort_values(
+            by=["days_left_num", "due_date"], ascending=[True, True]
+        )
+
+        st.caption("Ordered from earliest due date to latest.")
+
+        # Mobile card layout display
+        for _, del_row in deliveries_df.iterrows():
+            st.markdown('<div class="mobile-item-card">', unsafe_allow_html=True)
+            
+            d_col1, d_col2 = st.columns([2, 1])
+            with d_col1:
+                st.markdown(f"**📦 {del_row['item_name']}**")
+                st.caption(f"Supplier: **{del_row['supplier']}**")
+            with d_col2:
+                st.write(del_row["days_left_str"])
+
+            d_sub1, d_sub2 = st.columns([1, 1])
+            with d_sub1:
+                st.caption("Expected Qty")
+                st.write(f"**{del_row['quantity']}**")
+            with d_sub2:
+                st.caption("Due Date")
+                st.write(f"**{del_row['due_date']}**")
+
+            st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.success("✅ No pending scheduled deliveries found.")
+
+    st.divider()
+
+    # 3. Action Items & Reminders
     st.subheader(
         "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({user_name})"
     )
@@ -261,16 +317,12 @@ def render_dashboard(user_name, user_role):
             by=["days_left_num", "priority"], ascending=[True, False]
         )
 
-        reminders_df["Priority"] = reminders_df["priority"].apply(
-            lambda x: "🚨 HIGH" if str(x).upper() == "HIGH" else "NORMAL"
-        )
-
         display_reminders = reminders_df[
-            ["due_date", "days_left_str", "Priority", "task", "assigned_to"]
+            ["due_date", "days_left_str", "task", "assigned_to"]
         ].rename(
             columns={
                 "due_date": "Due Date",
-                "days_left_str": "Days Left",
+                "days_left_str": "Status / Days Left",
                 "task": "Task Description",
                 "assigned_to": "Assigned",
             }
@@ -286,7 +338,7 @@ def render_dashboard(user_name, user_role):
 
     st.divider()
 
-    # 3. Critical Low Stock Warnings
+    # 4. Critical Low Stock Warnings
     st.subheader("⚠️ Critical Low Stock Warnings")
     if not low_stock_df.empty:
         st.warning(
@@ -330,7 +382,7 @@ def render_dashboard(user_name, user_role):
 
     st.divider()
 
-    # 4. Mobile-Optimized Stock Chart (Horizontal Bars for Easy Touch Scrolling)
+    # 5. Mobile Horizontal Bar Chart for Breakdown
     st.subheader("📦 Stock Breakdown per Item")
     if not df.empty:
         chart_cat_filter = st.selectbox(
@@ -357,7 +409,6 @@ def render_dashboard(user_name, user_role):
                 {"reserved_stock": "Reserved Stock"}
             )
 
-            # Mobile Horizontal Bar Chart prevents squished x-axis text
             fig = px.bar(
                 chart_df,
                 y="item_name",
@@ -375,7 +426,7 @@ def render_dashboard(user_name, user_role):
 
             fig.update_layout(
                 barmode="stack",
-                height=max(300, len(chart_source) * 40), # Dynamic height for small screens
+                height=max(300, len(chart_source) * 40),
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="#F9F9F9",
                 font=dict(family="sans-serif", size=11, color="#333333"),
@@ -392,101 +443,3 @@ def render_dashboard(user_name, user_role):
             fig.update_xaxes(showgrid=True, gridcolor="#E5E5E5")
 
             st.plotly_chart(fig, use_container_width=True, config={"responsive": True})
-        else:
-            st.info("No items found for the selected category filter.")
-
-    st.divider()
-
-    # 5. Mobile-Optimized Stock Overview with Touch Popover Buttons
-    st.subheader("📋 Current Stock Levels Overview")
-
-    if not df.empty:
-        cat_filter = st.selectbox(
-            "Filter Category",
-            ["All Categories"] + categories,
-            key="dash_cat_filter",
-        )
-
-        dash_search = st.text_input(
-            "🔍 Quick Search Item",
-            placeholder="Type item name...",
-            key="dash_search",
-        )
-
-        filtered_df = df.copy()
-
-        if cat_filter != "All Categories":
-            filtered_df = filtered_df[filtered_df["category"] == cat_filter]
-
-        if dash_search.strip():
-            filtered_df = filtered_df[
-                filtered_df["item_name"].str.contains(
-                    dash_search.strip(), case=False, na=False
-                )
-            ]
-
-        if not filtered_df.empty:
-            grouped_categories = filtered_df["category"].unique()
-
-            for cat in sorted(grouped_categories):
-                cat_items = filtered_df[filtered_df["category"] == cat]
-
-                with st.expander(f"📁 {cat} ({len(cat_items)} items)", expanded=True):
-                    for _, row in cat_items.iterrows():
-                        # Vertical Card Block for seamless Mobile View
-                        st.markdown('<div class="mobile-item-card">', unsafe_allow_html=True)
-                        
-                        # Large Touch Popover Trigger Button
-                        with st.popover(
-                            f"📦 {row['item_name']}",
-                            help="Tap to view full item details",
-                            use_container_width=True,
-                        ):
-                            st.markdown(f"### 📦 {row['item_name']}")
-                            st.caption(f"Category: **{row['category']}**")
-                            st.divider()
-
-                            st.metric(
-                                "Effective Available",
-                                f"{row['effective_stock']:,.2f} {row['unit']}",
-                            )
-                            st.metric(
-                                "Reserved Stock",
-                                f"{row['reserved_stock']:,.2f} {row['unit']}",
-                            )
-                            st.metric(
-                                "Total Physical Stock",
-                                f"{row['current_stock']:,.2f} {row['unit']}",
-                            )
-                            st.metric(
-                                "Safety Threshold",
-                                f"{row['min_threshold']:,.2f} {row['unit']}",
-                            )
-
-                            st.divider()
-                            if row["effective_stock"] <= row["min_threshold"]:
-                                st.error("⚠️ Status: Low Stock Alert")
-                            else:
-                                st.success("✅ Status: Healthy Stock Level")
-
-                            st.caption(
-                                "💡 *Tap anywhere outside or tap the button again to dismiss.*"
-                            )
-
-                        # Inline Stock Summary beneath popover button
-                        sc1, sc2 = st.columns([1, 1])
-                        with sc1:
-                            st.caption("Available Stock")
-                            st.write(f"**{row['effective_stock']:,.2f}** {row['unit']}")
-                        with sc2:
-                            st.caption("Status")
-                            if row["effective_stock"] <= row["min_threshold"]:
-                                st.error("Low Stock")
-                            else:
-                                st.success("Healthy")
-
-                        st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info("No matching stock items found.")
-    else:
-        st.info("ℹ️ No inventory items found in database.")
