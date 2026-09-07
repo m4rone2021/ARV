@@ -107,6 +107,8 @@ def render_dashboard(user_name, user_role):
     st.title("📊 Executive Dashboard")
 
     is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
+    safe_user_name = (user_name or "").strip()
+
     st.caption("Real-time inventory, task reminders, and scheduled deliveries.")
 
     categories = st.session_state.get(
@@ -156,14 +158,14 @@ def render_dashboard(user_name, user_role):
                     ]
                 )
 
-            # 2. Check database tables
+            # 2. Check for database tables
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'reminders', 'scheduled_deliveries', 'deliveries')"
             )
             tables = [row[0] for row in cursor.fetchall()]
 
-            # 3. Fetch Pending Scheduled Deliveries with full metadata
+            # 3. Fetch Pending/Uncompleted Scheduled Deliveries sorted by Due Date
             delivery_table = next(
                 (t for t in ["scheduled_deliveries", "deliveries"] if t in tables), None
             )
@@ -172,35 +174,21 @@ def render_dashboard(user_name, user_role):
                 cursor.execute(f"PRAGMA table_info({delivery_table})")
                 del_cols = [col[1] for col in cursor.fetchall()]
 
-                # Safely map columns with fallbacks
-                date_col = next((c for c in ["due_date", "delivery_date", "expected_date", "date"] if c in del_cols), "NULL")
-                item_col = next((c for c in ["item_name", "item", "description", "title"] if c in del_cols), "'N/A'")
-                
-                if "quantity" in del_cols:
-                    qty_col = "quantity"
-                elif "qty" in del_cols:
-                    qty_col = "qty"
-                elif "amount" in del_cols:
-                    qty_col = "amount"
-                else:
-                    qty_col = "1"
-
-                supplier_col = next((c for c in ["supplier", "vendor", "source"] if c in del_cols), "'Unspecified'")
-                status_col = next((c for c in ["status", "delivery_status", "state"] if c in del_cols), "'Pending'")
-                requestor_col = next((c for c in ["requestor", "requested_by", "requested_person"] if c in del_cols), "'N/A'")
-                project_col = next((c for c in ["project_name", "project", "site_name"] if c in del_cols), "'Main Site'")
-                created_by_col = next((c for c in ["created_by", "created_user", "author"] if c in del_cols), "'System'")
+                date_col = (
+                    "due_date"
+                    if "due_date" in del_cols
+                    else ("delivery_date" if "delivery_date" in del_cols else "expected_date")
+                )
+                item_col = "item_name" if "item_name" in del_cols else "description"
+                qty_col = "quantity" if "quantity" in del_cols else "qty"
+                supplier_col = (
+                    "supplier" if "supplier" in del_cols else "vendor"
+                )
+                status_col = "status" if "status" in del_cols else "delivery_status"
 
                 query_del = f"""
-                    SELECT id, 
-                           {date_col} AS due_date, 
-                           {item_col} AS item_name, 
-                           {qty_col} AS quantity, 
-                           {supplier_col} AS supplier, 
-                           {requestor_col} AS requestor,
-                           {project_col} AS project_name,
-                           {created_by_col} AS created_by,
-                           {status_col} AS status
+                    SELECT id, {date_col} AS due_date, {item_col} AS item_name, 
+                           {qty_col} AS quantity, {supplier_col} AS supplier, {status_col} AS status
                     FROM {delivery_table}
                     WHERE UPPER({status_col}) NOT IN ('COMPLETED', 'DELIVERED', 'CANCELLED')
                 """
@@ -215,7 +203,11 @@ def render_dashboard(user_name, user_role):
                 cursor.execute(f"PRAGMA table_info({task_table})")
                 rem_cols = [col[1] for col in cursor.fetchall()]
 
-                task_col = next((c for c in ["task_description", "task", "description", "title"] if c in del_cols or c in rem_cols), "'Task'")
+                task_col = (
+                    "task_description"
+                    if "task_description" in rem_cols
+                    else ("task" if "task" in rem_cols else "description")
+                )
                 has_priority = "priority" in rem_cols
                 select_priority = ", priority" if has_priority else ""
 
@@ -232,7 +224,7 @@ def render_dashboard(user_name, user_role):
                         FROM {task_table}
                         WHERE UPPER(status) IN ('OPEN', 'PENDING') AND LOWER(assigned_to) = LOWER(?)
                     """
-                    params_rem = [user_name.strip()]
+                    params_rem = [safe_user_name]
 
                 reminders_df = pd.read_sql_query(query_rem, conn, params=params_rem)
                 if not has_priority or "priority" not in reminders_df.columns:
@@ -274,9 +266,9 @@ def render_dashboard(user_name, user_role):
 
     st.divider()
 
-    # 2. Scheduled Deliveries Log
-    st.subheader("🚚 Scheduled Deliveries Log")
-    if not deliveries_df.empty:
+    # 2. Scheduled Deliveries (Sorted by Due Date)
+    st.subheader("🚚 Pending Scheduled Deliveries")
+    if not deliveries_df.empty and "due_date" in deliveries_df.columns:
         parsed_del_dates = deliveries_df["due_date"].apply(calculate_days_left)
         deliveries_df["days_left_num"] = [d[0] for d in parsed_del_dates]
         deliveries_df["days_left_str"] = [d[1] for d in parsed_del_dates]
@@ -285,44 +277,27 @@ def render_dashboard(user_name, user_role):
             by=["days_left_num", "due_date"], ascending=[True, True]
         )
 
-        st.caption("Ordered chronologically by target arrival date.")
+        st.caption("Ordered from earliest due date to latest.")
 
-        # Format due_date in bold Markdown for display
-        deliveries_df["Due Date"] = deliveries_df["due_date"].apply(lambda d: f"**{d}**")
+        for _, del_row in deliveries_df.iterrows():
+            st.markdown('<div class="mobile-item-card">', unsafe_allow_html=True)
+            
+            d_col1, d_col2 = st.columns([2, 1])
+            with d_col1:
+                st.markdown(f"**📦 {del_row['item_name']}**")
+                st.caption(f"Supplier: **{del_row['supplier']}**")
+            with d_col2:
+                st.write(del_row["days_left_str"])
 
-        # Select and rename columns for the Log layout
-        display_log = deliveries_df[
-            [
-                "Due Date",
-                "days_left_str",
-                "project_name",
-                "item_name",
-                "quantity",
-                "supplier",
-                "requestor",
-                "created_by",
-            ]
-        ].rename(
-            columns={
-                "days_left_str": "Status",
-                "project_name": "Project",
-                "item_name": "Item Description",
-                "quantity": "Qty",
-                "supplier": "Supplier / Vendor",
-                "requestor": "Requestor",
-                "created_by": "Created By (Access)",
-            }
-        )
+            d_sub1, d_sub2 = st.columns([1, 1])
+            with d_sub1:
+                st.caption("Expected Qty")
+                st.write(f"**{del_row['quantity']}**")
+            with d_sub2:
+                st.caption("Due Date")
+                st.write(f"**{del_row['due_date']}**")
 
-        st.dataframe(
-            display_log,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Due Date": st.column_config.TextColumn("Due Date", help="Target delivery arrival date"),
-                "Qty": st.column_config.NumberColumn(format="%.1f"),
-            },
-        )
+            st.markdown('</div>', unsafe_allow_html=True)
     else:
         st.success("✅ No pending scheduled deliveries found.")
 
@@ -330,9 +305,9 @@ def render_dashboard(user_name, user_role):
 
     # 3. Action Items & Reminders
     st.subheader(
-        "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({user_name})"
+        "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({safe_user_name})"
     )
-    if not reminders_df.empty:
+    if not reminders_df.empty and "due_date" in reminders_df.columns:
         parsed_dates = reminders_df["due_date"].apply(calculate_days_left)
         reminders_df["days_left_num"] = [d[0] for d in parsed_dates]
         reminders_df["days_left_str"] = [d[1] for d in parsed_dates]
