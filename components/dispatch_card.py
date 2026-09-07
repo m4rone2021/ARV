@@ -15,8 +15,11 @@ def render_dispatch_card(
     """
     first_row = items_df.iloc[0]
 
-    # Initialize a version counter in session_state for st.data_editor key reset
-    editor_key_version = st.session_state.get(f"editor_ver_{dispatch_id}", 0)
+    # Initialize version key in session state if not present
+    if f"editor_ver_{dispatch_id}" not in st.session_state:
+        st.session_state[f"editor_ver_{dispatch_id}"] = 0
+
+    editor_key_version = st.session_state[f"editor_ver_{dispatch_id}"]
 
     prio_badge = "🔥 HIGH PRIORITY | " if first_row["is_priority"] == 1 else ""
     req_info = (
@@ -162,9 +165,10 @@ def render_dispatch_card(
                                             )
                                         conn_upd.commit()
 
+                                    # Force data_editor reset
                                     st.session_state[
                                         f"editor_ver_{dispatch_id}"
-                                    ] = (editor_key_version + 1)
+                                    ] += 1
                                     backup_db_to_gdrive()
                                     st.toast(
                                         f"Increased {add_item_selected} by {adj_qty}.",
@@ -182,7 +186,7 @@ def render_dispatch_card(
                                     )
                                     st.session_state[
                                         f"editor_ver_{dispatch_id}"
-                                    ] = (editor_key_version + 1)
+                                    ] += 1
                                     st.rerun()
 
                         elif adjustment_type == "Decrease Batch":
@@ -213,9 +217,10 @@ def render_dispatch_card(
                                         )
                                     conn_upd.commit()
 
+                                # Force data_editor reset
                                 st.session_state[
                                     f"editor_ver_{dispatch_id}"
-                                ] = (editor_key_version + 1)
+                                ] += 1
                                 backup_db_to_gdrive()
                                 st.toast(
                                     f"Decreased {add_item_selected} by {adj_qty}.",
@@ -251,7 +256,7 @@ def render_dispatch_card(
                 ["id", "item_name", "quantity", "unit", "notes"]
             ].copy()
 
-            editor_key = f"editor_{dispatch_id}_v{editor_key_version}"
+            editor_key = f"editor_{dispatch_id}_v{st.session_state[f'editor_ver_{dispatch_id}']}"
 
             edited_data = st.data_editor(
                 editable_df,
@@ -266,19 +271,14 @@ def render_dispatch_card(
                     "quantity": st.column_config.NumberColumn(
                         "Quantity (Auto-Synced)",
                         format="%.2f",
-                        disabled=True,  # Lock manual editing of quantity
+                        disabled=True,
                     ),
                     "notes": st.column_config.TextColumn(
                         "Notes / Instructions",
                         disabled=False,
                     ),
                 },
-                disabled=[
-                    "id",
-                    "item_name",
-                    "unit",
-                    "quantity",
-                ],  # Explicitly disable quantity
+                disabled=["id", "item_name", "unit", "quantity"],
                 use_container_width=True,
                 hide_index=True,
                 key=editor_key,
@@ -377,7 +377,6 @@ def render_dispatch_card(
                                 ),
                             )
 
-                            # Handle stock transitions based on status changes
                             if old_status in ["Pending", "In Transit"]:
                                 if new_status == "Completed":
                                     cursor.execute(
@@ -401,9 +400,7 @@ def render_dispatch_card(
 
                         conn.commit()
 
-                    st.session_state[f"editor_ver_{dispatch_id}"] = (
-                        editor_key_version + 1
-                    )
+                    st.session_state[f"editor_ver_{dispatch_id}"] += 1
                     backup_db_to_gdrive()
                     st.toast(
                         "Dispatch batch successfully updated!",
@@ -465,9 +462,7 @@ def render_dispatch_card(
                                 )
                             conn_rem.commit()
 
-                        st.session_state[f"editor_ver_{dispatch_id}"] = (
-                            editor_key_version + 1
-                        )
+                        st.session_state[f"editor_ver_{dispatch_id}"] += 1
                         backup_db_to_gdrive()
                         st.toast(
                             f"Removed {rem_name} from dispatch batch.",
