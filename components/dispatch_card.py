@@ -20,6 +20,7 @@ def ensure_schedule_columns():
                 "project": "TEXT",
                 "is_priority": "INTEGER DEFAULT 0",
                 "driver_name": "TEXT",
+                "created_by": "TEXT",
             }
 
             for col_name, col_type in new_cols.items():
@@ -64,7 +65,7 @@ def get_due_status_label(scheduled_date_str):
 
 
 def add_item_to_dispatch(
-    dispatch_id, item_name, unit, quantity, notes, first_row
+    dispatch_id, item_name, unit, quantity, notes, first_row, user_name=None
 ):
     """Helper function to insert a new item into an existing dispatch batch and reserve stock."""
     try:
@@ -75,6 +76,7 @@ def add_item_to_dispatch(
         status = first_row.get("status") or "Pending"
         is_priority = first_row.get("is_priority", 0)
         driver_name = first_row.get("driver_name") or ""
+        created_by = user_name or first_row.get("created_by") or requested_by
 
         with get_db() as conn:
             cursor = conn.cursor()
@@ -83,8 +85,8 @@ def add_item_to_dispatch(
                 INSERT INTO deliveries (
                     dispatch_id, item_name, unit, expected_quantity,
                     expected_date, destination, requested_by,
-                    project, status, is_priority, driver_name, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    project, status, is_priority, driver_name, notes, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     dispatch_id,
@@ -99,6 +101,7 @@ def add_item_to_dispatch(
                     is_priority,
                     driver_name,
                     notes,
+                    created_by,
                 ),
             )
 
@@ -301,7 +304,7 @@ def render_dispatch_card(
                 SELECT id, dispatch_id, item_name, unit, 
                        expected_quantity AS quantity, notes, status,
                        destination, expected_date AS scheduled_date, requested_by, project,
-                       is_priority, driver_name, created_at
+                       is_priority, driver_name, COALESCE(created_by, '') AS created_by, created_at
                 FROM deliveries 
                 WHERE dispatch_id = ?
             """,
@@ -465,3 +468,64 @@ def render_dispatch_card(
             
             if item_col4.button("🗑️", key=f"del_{dispatch_id}_{row['item_name']}"):
                 remove_item_from_dispatch(dispatch_id, row['item_name'], row['quantity'])
+
+
+def render_schedules(user_name, user_role):
+    """Main rendering function for the delivery schedule dashboard filtered by user access."""
+    st.title("🚚 Stock Out Delivery Schedules")
+    st.caption("Schedule outbound material dispatches, reserve shop stock, and track project deliveries.")
+
+    ensure_schedule_columns()
+
+    try:
+        with get_db() as conn:
+            # Admins view all records; regular users view records created by or requested by themselves
+            if user_role == "Admin":
+                query = """
+                    SELECT id, 
+                           COALESCE(dispatch_id, 'LEGACY-' || id) AS dispatch_id,
+                           item_name, 
+                           COALESCE(requested_by, '') AS requested_by,
+                           COALESCE(destination, '') AS destination,
+                           COALESCE(project, '') AS project,
+                           expected_quantity AS quantity, unit, 
+                           expected_date AS scheduled_date, status, notes,
+                           COALESCE(is_priority, 0) AS is_priority,
+                           COALESCE(driver_name, '') AS driver_name,
+                           COALESCE(created_by, '') AS created_by
+                    FROM deliveries 
+                    ORDER BY is_priority DESC, expected_date ASC
+                """
+                df = pd.read_sql_query(query, conn)
+            else:
+                query = """
+                    SELECT id, 
+                           COALESCE(dispatch_id, 'LEGACY-' || id) AS dispatch_id,
+                           item_name, 
+                           COALESCE(requested_by, '') AS requested_by,
+                           COALESCE(destination, '') AS destination,
+                           COALESCE(project, '') AS project,
+                           expected_quantity AS quantity, unit, 
+                           expected_date AS scheduled_date, status, notes,
+                           COALESCE(is_priority, 0) AS is_priority,
+                           COALESCE(driver_name, '') AS driver_name,
+                           COALESCE(created_by, '') AS created_by
+                    FROM deliveries 
+                    WHERE created_by = ? OR requested_by = ?
+                    ORDER BY is_priority DESC, expected_date ASC
+                """
+                df = pd.read_sql_query(query, conn, params=(user_name, user_name))
+
+        if df.empty:
+            st.info("No dispatch schedules found.")
+            return
+
+        unique_dispatches = df["dispatch_id"].unique()
+        for d_id in unique_dispatches:
+            dispatch_items = df[df["dispatch_id"] == d_id]
+            render_dispatch_card(
+                d_id, dispatch_items, get_due_status_label, add_item_to_dispatch
+            )
+
+    except Exception as e:
+        st.error(f"Error fetching dispatch schedules: {e}")
