@@ -1,7 +1,7 @@
 import sqlite3
 import pandas as pd
 import streamlit as st
-from database import get_db, hash_password, init_db, backup_db_to_gdrive
+from database import backup_db_to_gdrive, get_db, hash_password, init_db
 
 
 def render_user_management(user_name, user_role):
@@ -132,19 +132,15 @@ def render_user_management(user_name, user_role):
         st.subheader("Add Site Account")
 
         with st.form("create_user_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-
-            with col1:
-                new_username = st.text_input("Username*")
-                new_password = st.text_input(
-                    "Initial Password*", type="password"
-                )
-
-            with col2:
-                new_role = st.selectbox("Role / Access Level*", ["User", "Admin"])
-                confirm_password = st.text_input(
-                    "Confirm Password*", type="password"
-                )
+            # Stacked single-column input layout optimized for mobile screens
+            new_username = st.text_input("Username*")
+            new_role = st.selectbox("Role / Access Level*", ["User", "Admin"])
+            new_password = st.text_input(
+                "Initial Password*", type="password"
+            )
+            confirm_password = st.text_input(
+                "Confirm Password*", type="password"
+            )
 
             submit_create = st.form_submit_button(
                 "💾 Create User Account", use_container_width=True
@@ -202,16 +198,12 @@ def render_user_management(user_name, user_role):
 
         if user_list:
             with st.form("reset_password_form", clear_on_submit=True):
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    selected_user = st.selectbox("Select Account", user_list)
-                    reset_pass = st.text_input("New Password*", type="password")
-
-                with col2:
-                    confirm_reset_pass = st.text_input(
-                        "Confirm New Password*", type="password"
-                    )
+                # Single-column vertical stacking to avoid side-by-side cramped inputs
+                selected_user = st.selectbox("Select Account", user_list)
+                reset_pass = st.text_input("New Password*", type="password")
+                confirm_reset_pass = st.text_input(
+                    "Confirm New Password*", type="password"
+                )
 
                 submit_reset = st.form_submit_button(
                     "🔑 Reset Password", use_container_width=True
