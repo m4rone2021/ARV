@@ -9,17 +9,38 @@ from database import backup_db_to_gdrive, get_db
 def render_dispatch_card(
     dispatch_id, items_df, get_due_status_label_fn, add_item_to_dispatch_fn
 ):
-    """Renders a single dispatch card with non-editable quantities that auto-
+    """Renders a single dispatch card where batch item modifications
 
-    sync via the Add/Edit item panel.
+    immediately update the dispatch review table.
     """
-    first_row = items_df.iloc[0]
 
-    # Initialize version key in session state if not present
+    def fetch_latest_items_df(d_id):
+        """Helper to re-fetch the latest items for this dispatch batch directly
+
+        from DB.
+        """
+        with get_db() as conn_fetch:
+            return pd.read_sql_query(
+                """
+                SELECT id, dispatch_id, item_name, unit, 
+                       expected_quantity AS quantity, notes, status,
+                       destination, scheduled_date, requested_by, project,
+                       is_priority, driver_name, created_at
+                FROM deliveries 
+                WHERE dispatch_id = ?
+            """,
+                conn_fetch,
+                params=(d_id,),
+            )
+
+    # Always ensure we are using the freshest state of items
+    current_items_df = items_df.copy()
+
+    # Initialize a version key for st.data_editor to force UI refresh on data change
     if f"editor_ver_{dispatch_id}" not in st.session_state:
         st.session_state[f"editor_ver_{dispatch_id}"] = 0
 
-    editor_key_version = st.session_state[f"editor_ver_{dispatch_id}"]
+    first_row = current_items_df.iloc[0]
 
     prio_badge = "🔥 HIGH PRIORITY | " if first_row["is_priority"] == 1 else ""
     req_info = (
@@ -49,7 +70,9 @@ def render_dispatch_card(
         c2.markdown(
             f"**Project:** {first_row['project'] if first_row['project'] else 'N/A'}"
         )
-        c2.markdown(f"**Total Items in Dispatch:** `{len(items_df)}`")
+        c2.markdown(
+            f"**Total Items in Dispatch:** `{len(current_items_df)}`"
+        )
 
         c3.markdown(f"**Requested Date:** `{requested_date_val}`")
         c3.markdown(f"**Scheduled Date:** `{first_row['scheduled_date']}`")
@@ -91,8 +114,8 @@ def render_dispatch_card(
                     ].iloc[0]
                     avail_qty = float(add_item_info["available_stock"])
 
-                    existing_match = items_df[
-                        items_df["item_name"] == add_item_selected
+                    existing_match = current_items_df[
+                        current_items_df["item_name"] == add_item_selected
                     ]
                     is_existing = not existing_match.empty
 
@@ -101,7 +124,7 @@ def render_dispatch_card(
                             existing_match.iloc[0]["quantity"]
                         )
                         st.info(
-                            f"💡 **{add_item_selected}** is already in this batch (Current quantity: `{current_batch_qty} {add_item_info['unit']}`)."
+                            f"💡 **{add_item_selected}** is currently scheduled for `{current_batch_qty:,.2f} {add_item_info['unit']}` in this dispatch."
                         )
 
                     st.caption(
@@ -120,7 +143,7 @@ def render_dispatch_card(
 
                     with col_add_q:
                         adj_qty = st.number_input(
-                            f"Quantity Difference ({add_item_info['unit']})",
+                            f"Quantity ({add_item_info['unit']})",
                             min_value=0.01,
                             value=1.0,
                             step=1.0,
@@ -165,16 +188,10 @@ def render_dispatch_card(
                                             )
                                         conn_upd.commit()
 
-                                    # Force data_editor reset
-                                    st.session_state[
-                                        f"editor_ver_{dispatch_id}"
-                                    ] += 1
-                                    backup_db_to_gdrive()
                                     st.toast(
-                                        f"Increased {add_item_selected} by {adj_qty}.",
+                                        f"Updated {add_item_selected} total to {new_total:,.2f} {add_item_info['unit']}.",
                                         icon="✅",
                                     )
-                                    st.rerun()
                                 else:
                                     add_item_to_dispatch_fn(
                                         dispatch_id,
@@ -184,10 +201,20 @@ def render_dispatch_card(
                                         add_notes,
                                         first_row,
                                     )
-                                    st.session_state[
-                                        f"editor_ver_{dispatch_id}"
-                                    ] += 1
-                                    st.rerun()
+                                    st.toast(
+                                        f"Added {add_item_selected} ({adj_qty:,.2f} {add_item_info['unit']}) to batch.",
+                                        icon="✅",
+                                    )
+
+                                # Force editor reload and sync state
+                                st.session_state[
+                                    f"editor_ver_{dispatch_id}"
+                                ] += 1
+                                backup_db_to_gdrive()
+                                current_items_df = fetch_latest_items_df(
+                                    dispatch_id
+                                )
+                                st.rerun()
 
                         elif adjustment_type == "Decrease Batch":
                             if not is_existing:
@@ -196,7 +223,7 @@ def render_dispatch_card(
                                 )
                             elif adj_qty >= current_batch_qty:
                                 st.error(
-                                    f"Decrease quantity must be less than current batch quantity ({current_batch_qty}). Use the 'Remove Item' section below to remove it completely."
+                                    f"Decrease amount ({adj_qty}) must be less than current scheduled quantity ({current_batch_qty}). To remove it completely, use 'Remove Item' below."
                                 )
                             else:
                                 item_id_to_upd = existing_match.iloc[0]["id"]
@@ -217,14 +244,18 @@ def render_dispatch_card(
                                         )
                                     conn_upd.commit()
 
-                                # Force data_editor reset
+                                st.toast(
+                                    f"Decreased {add_item_selected} total to {new_total:,.2f} {add_item_info['unit']}.",
+                                    icon="✅",
+                                )
+
+                                # Force editor reload and sync state
                                 st.session_state[
                                     f"editor_ver_{dispatch_id}"
                                 ] += 1
                                 backup_db_to_gdrive()
-                                st.toast(
-                                    f"Decreased {add_item_selected} by {adj_qty}.",
-                                    icon="✅",
+                                current_items_df = fetch_latest_items_df(
+                                    dispatch_id
                                 )
                                 st.rerun()
 
@@ -234,7 +265,7 @@ def render_dispatch_card(
         st.divider()
 
         # -------------------------------------------------------------
-        # 2. MAIN UNIFIED UPDATE FORM (READ-ONLY QUANTITY EDITOR)
+        # 2. MAIN UNIFIED UPDATE FORM (READ-ONLY LIVE QUANTITY DISPLAY)
         # -------------------------------------------------------------
         st.markdown("##### ✏️ Edit & Review Dispatch Details")
 
@@ -249,10 +280,11 @@ def render_dispatch_card(
             )
 
             st.markdown(
-                "###### 📦 Review Batch Items (Notes editable; Quantities are synced automatically)"
+                "###### 📦 Current Batch Items To Be Dispatched (Quantities are auto-synced)"
             )
 
-            editable_df = items_df[
+            # Re-read fresh data right before rendering the table
+            editable_df = current_items_df[
                 ["id", "item_name", "quantity", "unit", "notes"]
             ].copy()
 
@@ -269,7 +301,7 @@ def render_dispatch_card(
                         "Unit", disabled=True
                     ),
                     "quantity": st.column_config.NumberColumn(
-                        "Quantity (Auto-Synced)",
+                        "Total Quantity To Dispatch",
                         format="%.2f",
                         disabled=True,
                     ),
@@ -350,8 +382,8 @@ def render_dispatch_card(
                                 else ""
                             )
 
-                            orig_row = items_df[
-                                items_df["id"] == item_id
+                            orig_row = current_items_df[
+                                current_items_df["id"] == item_id
                             ].iloc[0]
                             curr_qty = float(orig_row["quantity"])
                             item_name = orig_row["item_name"]
@@ -377,6 +409,7 @@ def render_dispatch_card(
                                 ),
                             )
 
+                            # Stock deduction logic for master inventory
                             if old_status in ["Pending", "In Transit"]:
                                 if new_status == "Completed":
                                     cursor.execute(
@@ -420,23 +453,23 @@ def render_dispatch_card(
         with col_del_item:
             item_to_remove = st.selectbox(
                 "Remove Single Item from Batch",
-                options=items_df["id"].tolist(),
-                format_func=lambda x: items_df[items_df["id"] == x][
-                    "item_name"
-                ].values[0],
+                options=current_items_df["id"].tolist(),
+                format_func=lambda x: current_items_df[
+                    current_items_df["id"] == x
+                ]["item_name"].values[0],
                 key=f"select_remove_{dispatch_id}",
             )
             if st.button(
                 "🗑️ Remove Selected Item", key=f"btn_remove_{dispatch_id}"
             ):
-                if len(items_df) <= 1:
+                if len(current_items_df) <= 1:
                     st.error(
                         "Cannot remove the only item in a dispatch batch. Cancel the dispatch status instead."
                     )
                 else:
                     try:
-                        rem_row = items_df[
-                            items_df["id"] == item_to_remove
+                        rem_row = current_items_df[
+                            current_items_df["id"] == item_to_remove
                         ].iloc[0]
                         rem_qty = float(rem_row["quantity"])
                         rem_name = rem_row["item_name"]
