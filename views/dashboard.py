@@ -107,8 +107,6 @@ def render_dashboard(user_name, user_role):
     st.title("📊 Executive Dashboard")
 
     is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
-    safe_user_name = (user_name or "").strip()
-
     st.caption("Real-time inventory, task reminders, and scheduled deliveries.")
 
     categories = st.session_state.get(
@@ -174,17 +172,22 @@ def render_dashboard(user_name, user_role):
                 cursor.execute(f"PRAGMA table_info({delivery_table})")
                 del_cols = [col[1] for col in cursor.fetchall()]
 
-                date_col = (
-                    "due_date"
-                    if "due_date" in del_cols
-                    else ("delivery_date" if "delivery_date" in del_cols else "expected_date")
-                )
-                item_col = "item_name" if "item_name" in del_cols else "description"
-                qty_col = "quantity" if "quantity" in del_cols else "qty"
-                supplier_col = (
-                    "supplier" if "supplier" in del_cols else "vendor"
-                )
-                status_col = "status" if "status" in del_cols else "delivery_status"
+                # Match delivery table dynamic columns safely
+                date_col = next((c for c in ["due_date", "delivery_date", "expected_date", "date"] if c in del_cols), "NULL")
+                item_col = next((c for c in ["item_name", "item", "description", "title"] if c in del_cols), "'N/A'")
+                
+                # Check for quantity column variant or fallback to 1
+                if "quantity" in del_cols:
+                    qty_col = "quantity"
+                elif "qty" in del_cols:
+                    qty_col = "qty"
+                elif "amount" in del_cols:
+                    qty_col = "amount"
+                else:
+                    qty_col = "1"
+
+                supplier_col = next((c for c in ["supplier", "vendor", "source"] if c in del_cols), "'Unspecified'")
+                status_col = next((c for c in ["status", "delivery_status", "state"] if c in del_cols), "'Pending'")
 
                 query_del = f"""
                     SELECT id, {date_col} AS due_date, {item_col} AS item_name, 
@@ -203,11 +206,7 @@ def render_dashboard(user_name, user_role):
                 cursor.execute(f"PRAGMA table_info({task_table})")
                 rem_cols = [col[1] for col in cursor.fetchall()]
 
-                task_col = (
-                    "task_description"
-                    if "task_description" in rem_cols
-                    else ("task" if "task" in rem_cols else "description")
-                )
+                task_col = next((c for c in ["task_description", "task", "description", "title"] if c in del_cols or c in rem_cols), "'Task'")
                 has_priority = "priority" in rem_cols
                 select_priority = ", priority" if has_priority else ""
 
@@ -224,7 +223,7 @@ def render_dashboard(user_name, user_role):
                         FROM {task_table}
                         WHERE UPPER(status) IN ('OPEN', 'PENDING') AND LOWER(assigned_to) = LOWER(?)
                     """
-                    params_rem = [safe_user_name]
+                    params_rem = [user_name.strip()]
 
                 reminders_df = pd.read_sql_query(query_rem, conn, params=params_rem)
                 if not has_priority or "priority" not in reminders_df.columns:
@@ -268,7 +267,7 @@ def render_dashboard(user_name, user_role):
 
     # 2. Scheduled Deliveries (Sorted by Due Date)
     st.subheader("🚚 Pending Scheduled Deliveries")
-    if not deliveries_df.empty and "due_date" in deliveries_df.columns:
+    if not deliveries_df.empty:
         parsed_del_dates = deliveries_df["due_date"].apply(calculate_days_left)
         deliveries_df["days_left_num"] = [d[0] for d in parsed_del_dates]
         deliveries_df["days_left_str"] = [d[1] for d in parsed_del_dates]
@@ -305,9 +304,9 @@ def render_dashboard(user_name, user_role):
 
     # 3. Action Items & Reminders
     st.subheader(
-        "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({safe_user_name})"
+        "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({user_name})"
     )
-    if not reminders_df.empty and "due_date" in reminders_df.columns:
+    if not reminders_df.empty:
         parsed_dates = reminders_df["due_date"].apply(calculate_days_left)
         reminders_df["days_left_num"] = [d[0] for d in parsed_dates]
         reminders_df["days_left_str"] = [d[1] for d in parsed_dates]
