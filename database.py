@@ -1,444 +1,701 @@
+import hashlib
+import io
+import os
 import sqlite3
-from datetime import date, datetime
-import pandas as pd
-import plotly.express as px
-import streamlit as st
-from database import get_db
+import tempfile
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
+
+# Streamlit import for secrets retrieval in Cloud
+try:
+    import streamlit as st
+except ImportError:
+    st = None
+
+# -----------------------------------------------------------------------------
+# EXPORTED MODULE API
+# -----------------------------------------------------------------------------
+__all__ = [
+    "init_db",
+    "login_user",
+    "backup_db_to_gdrive",
+    "upload_file_to_gdrive",
+    "get_drive_service",
+    "create_test_file_in_gdrive",
+    "get_db",
+    "register_item",
+    "add_stock_transaction",
+    "resolve_discrepancy",
+    "update_dispatch_status",
+    "DB_FILE",
+    "UPLOAD_DIR",
+]
+
+# -----------------------------------------------------------------------------
+# DYNAMIC ENVIRONMENT & PATH CONFIGURATION
+# -----------------------------------------------------------------------------
+LOCAL_WIN_DIR = Path(r"D:\Inventory System Files")
+
+if LOCAL_WIN_DIR.exists() or os.name == "nt":
+    DATA_DIR = LOCAL_WIN_DIR
+else:
+    # Fallback directory for Streamlit Cloud / Linux
+    DATA_DIR = Path("./data")
+
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_FILE = DATA_DIR / "inventory.db"
+
+# Local uploads directory configuration
+UPLOAD_DIR = DATA_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def apply_calm_dashboard_theme():
-    """Injects custom CSS optimized for both Desktop and Mobile viewports."""
-    st.markdown(
-        """
-        <style>
-            :root {
-                --primary-accent: #E65100;
-                --secondary-accent: #00897B;
-                --alert-bg: #FFF3E0;
-                --card-bg: #FAFAFA;
-                --border-color: #E0E0E0;
-            }
-
-            .main .block-container {
-                padding-top: 1rem !important;
-                padding-bottom: 2rem !important;
-                padding-left: 0.8rem !important;
-                padding-right: 0.8rem !important;
-            }
-
-            div[data-testid="stMetric"] {
-                background-color: var(--card-bg);
-                border: 1px solid var(--border-color);
-                border-left: 5px solid var(--secondary-accent);
-                border-radius: 8px;
-                padding: 10px 12px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-            }
-
-            div.stButton > button,
-            div.stFormSubmitButton > button,
-            div[data-testid="stPopover"] > button {
-                background-color: var(--primary-accent) !important;
-                color: #FFFFFF !important;
-                border: none !important;
-                border-radius: 6px !important;
-                font-weight: 600 !important;
-                min-height: 44px !important;
-                font-size: 14px !important;
-                transition: all 0.2s ease-in-out;
-            }
-
-            div.stButton > button:hover,
-            div.stFormSubmitButton > button:hover,
-            div[data-testid="stPopover"] > button:hover {
-                background-color: #BF360C !important;
-            }
-
-            .mobile-item-card {
-                background: #FFFFFF;
-                border: 1px solid var(--border-color);
-                border-radius: 8px;
-                padding: 12px;
-                margin-bottom: 10px;
-            }
-
-            @media (max-width: 640px) {
-                div[data-testid="stMetricValue"] {
-                    font-size: 1.3rem !important;
-                }
-                div[data-testid="stMetricLabel"] {
-                    font-size: 0.8rem !important;
-                }
-                .stSelectbox, .stTextInput {
-                    margin-bottom: 8px;
-                }
-            }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+def hash_password(password: str) -> str:
+    """Hashes passwords using SHA-256 for secure database storage."""
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
-def calculate_days_left(due_date_str):
-    """Calculate days remaining from today until the due date safely handling timestamps."""
-    if not due_date_str:
-        return 9999, "No Date"
+@contextmanager
+def get_db():
+    """Context manager for managing SQLite database connections cleanly."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
     try:
-        clean_date = str(due_date_str).strip().split(" ")[0]
-        due_dt = datetime.strptime(clean_date, "%Y-%m-%d").date()
-        today = date.today()
-        days_diff = (due_dt - today).days
-
-        if days_diff < 0:
-            return days_diff, f"🔴 OVERDUE ({abs(days_diff)}d ago)"
-        elif days_diff == 0:
-            return days_diff, "🟠 DUE TODAY"
-        elif days_diff == 1:
-            return days_diff, "🟡 1 day left"
-        else:
-            return days_diff, f"🟢 {days_diff} days left"
-    except Exception:
-        return 9999, "Invalid Date"
+        yield conn
+    finally:
+        conn.close()
 
 
-def render_dashboard(user_name, user_role):
-    apply_calm_dashboard_theme()
+# -----------------------------------------------------------------------------
+# GOOGLE DRIVE INTEGRATION & TESTING
+# -----------------------------------------------------------------------------
+def clean_private_key(key_str: str) -> str:
+    """Sanitizes raw private key strings into valid multi-line PEM format."""
+    if not key_str:
+        return key_str
 
-    st.title("📊 Executive Dashboard")
+    key_str = key_str.strip("'\" ")
+    if "\\n" in key_str:
+        key_str = key_str.replace("\\n", "\n")
 
-    is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
-    safe_user_name = (user_name or "").strip()
+    if (
+        "-----BEGIN PRIVATE KEY-----" in key_str
+        and not key_str.startswith("-----BEGIN PRIVATE KEY-----")
+    ):
+        key_str = (
+            "-----BEGIN PRIVATE KEY-----"
+            + key_str.split("-----BEGIN PRIVATE KEY-----")[-1]
+        )
 
-    st.caption("Real-time inventory, task reminders, and scheduled deliveries.")
+    return key_str.strip()
 
-    categories = st.session_state.get(
-        "categories",
-        [
-            "Fuel & Oils",
-            "Construction Materials",
-            "Steel / Rebar",
-            "Nails & Fasteners",
-            "Cutting & Grinding Consumables",
-            "Welding Supplies & PPE",
-            "General Site Supplies",
-        ],
-    )
 
-    deliveries_df = pd.DataFrame()
-    reminders_df = pd.DataFrame()
+def get_drive_service():
+    """Authenticates and builds Google Drive API service.
 
-    try:
-        with get_db() as conn:
-            # 1. Fetch master inventory items
-            df = pd.read_sql_query(
-                """
-                SELECT id, item_name, category, unit, 
-                       COALESCE(current_stock, 0.0) AS current_stock, 
-                       COALESCE(reserved_stock, 0.0) AS reserved_stock, 
-                       COALESCE(min_threshold, 0.0) AS min_threshold 
-                FROM master_items 
-                ORDER BY category ASC, item_name ASC
-            """,
-                conn,
+    Supports Streamlit Secrets or local token/credentials.
+    """
+    SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+    # 1. STREAMLIT CLOUD: GCP Service Account
+    if st and hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
+        try:
+            from google.oauth2 import service_account
+            from googleapiclient.discovery import build
+
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            if "private_key" in creds_dict:
+                creds_dict["private_key"] = clean_private_key(
+                    creds_dict["private_key"]
+                )
+
+            creds = service_account.Credentials.from_service_account_info(
+                creds_dict, scopes=SCOPES
             )
+            return build("drive", "v3", credentials=creds), "Service Account"
+        except Exception as e:
+            print(f"[Drive Warning] Streamlit Service Account Auth failed: {e}")
 
-            if not df.empty:
-                df["effective_stock"] = df["current_stock"] - df["reserved_stock"]
+    # 2. STREAMLIT CLOUD: User OAuth Refresh Token
+    if st and hasattr(st, "secrets") and "gdrive_token" in st.secrets:
+        try:
+            from google.auth.transport.requests import Request
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+
+            token_info = dict(st.secrets["gdrive_token"])
+            creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            return build("drive", "v3", credentials=creds), "OAuth Token"
+        except Exception as e:
+            print(f"[Drive Warning] Streamlit OAuth Token Auth failed: {e}")
+
+    # 3. LOCAL ENVIRONMENT: token.json / credentials.json
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from googleapiclient.discovery import build
+
+        creds = None
+        if os.path.exists("token.json"):
+            try:
+                creds = Credentials.from_authorized_user_file(
+                    "token.json", SCOPES
+                )
+            except Exception as e:
+                print(f"[Drive Warning] Invalid token.json deleted: {e}")
+                os.remove("token.json")
+
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            elif os.path.exists("credentials.json"):
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    "credentials.json", SCOPES
+                )
+                creds = flow.run_local_server(port=0)
+                with open("token.json", "w") as token:
+                    token.write(creds.to_json())
             else:
-                df = pd.DataFrame(
-                    columns=[
-                        "id",
-                        "item_name",
-                        "category",
-                        "unit",
-                        "current_stock",
-                        "reserved_stock",
-                        "min_threshold",
-                        "effective_stock",
-                    ]
-                )
+                print("[Drive Warning] No valid credentials found.")
+                return None, None
 
-            # 2. Check for database tables
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'reminders', 'scheduled_deliveries', 'deliveries')"
-            )
-            tables = [row[0] for row in cursor.fetchall()]
+        return build("drive", "v3", credentials=creds), "Local Credentials"
+    except Exception as e:
+        print(f"[Drive Auth Error] {e}")
+        return None, None
 
-            # 3. Fetch Pending/Uncompleted Scheduled Deliveries sorted by Due Date
-            delivery_table = next(
-                (t for t in ["scheduled_deliveries", "deliveries"] if t in tables), None
-            )
 
-            if delivery_table:
-                cursor.execute(f"PRAGMA table_info({delivery_table})")
-                del_cols = [col[1] for col in cursor.fetchall()]
+def upload_file_to_gdrive(
+    file_bytes: bytes,
+    file_name: str,
+    mime_type: str = "application/octet-stream",
+) -> str | None:
+    """Uploads raw file bytes to Google Drive and returns the shareable webViewLink."""
+    service, auth_type = get_drive_service()
+    if not service:
+        print("[Drive Upload Error] Could not initialize Drive service.")
+        return None
 
-                date_col = (
-                    "due_date"
-                    if "due_date" in del_cols
-                    else ("delivery_date" if "delivery_date" in del_cols else "expected_date")
-                )
-                item_col = "item_name" if "item_name" in del_cols else "description"
-                qty_col = "quantity" if "quantity" in del_cols else "qty"
-                supplier_col = (
-                    "supplier" if "supplier" in del_cols else "vendor"
-                )
-                status_col = "status" if "status" in del_cols else "delivery_status"
+    try:
+        from googleapiclient.http import MediaIoBaseUpload
 
-                query_del = f"""
-                    SELECT id, {date_col} AS due_date, {item_col} AS item_name, 
-                           {qty_col} AS quantity, {supplier_col} AS supplier, {status_col} AS status
-                    FROM {delivery_table}
-                    WHERE UPPER({status_col}) NOT IN ('COMPLETED', 'DELIVERED', 'CANCELLED')
-                """
-                deliveries_df = pd.read_sql_query(query_del, conn)
-
-            # 4. Fetch Active Tasks
-            task_table = next(
-                (t for t in ["tasks", "reminders"] if t in tables), None
+        folder_id = None
+        if st and hasattr(st, "secrets"):
+            folder_id = st.secrets.get("google_drive", {}).get(
+                "folder_id", None
             )
 
-            if task_table:
-                cursor.execute(f"PRAGMA table_info({task_table})")
-                rem_cols = [col[1] for col in cursor.fetchall()]
+        file_metadata = {"name": file_name}
+        if folder_id:
+            file_metadata["parents"] = [folder_id]
 
-                task_col = (
-                    "task_description"
-                    if "task_description" in rem_cols
-                    else ("task" if "task" in rem_cols else "description")
-                )
-                has_priority = "priority" in rem_cols
-                select_priority = ", priority" if has_priority else ""
+        media = MediaIoBaseUpload(
+            io.BytesIO(file_bytes), mimetype=mime_type, resumable=True
+        )
 
-                if is_admin:
-                    query_rem = f"""
-                        SELECT id, due_date, {task_col} AS task, assigned_to, status {select_priority}
-                        FROM {task_table}
-                        WHERE UPPER(status) IN ('OPEN', 'PENDING')
-                    """
-                    params_rem = []
-                else:
-                    query_rem = f"""
-                        SELECT id, due_date, {task_col} AS task, assigned_to, status {select_priority}
-                        FROM {task_table}
-                        WHERE UPPER(status) IN ('OPEN', 'PENDING') AND LOWER(assigned_to) = LOWER(?)
-                    """
-                    params_rem = [safe_user_name]
+        file = (
+            service.files()
+            .create(
+                body=file_metadata,
+                media_body=media,
+                fields="id, webViewLink",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
 
-                reminders_df = pd.read_sql_query(query_rem, conn, params=params_rem)
-                if not has_priority or "priority" not in reminders_df.columns:
-                    reminders_df["priority"] = "NORMAL"
+        web_link = file.get("webViewLink")
+        print(
+            f"[Drive Upload Success] File '{file_name}' uploaded via {auth_type}. Link: {web_link}"
+        )
+        return web_link
 
     except Exception as e:
-        st.error(f"Error loading dashboard metrics: {e}")
-        return
+        print(f"[Drive Upload Error] Failed to upload '{file_name}': {e}")
+        return None
 
-    # Metrics Calculations
-    total_items = len(df)
-    low_stock_df = (
-        df[df["effective_stock"] <= df["min_threshold"]]
-        if not df.empty
-        else pd.DataFrame()
+
+def create_test_file_in_gdrive():
+    """Creates a sample test document in Google Drive for verification."""
+    file_content = (
+        "PROJECT ALPHA SPECIFICATIONS\n"
+        "----------------------------\n"
+        "Project Alpha budget is $50,000 using vendor ACME Corp.\n"
+        "Key Deliverable: Automated inventory sync module."
     )
-    low_stock_count = len(low_stock_df)
-    total_units_stocked = df["current_stock"].sum() if not df.empty else 0.0
-    pending_deliveries_count = len(deliveries_df)
-
-    # 1. Metric Cards Grid
-    m_col1, m_col2 = st.columns(2)
-    m_col1.metric(label="📦 Unique Items", value=f"{total_items:,}")
-    m_col2.metric(label="📊 Physical Stock", value=f"{total_units_stocked:,.1f}")
-
-    m_col3, m_col4 = st.columns(2)
-    m_col3.metric(
-        label="⚠️ Low Stock Alerts",
-        value=f"{low_stock_count}",
-        delta=f"-{low_stock_count}" if low_stock_count > 0 else "Optimal",
-        delta_color="inverse" if low_stock_count > 0 else "normal",
-    )
-    m_col4.metric(
-        label="🚚 Pending Deliveries",
-        value=f"{pending_deliveries_count}",
-        delta="Action Required" if pending_deliveries_count > 0 else "None",
-        delta_color="off",
+    return upload_file_to_gdrive(
+        file_content.encode("utf-8"), "Project_Alpha_Specs.txt", "text/plain"
     )
 
-    st.divider()
 
-    # 2. Scheduled Deliveries (Sorted by Due Date)
-    st.subheader("🚚 Pending Scheduled Deliveries")
-    if not deliveries_df.empty and "due_date" in deliveries_df.columns:
-        parsed_del_dates = deliveries_df["due_date"].apply(calculate_days_left)
-        deliveries_df["days_left_num"] = [d[0] for d in parsed_del_dates]
-        deliveries_df["days_left_str"] = [d[1] for d in parsed_del_dates]
+def backup_db_to_gdrive():
+    """Uploads/Backs up the local inventory.db to Google Drive using a safe online dump."""
+    if not DB_FILE.exists():
+        print(f"[Backup Warning] Database file not found at {DB_FILE}")
+        return None
 
-        deliveries_df = deliveries_df.sort_values(
-            by=["days_left_num", "due_date"], ascending=[True, True]
+    temp_backup_path = None
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"inventory_backup_{timestamp}.db"
+        temp_dir = tempfile.gettempdir()
+        temp_backup_path = Path(temp_dir) / backup_filename
+
+        src_conn = sqlite3.connect(DB_FILE)
+        bck_conn = sqlite3.connect(temp_backup_path)
+        with bck_conn:
+            src_conn.backup(bck_conn)
+        bck_conn.close()
+        src_conn.close()
+
+        with open(temp_backup_path, "rb") as f:
+            file_bytes = f.read()
+
+        return upload_file_to_gdrive(
+            file_bytes, backup_filename, "application/x-sqlite3"
         )
 
-        st.caption("Ordered from earliest due date to latest.")
+    except Exception as e:
+        print(f"[Backup Error] Failed to backup: {e}")
+        return None
+    finally:
+        if temp_backup_path and temp_backup_path.exists():
+            temp_backup_path.unlink()
 
-        for _, del_row in deliveries_df.iterrows():
-            st.markdown('<div class="mobile-item-card">', unsafe_allow_html=True)
-            
-            d_col1, d_col2 = st.columns([2, 1])
-            with d_col1:
-                st.markdown(f"**📦 {del_row['item_name']}**")
-                st.caption(f"Supplier: **{del_row['supplier']}**")
-            with d_col2:
-                st.write(del_row["days_left_str"])
 
-            d_sub1, d_sub2 = st.columns([1, 1])
-            with d_sub1:
-                st.caption("Expected Qty")
-                st.write(f"**{del_row['quantity']}**")
-            with d_sub2:
-                st.caption("Due Date")
-                st.write(f"**{del_row['due_date']}**")
+# -----------------------------------------------------------------------------
+# TRANSACTION & SYNCHRONIZATION HANDLERS
+# -----------------------------------------------------------------------------
+def register_item(
+    item_name: str,
+    category: str,
+    unit: str,
+    initial_stock: float = 0.0,
+    min_threshold: float = 10.0,
+    remarks: str = "",
+):
+    """Registers a new item in the master catalog and syncs the updated DB to Google Drive."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO master_items (item_name, category, unit, current_stock, min_threshold, remarks)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """,
+            (
+                item_name,
+                category,
+                unit,
+                initial_stock,
+                min_threshold,
+                remarks,
+            ),
+        )
+        conn.commit()
 
-            st.markdown('</div>', unsafe_allow_html=True)
-    else:
-        st.success("✅ No pending scheduled deliveries found.")
+    print(f"[DB Update] Item '{item_name}' added.")
+    backup_db_to_gdrive()
 
-    st.divider()
 
-    # 3. Action Items & Reminders
-    st.subheader(
-        "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({safe_user_name})"
-    )
-    if not reminders_df.empty and "due_date" in reminders_df.columns:
-        parsed_dates = reminders_df["due_date"].apply(calculate_days_left)
-        reminders_df["days_left_num"] = [d[0] for d in parsed_dates]
-        reminders_df["days_left_str"] = [d[1] for d in parsed_dates]
+def add_stock_transaction(
+    trans_type: str,
+    item_name: str,
+    quantity: float,
+    unit: str,
+    handled_by: str,
+    notes: str = "",
+):
+    """Executes stock transactions (IN, OUT, ADJUSTMENT), updates stock levels
 
-        reminders_df = reminders_df.sort_values(
-            by=["days_left_num", "priority"], ascending=[True, False]
+    atomically, logs transaction record, and triggers an automated Drive sync.
+    """
+    trans_type = trans_type.upper()
+    if trans_type not in ["IN", "OUT", "ADJUSTMENT"]:
+        raise ValueError(
+            "Transaction type must be 'IN', 'OUT', or 'ADJUSTMENT'"
         )
 
-        display_reminders = reminders_df[
-            ["due_date", "days_left_str", "task", "assigned_to"]
-        ].rename(
-            columns={
-                "due_date": "Due Date",
-                "days_left_str": "Status / Days Left",
-                "task": "Task Description",
-                "assigned_to": "Assigned",
-            }
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT current_stock FROM master_items WHERE item_name = ?",
+            (item_name,),
         )
-
-        st.dataframe(
-            display_reminders,
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.success("✅ No pending tasks found.")
-
-    st.divider()
-
-    # 4. Critical Low Stock Warnings
-    st.subheader("⚠️ Critical Low Stock Warnings")
-    if not low_stock_df.empty:
-        st.warning(
-            f"Attention: {low_stock_count} item(s) are at or below safety threshold!"
-        )
-
-        low_stock_display = low_stock_df[
-            [
-                "item_name",
-                "category",
-                "current_stock",
-                "reserved_stock",
-                "effective_stock",
-                "unit",
-                "min_threshold",
-            ]
-        ].rename(
-            columns={
-                "item_name": "Item Description",
-                "category": "Category",
-                "current_stock": "Total Stock",
-                "reserved_stock": "Reserved",
-                "effective_stock": "Available",
-                "unit": "Unit",
-                "min_threshold": "Limit",
-            }
-        )
-        st.dataframe(
-            low_stock_display,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Total Stock": st.column_config.NumberColumn(format="%.2f"),
-                "Reserved": st.column_config.NumberColumn(format="%.2f"),
-                "Available": st.column_config.NumberColumn(format="%.2f"),
-                "Limit": st.column_config.NumberColumn(format="%.2f"),
-            },
-        )
-    else:
-        st.success("✅ All stock items are currently above safety thresholds.")
-
-    st.divider()
-
-    # 5. Mobile Horizontal Bar Chart for Breakdown
-    st.subheader("📦 Stock Breakdown per Item")
-    if not df.empty:
-        chart_cat_filter = st.selectbox(
-            "Filter Chart Category",
-            ["All Categories"] + categories,
-            key="item_chart_cat_filter",
-        )
-
-        chart_source = df.copy()
-        if chart_cat_filter != "All Categories":
-            chart_source = chart_source[chart_source["category"] == chart_cat_filter]
-
-        if not chart_source.empty:
-            chart_source["Available Stock"] = chart_source["effective_stock"]
-
-            chart_df = pd.melt(
-                chart_source,
-                id_vars=["item_name", "category"],
-                value_vars=["Available Stock", "reserved_stock"],
-                var_name="Stock Type",
-                value_name="Quantity",
-            )
-            chart_df["Stock Type"] = chart_df["Stock Type"].replace(
-                {"reserved_stock": "Reserved Stock"}
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError(
+                f"Item '{item_name}' does not exist in master catalog."
             )
 
-            fig = px.bar(
-                chart_df,
-                y="item_name",
-                x="Quantity",
-                color="Stock Type",
-                orientation="h",
-                hover_data=["category"],
-                labels={"item_name": "Item", "Quantity": "Units"},
-                text_auto=".1f",
-                color_discrete_map={
-                    "Available Stock": "#00897B",
-                    "Reserved Stock": "#E65100",
-                },
+        current_stock = row["current_stock"]
+
+        if trans_type == "IN":
+            new_stock = current_stock + quantity
+        elif trans_type == "OUT":
+            if current_stock < quantity:
+                raise ValueError(
+                    f"Insufficient stock for '{item_name}'. Current: {current_stock}, Requested: {quantity}"
+                )
+            new_stock = current_stock - quantity
+        elif trans_type == "ADJUSTMENT":
+            new_stock = quantity
+
+        cursor.execute(
+            "UPDATE master_items SET current_stock = ? WHERE item_name = ?",
+            (new_stock, item_name),
+        )
+
+        cursor.execute(
+            """
+            INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """,
+            (trans_type, item_name, quantity, unit, handled_by, notes),
+        )
+
+        conn.commit()
+
+    print(
+        f"[DB Update] Transaction '{trans_type}' recorded for {item_name}. New stock: {new_stock}"
+    )
+    backup_db_to_gdrive()
+
+
+def resolve_discrepancy(
+    discrepancy_id: int,
+    resolved_by: str,
+    resolution_notes: str,
+    approve_adjustment: bool = True,
+):
+    """Resolves pending stock discrepancies and adjusts real inventory if approved."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT * FROM discrepancies WHERE id = ?", (discrepancy_id,)
+        )
+        disc = cursor.fetchone()
+
+        if not disc:
+            raise ValueError(
+                f"Discrepancy record {discrepancy_id} not found."
             )
 
-            fig.update_layout(
-                barmode="stack",
-                height=max(300, len(chart_source) * 40),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="#F9F9F9",
-                font=dict(family="sans-serif", size=11, color="#333333"),
-                margin=dict(l=10, r=10, t=10, b=10),
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1,
-                    title_text="",
+        status = "RESOLVED_ADJUSTED" if approve_adjustment else "REJECTED"
+
+        cursor.execute(
+            """
+            UPDATE discrepancies 
+            SET status = ?, resolved_by = ?, resolved_timestamp = CURRENT_TIMESTAMP, resolution_notes = ?
+            WHERE id = ?
+        """,
+            (status, resolved_by, resolution_notes, discrepancy_id),
+        )
+
+        if approve_adjustment:
+            cursor.execute(
+                "UPDATE master_items SET current_stock = ? WHERE item_name = ?",
+                (disc["physical_count"], disc["item_name"]),
+            )
+            cursor.execute(
+                """
+                INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
+                VALUES ('ADJUSTMENT', ?, ?, ?, ?, ?)
+            """,
+                (
+                    disc["item_name"],
+                    disc["physical_count"],
+                    disc["unit"],
+                    resolved_by,
+                    f"Discrepancy Audit #{discrepancy_id}: {resolution_notes}",
                 ),
             )
-            fig.update_xaxes(showgrid=True, gridcolor="#E5E5E5")
 
-            st.plotly_chart(fig, use_container_width=True, config={"responsive": True})
+        conn.commit()
+
+    print(f"[DB Update] Discrepancy #{discrepancy_id} marked as {status}.")
+    backup_db_to_gdrive()
+
+
+def update_dispatch_status(
+    dispatch_id: str, new_status: str, handled_by: str = "System"
+):
+    """Updates the status of a dispatch batch in 'deliveries' and adjusts stock."""
+    new_status_clean = new_status.capitalize()
+    if new_status_clean not in [
+        "Completed",
+        "Cancelled",
+        "Pending",
+        "In Transit",
+    ]:
+        raise ValueError("Invalid status provided.")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT item_name, expected_quantity, unit, status FROM deliveries WHERE dispatch_id = ?",
+            (dispatch_id,),
+        )
+        items = cursor.fetchall()
+
+        if not items:
+            raise ValueError(
+                f"No dispatch records found for ID '{dispatch_id}'."
+            )
+
+        current_status = items[0]["status"]
+
+        if current_status in ["Completed", "Cancelled"]:
+            raise ValueError(
+                f"Dispatch '{dispatch_id}' is already {current_status}."
+            )
+
+        for item in items:
+            item_name = item["item_name"]
+            qty = item["expected_quantity"]
+            unit = item["unit"]
+
+            if new_status_clean == "Cancelled":
+                cursor.execute(
+                    """
+                    UPDATE master_items
+                    SET reserved_stock = MAX(0.0, COALESCE(reserved_stock, 0.0) - ?)
+                    WHERE item_name = ?
+                    """,
+                    (qty, item_name),
+                )
+
+            elif new_status_clean == "Completed":
+                cursor.execute(
+                    """
+                    UPDATE master_items
+                    SET current_stock = MAX(0.0, COALESCE(current_stock, 0.0) - ?),
+                        reserved_stock = MAX(0.0, COALESCE(reserved_stock, 0.0) - ?)
+                    WHERE item_name = ?
+                    """,
+                    (qty, qty, item_name),
+                )
+
+                cursor.execute(
+                    """
+                    INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
+                    VALUES ('OUT', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item_name,
+                        qty,
+                        unit,
+                        handled_by,
+                        f"Completed Dispatch #{dispatch_id}",
+                    ),
+                )
+
+        cursor.execute(
+            "UPDATE deliveries SET status = ? WHERE dispatch_id = ?",
+            (new_status_clean, dispatch_id),
+        )
+
+        conn.commit()
+
+    print(
+        f"[DB Update] Dispatch '{dispatch_id}' changed from {current_status} to {new_status_clean}."
+    )
+    backup_db_to_gdrive()
+
+
+# -----------------------------------------------------------------------------
+# DATABASE INITIALIZATION & SCHEMA
+# -----------------------------------------------------------------------------
+def init_db():
+    """Initializes database tables, default admin credentials, and handles schema updates."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Users Table
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL
+            )
+        """
+        )
+
+        admin_hashed = hash_password("admin123")
+        cursor.execute("SELECT id FROM users WHERE username = 'admin'")
+        existing_admin = cursor.fetchone()
+
+        if existing_admin:
+            cursor.execute(
+                """
+                UPDATE users 
+                SET password = ?, role = 'Admin' 
+                WHERE username = 'admin'
+            """,
+                (admin_hashed,),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO users (username, password, role) 
+                VALUES ('admin', ?, 'Admin')
+            """,
+                (admin_hashed,),
+            )
+
+        # Master Items Catalog
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS master_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_name TEXT UNIQUE NOT NULL,
+                category TEXT NOT NULL,
+                unit TEXT NOT NULL,
+                current_stock REAL DEFAULT 0.0,
+                reserved_stock REAL DEFAULT 0.0,
+                min_threshold REAL DEFAULT 10.0,
+                remarks TEXT
+            )
+        """
+        )
+
+        cursor.execute("PRAGMA table_info(master_items)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if "reserved_stock" not in columns:
+            cursor.execute(
+                "ALTER TABLE master_items ADD COLUMN reserved_stock REAL DEFAULT 0.0"
+            )
+
+        # Transactions Log
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                type TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                unit TEXT NOT NULL,
+                handled_by TEXT NOT NULL,
+                notes TEXT
+            )
+        """
+        )
+
+        # Physical Inventory Discrepancies
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS discrepancies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                item_name TEXT NOT NULL,
+                system_stock REAL NOT NULL,
+                physical_count REAL NOT NULL,
+                variance REAL NOT NULL,
+                unit TEXT NOT NULL,
+                submitted_by TEXT NOT NULL,
+                submission_notes TEXT,
+                status TEXT DEFAULT 'PENDING',
+                resolved_by TEXT,
+                resolved_timestamp DATETIME,
+                resolution_notes TEXT
+            )
+        """
+        )
+
+        # Deliveries Table
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dispatch_id TEXT,
+                item_name TEXT NOT NULL,
+                expected_quantity REAL NOT NULL,
+                unit TEXT NOT NULL,
+                supplier TEXT,
+                expected_date DATE,
+                scheduled_date DATE,
+                status TEXT DEFAULT 'Pending',
+                destination TEXT,
+                requested_by TEXT,
+                project TEXT,
+                is_priority INTEGER DEFAULT 0,
+                driver_name TEXT,
+                notes TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+        )
+
+        # Migration logic with safe SQLite ALTER TABLE types
+        cursor.execute("PRAGMA table_info(deliveries)")
+        delivery_cols = [col[1] for col in cursor.fetchall()]
+
+        missing_columns = {
+            "dispatch_id": "TEXT",
+            "expected_quantity": "REAL DEFAULT 0.0",
+            "scheduled_date": "DATE",
+            "destination": "TEXT",
+            "requested_by": "TEXT",
+            "project": "TEXT",
+            "is_priority": "INTEGER DEFAULT 0",
+            "driver_name": "TEXT",
+            "created_at": "DATETIME",
+        }
+
+        for col_name, col_type in missing_columns.items():
+            if col_name not in delivery_cols:
+                cursor.execute(
+                    f"ALTER TABLE deliveries ADD COLUMN {col_name} {col_type}"
+                )
+                if col_name == "created_at":
+                    cursor.execute(
+                        "UPDATE deliveries SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
+                    )
+
+        # Backwards compatibility fix: map legacy 'qty' values to 'expected_quantity'
+        if "qty" in delivery_cols and "expected_quantity" in delivery_cols:
+            cursor.execute(
+                "UPDATE deliveries SET expected_quantity = qty WHERE (expected_quantity IS NULL OR expected_quantity = 0.0) AND qty IS NOT NULL"
+            )
+
+        # Tasks Table
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_description TEXT NOT NULL,
+                assigned_to TEXT NOT NULL,
+                due_date DATE,
+                status TEXT DEFAULT 'OPEN',
+                created_by TEXT NOT NULL
+            )
+        """
+        )
+
+        conn.commit()
+
+
+def login_user(username, password):
+    """Authenticates a user against the database using hashed passwords."""
+    hashed = hash_password(password)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT username, role FROM users WHERE username = ? AND password = ?",
+            (username, hashed),
+        )
+        return cursor.fetchone()
+
+
+if __name__ == "__main__":
+    init_db()
+    print(f"Database initialized successfully at: {DB_FILE}")
