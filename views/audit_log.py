@@ -75,27 +75,25 @@ def upload_csv_to_gdrive(csv_bytes: bytes, filename: str = "audit_log.csv") -> s
 
 
 def render_audit_log(user_name: str, user_role: str):
-    """Renders the transaction history and audit log page with filters, downloads, and Drive sync."""
-    st.title("📜 Audit Log & Transaction History")
-    st.caption("Track all stock-in, stock-out, attached receipts, and Google Drive links.")
+    """Renders the transaction history and audit log page with filters, downloads, and Drive sync (Mobile-Optimized)."""
+    st.title("📜 Audit Log")
+    st.caption("Track stock movement, receipts, and Drive links.")
 
-    # Filter controls
-    col1, col2, col3 = st.columns([2, 2, 1])
-
-    with col1:
-        type_filter = st.selectbox(
-            "Filter by Type", ["All", "STOCK IN", "STOCK OUT"]
-        )
-
-    with col2:
+    # MOBILE-OPTIMIZED: Collapsible or vertically stacked filters to save vertical screen space
+    with st.expander("🔍 Search & Filter Controls", expanded=True):
         search_query = st.text_input(
-            "Search Item or Handler", placeholder="Type to search..."
+            "Search Item, Handler, or Notes", 
+            placeholder="Type keyword...",
+            key="mobile_search"
+        )
+        
+        type_filter = st.selectbox(
+            "Filter by Type", 
+            ["All", "STOCK IN", "STOCK OUT"],
+            key="mobile_type"
         )
 
-    with col3:
-        st.write("")  # Spacing
-        st.write("")
-        st.button("🔄 Refresh", use_container_width=True)
+        st.button("🔄 Refresh Data", use_container_width=True)
 
     try:
         with get_db() as conn:
@@ -125,10 +123,11 @@ def render_audit_log(user_name: str, user_role: str):
             in_count = len(df[df["type"].isin(["STOCK IN", "IN"])])
             out_count = len(df[df["type"].isin(["STOCK OUT", "OUT"])])
 
+            # MOBILE-OPTIMIZED: Compact Metric Layout
             m1, m2, m3 = st.columns(3)
-            m1.metric("Total Transactions Logged", len(df))
-            m2.metric("Stock In Logs", in_count)
-            m3.metric("Stock Out Logs", out_count)
+            m1.metric("Total", len(df))
+            m2.metric("In", in_count)
+            m3.metric("Out", out_count)
 
             # Display formatting
             df_display = df.rename(
@@ -145,12 +144,22 @@ def render_audit_log(user_name: str, user_role: str):
             )
 
             st.divider()
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            
+            # MOBILE-OPTIMIZED: Datatable with horizontal scrolling enabled
+            st.dataframe(
+                df_display, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "Trans ID": st.column_config.NumberColumn(format="%d"),
+                    "Quantity": st.column_config.NumberColumn(format="%.2f"),
+                }
+            )
 
             # -------------------------------------------------------------
             # ATTACHMENT & GOOGLE DRIVE LINK EXPANDER
             # -------------------------------------------------------------
-            with st.expander("📎 Transaction Attachments & Drive Files"):
+            with st.expander("📎 Attachments & Drive Links"):
                 has_media = False
                 for _, row in df.iterrows():
                     notes = str(row["notes"])
@@ -160,19 +169,21 @@ def render_audit_log(user_name: str, user_role: str):
                     if drive_url:
                         has_media = True
                         st.markdown(
-                            f"🔗 **Log #{row['id']} ({row['type']} - {row['item_name']})**: "
-                            f"[View Delivery Receipt / Document on Google Drive]({drive_url})"
+                            f"🔗 **Log #{row['id']} ({row['type']} - {row['item_name']})**  \n"
+                            f"[Open Delivery Receipt / Document]({drive_url})"
                         )
+                        st.divider()
                     elif local_file:
                         has_media = True
                         file_path = Path(UPLOAD_DIR) / local_file
                         if file_path.exists():
                             with open(file_path, "rb") as f:
                                 st.download_button(
-                                    label=f"📄 Download Local File: {local_file} (Log #{row['id']})",
+                                    label=f"📄 Download #{row['id']}: {local_file}",
                                     data=f.read(),
                                     file_name=local_file,
                                     key=f"audit_dl_{row['id']}",
+                                    use_container_width=True,
                                 )
                         else:
                             st.caption(
@@ -180,31 +191,28 @@ def render_audit_log(user_name: str, user_role: str):
                             )
 
                 if not has_media:
-                    st.info("No external file links or attachments found in the filtered records.")
+                    st.info("No external file links or attachments found in records.")
 
             # -------------------------------------------------------------
-            # EXPORT & GOOGLE DRIVE SYNC
+            # EXPORT & GOOGLE DRIVE SYNC (Stacked for Mobile Thumb Taps)
             # -------------------------------------------------------------
             st.divider()
             csv_data = df_display.to_csv(index=False).encode("utf-8")
-            btn_col1, btn_col2 = st.columns(2)
 
-            with btn_col1:
-                st.download_button(
-                    label="📥 Export Audit Log to CSV",
-                    data=csv_data,
-                    file_name="audit_log.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
+            st.download_button(
+                label="📥 Export Audit Log (CSV)",
+                data=csv_data,
+                file_name="audit_log.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
-            with btn_col2:
-                if st.button("☁️ Sync Audit Log to Google Drive", use_container_width=True):
-                    with st.spinner("Uploading to Google Drive..."):
-                        file_link = upload_csv_to_gdrive(csv_data, filename="audit_log_backup.csv")
-                        if file_link:
-                            st.success("Successfully uploaded to Google Drive!")
-                            st.markdown(f"🔗 [Open Uploaded File in Drive]({file_link})")
+            if st.button("☁️ Sync Audit Log to Google Drive", use_container_width=True):
+                with st.spinner("Uploading to Google Drive..."):
+                    file_link = upload_csv_to_gdrive(csv_data, filename="audit_log_backup.csv")
+                    if file_link:
+                        st.success("Successfully uploaded to Google Drive!")
+                        st.markdown(f"🔗 [Open Uploaded File in Drive]({file_link})")
 
         else:
             st.info("No transaction logs found matching the selected filters.")
