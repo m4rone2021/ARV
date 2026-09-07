@@ -159,6 +159,7 @@ def render_app():
     # NAVIGATION OPTIONS WITH ICONS
     menu_map = {
         "📊 Dashboard": "Dashboard",
+        "📋 Physical Inventory": "Physical Inventory",
         "📦 Manage Master Items": "Manage Master Items",
         "📥 Stock IN": "Stock IN",
         "📤 Stock OUT": "Stock OUT",
@@ -221,6 +222,8 @@ def render_app():
         elif choice == "Manage Master Items":
             from views.manage_items import render_manage_items
             render_manage_items(st.session_state.user_name, st.session_state.user_role)
+        elif choice == "Physical Inventory":
+            from views.physical_inventory import render_physical_inventory)
         elif choice == "Stock IN":
             from views.stock_in import render_stock_in
             render_stock_in(st.session_state.user_name, st.session_state.user_role)
