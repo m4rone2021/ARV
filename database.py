@@ -29,6 +29,7 @@ __all__ = [
     "resolve_discrepancy",
     "update_dispatch_status",
     "add_scheduled_delivery",
+    "save_dispatch_batch",
     "DB_FILE",
     "UPLOAD_DIR",
 ]
@@ -403,6 +404,62 @@ def add_scheduled_delivery(
         conn.commit()
 
     print(f"[DB Update] Scheduled delivery created by '{created_by}' for project '{project}'.")
+    backup_db_to_gdrive()
+
+
+def save_dispatch_batch(dispatch_header: dict, delivery_cart: list):
+    """Saves a batch of scheduled delivery items into the deliveries table
+
+    and updates the corresponding reserved stock in master_items.
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        for item in delivery_cart:
+            # 1. Insert delivery record into database
+            cursor.execute(
+                """
+                INSERT INTO deliveries (
+                    dispatch_id, item_name, unit, expected_quantity,
+                    expected_date, scheduled_date, destination, requested_by,
+                    created_by, project, status, is_priority, driver_name, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?)
+                """,
+                (
+                    dispatch_header["dispatch_id"],
+                    item["item_name"],
+                    item.get("unit", "pcs"),
+                    item["quantity"],
+                    dispatch_header["scheduled_date"],
+                    dispatch_header["scheduled_date"],
+                    dispatch_header["destination"],
+                    dispatch_header["requested_by"],
+                    dispatch_header.get("created_by", "System"),
+                    dispatch_header["project"],
+                    dispatch_header.get("is_priority", 0),
+                    dispatch_header.get("driver_name", ""),
+                    item.get("notes", ""),
+                ),
+            )
+
+            # 2. Increment reserved_stock in master inventory
+            cursor.execute(
+                """
+                UPDATE master_items 
+                SET reserved_stock = COALESCE(reserved_stock, 0.0) + ? 
+                WHERE item_name = ?
+                """,
+                (
+                    item["quantity"],
+                    item["item_name"],
+                ),
+            )
+
+        conn.commit()
+
+    print(
+        f"[DB Update] Dispatch batch '{dispatch_header['dispatch_id']}' saved with {len(delivery_cart)} items."
+    )
     backup_db_to_gdrive()
 
 
