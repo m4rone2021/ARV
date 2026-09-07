@@ -115,6 +115,63 @@ def add_item_to_dispatch(
         st.error(f"Error adding item to dispatch: {e}")
 
 
+def update_dispatch_item_quantity(dispatch_id, item_name, action, change_qty, notes):
+    """Updates batch item quantity, keeps reserved_stock synced, and refreshes UI."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT expected_quantity FROM deliveries WHERE dispatch_id = ? AND item_name = ?",
+                (dispatch_id, item_name),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                st.error("Selected item not found in dispatch batch.")
+                return
+
+            current_qty = float(row[0])
+
+            if action == "Increase Batch":
+                qty_delta = change_qty
+                new_qty = current_qty + change_qty
+            else:
+                qty_delta = -min(current_qty, change_qty)
+                new_qty = max(0.0, current_qty - change_qty)
+
+            if new_qty == 0:
+                cursor.execute(
+                    "DELETE FROM deliveries WHERE dispatch_id = ? AND item_name = ?",
+                    (dispatch_id, item_name),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE deliveries 
+                    SET expected_quantity = ?, notes = COALESCE(?, notes)
+                    WHERE dispatch_id = ? AND item_name = ?
+                    """,
+                    (new_qty, notes.strip() if notes else None, dispatch_id, item_name),
+                )
+
+            # Adjust reserved stock in master inventory
+            cursor.execute(
+                """
+                UPDATE master_items
+                SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) + ?)
+                WHERE item_name = ?
+                """,
+                (qty_delta, item_name),
+            )
+            conn.commit()
+
+        backup_db_to_gdrive()
+        st.toast(f"Updated {item_name} batch quantity to {new_qty:.2f}", icon="✅")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Error modifying dispatch item: {e}")
+
+
 def render_schedules(user_name, user_role):
     st.title("🚚 Stock Out Delivery Schedules")
     st.caption(
@@ -161,9 +218,7 @@ def render_schedules(user_name, user_role):
                 df = pd.read_sql_query(query, conn)
 
             if not df.empty:
-                col_status, col_prio, col_search = st.columns(
-                    [1, 1, 2]
-                )
+                col_status, col_prio, col_search = st.columns([1, 1, 2])
                 with col_status:
                     status_filter = st.selectbox(
                         "Filter Status",
@@ -259,6 +314,44 @@ def render_schedules(user_name, user_role):
                                 get_due_status_label,
                                 add_item_to_dispatch,
                             )
+                            
+                            # Integrated Batch Items Editor & Direct Review Table
+                            with st.expander(f"✏️ Edit & Review Batch Details ({disp_id})", expanded=False):
+                                items_in_batch = group["item_name"].unique().tolist()
+                                if items_in_batch:
+                                    st.markdown("##### ➕ Add Item or Modify Batch Quantities")
+                                    mod_col1, mod_col2 = st.columns(2)
+                                    with mod_col1:
+                                        target_item = st.selectbox(
+                                            "Select Batch Item", options=items_in_batch, key=f"sel_{disp_id}"
+                                        )
+                                        action_type = st.radio(
+                                            "Action", ["Increase Batch", "Decrease Batch"], key=f"act_{disp_id}"
+                                        )
+                                    with mod_col2:
+                                        change_q = st.number_input(
+                                            "Quantity Change", min_value=0.01, value=1.0, step=1.0, key=f"qty_{disp_id}"
+                                        )
+                                        mod_notes = st.text_input(
+                                            "Update Notes", placeholder="Optional batch notes...", key=f"notes_{disp_id}"
+                                        )
+
+                                    if st.button("💾 Apply Changes to Batch Item", key=f"btn_{disp_id}", type="primary"):
+                                        update_dispatch_item_quantity(
+                                            disp_id, target_item, action_type, change_q, mod_notes
+                                        )
+
+                                st.markdown("##### 📦 Current Batch Items To Be Dispatched")
+                                review_df = group[["item_name", "quantity", "unit", "notes"]].rename(
+                                    columns={
+                                        "item_name": "Item Name",
+                                        "quantity": "Total Quantity To Dispatch",
+                                        "unit": "Unit",
+                                        "notes": "Notes / Instructions",
+                                    }
+                                )
+                                st.dataframe(review_df, use_container_width=True)
+
                     else:
                         st.info("No active dispatches found.")
 
