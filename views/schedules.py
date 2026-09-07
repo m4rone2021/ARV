@@ -41,21 +41,42 @@ def render_schedules(user_name, user_role):
         st.subheader("Dispatches Overview")
         try:
             with get_db() as conn:
-                query = """
-                    SELECT id, 
-                           COALESCE(dispatch_id, 'LEGACY-' || id) AS dispatch_id,
-                           item_name, 
-                           COALESCE(requested_by, '') AS requested_by,
-                           COALESCE(destination, supplier, '') AS destination,
-                           COALESCE(project, '') AS project,
-                           expected_quantity AS quantity, unit, 
-                           expected_date AS scheduled_date, status, notes,
-                           COALESCE(is_priority, 0) AS is_priority,
-                           COALESCE(driver_name, '') AS driver_name
-                    FROM deliveries 
-                    ORDER BY is_priority DESC, expected_date ASC
-                """
-                df = pd.read_sql_query(query, conn)
+                # Admins view all records; regular users view records created by or requested by themselves
+                if user_role == "Admin":
+                    query = """
+                        SELECT id, 
+                               COALESCE(dispatch_id, 'LEGACY-' || id) AS dispatch_id,
+                               item_name, 
+                               COALESCE(requested_by, '') AS requested_by,
+                               COALESCE(destination, supplier, '') AS destination,
+                               COALESCE(project, '') AS project,
+                               expected_quantity AS quantity, unit, 
+                               expected_date AS scheduled_date, status, notes,
+                               COALESCE(is_priority, 0) AS is_priority,
+                               COALESCE(driver_name, '') AS driver_name,
+                               COALESCE(created_by, '') AS created_by
+                        FROM deliveries 
+                        ORDER BY is_priority DESC, expected_date ASC
+                    """
+                    df = pd.read_sql_query(query, conn)
+                else:
+                    query = """
+                        SELECT id, 
+                               COALESCE(dispatch_id, 'LEGACY-' || id) AS dispatch_id,
+                               item_name, 
+                               COALESCE(requested_by, '') AS requested_by,
+                               COALESCE(destination, supplier, '') AS destination,
+                               COALESCE(project, '') AS project,
+                               expected_quantity AS quantity, unit, 
+                               expected_date AS scheduled_date, status, notes,
+                               COALESCE(is_priority, 0) AS is_priority,
+                               COALESCE(driver_name, '') AS driver_name,
+                               COALESCE(created_by, '') AS created_by
+                        FROM deliveries 
+                        WHERE created_by = ? OR requested_by = ?
+                        ORDER BY is_priority DESC, expected_date ASC
+                    """
+                    df = pd.read_sql_query(query, conn, params=(user_name, user_name))
 
             if not df.empty:
                 # Optimized controls layout: collapse filters into an expander for clean mobile viewing
