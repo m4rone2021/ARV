@@ -407,16 +407,24 @@ def add_scheduled_delivery(
     backup_db_to_gdrive()
 
 
-def save_dispatch_batch(dispatch_header: dict, delivery_cart: list):
+def save_dispatch_batch(
+    dispatch_header: dict, delivery_cart: list, created_by: str = None
+):
     """Saves a batch of scheduled delivery items into the deliveries table
 
     and updates the corresponding reserved stock in master_items.
     """
+    creator = (
+        created_by
+        or dispatch_header.get("created_by")
+        or (st.session_state.get("username") if st else None)
+        or "System"
+    )
+
     with get_db() as conn:
         cursor = conn.cursor()
 
         for item in delivery_cart:
-            # 1. Insert delivery record into database
             cursor.execute(
                 """
                 INSERT INTO deliveries (
@@ -434,7 +442,7 @@ def save_dispatch_batch(dispatch_header: dict, delivery_cart: list):
                     dispatch_header["scheduled_date"],
                     dispatch_header["destination"],
                     dispatch_header["requested_by"],
-                    dispatch_header.get("created_by", "System"),
+                    creator,
                     dispatch_header["project"],
                     dispatch_header.get("is_priority", 0),
                     dispatch_header.get("driver_name", ""),
@@ -442,7 +450,6 @@ def save_dispatch_batch(dispatch_header: dict, delivery_cart: list):
                 ),
             )
 
-            # 2. Increment reserved_stock in master inventory
             cursor.execute(
                 """
                 UPDATE master_items 
@@ -458,7 +465,7 @@ def save_dispatch_batch(dispatch_header: dict, delivery_cart: list):
         conn.commit()
 
     print(
-        f"[DB Update] Dispatch batch '{dispatch_header['dispatch_id']}' saved with {len(delivery_cart)} items."
+        f"[DB Update] Dispatch batch '{dispatch_header['dispatch_id']}' saved by '{creator}' with {len(delivery_cart)} items."
     )
     backup_db_to_gdrive()
 
