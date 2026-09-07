@@ -27,6 +27,7 @@ __all__ = [
     "register_item",
     "add_stock_transaction",
     "resolve_discrepancy",
+    "update_dispatch_status",
     "DB_FILE",
     "UPLOAD_DIR",
 ]
@@ -430,6 +431,83 @@ def resolve_discrepancy(
         conn.commit()
 
     print(f"[DB Update] Discrepancy #{discrepancy_id} marked as {status}.")
+    backup_db_to_gdrive()
+
+
+def update_dispatch_status(dispatch_id: str, new_status: str, handled_by: str = "System"):
+    """
+    Updates the status of a dispatch batch in 'deliveries' and adjusts 'master_items' stock:
+    - Cancelled: Decrements reserved_stock by expected_quantity.
+    - Completed: Decrements both current_stock and reserved_stock by expected_quantity,
+                 and logs an 'OUT' transaction.
+    """
+    new_status_clean = new_status.capitalize()
+    if new_status_clean not in ["Completed", "Cancelled", "Pending", "In Transit"]:
+        raise ValueError("Invalid status provided.")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Fetch dispatch items
+        cursor.execute(
+            "SELECT item_name, expected_quantity, unit, status FROM deliveries WHERE dispatch_id = ?",
+            (dispatch_id,)
+        )
+        items = cursor.fetchall()
+
+        if not items:
+            raise ValueError(f"No dispatch records found for ID '{dispatch_id}'.")
+
+        current_status = items[0]["status"]
+
+        # Prevent re-processing finalized orders
+        if current_status in ["Completed", "Cancelled"]:
+            raise ValueError(f"Dispatch '{dispatch_id}' is already {current_status}.")
+
+        # Adjust inventory if transitioning to Cancelled or Completed
+        for item in items:
+            item_name = item["item_name"]
+            qty = item["expected_quantity"]
+            unit = item["unit"]
+
+            if new_status_clean == "Cancelled":
+                cursor.execute(
+                    """
+                    UPDATE master_items
+                    SET reserved_stock = MAX(0.0, COALESCE(reserved_stock, 0.0) - ?)
+                    WHERE item_name = ?
+                    """,
+                    (qty, item_name)
+                )
+
+            elif new_status_clean == "Completed":
+                cursor.execute(
+                    """
+                    UPDATE master_items
+                    SET current_stock = MAX(0.0, COALESCE(current_stock, 0.0) - ?),
+                        reserved_stock = MAX(0.0, COALESCE(reserved_stock, 0.0) - ?)
+                    WHERE item_name = ?
+                    """,
+                    (qty, qty, item_name)
+                )
+
+                cursor.execute(
+                    """
+                    INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
+                    VALUES ('OUT', ?, ?, ?, ?, ?)
+                    """,
+                    (item_name, qty, unit, handled_by, f"Completed Dispatch #{dispatch_id}")
+                )
+
+        # Update status in deliveries table
+        cursor.execute(
+            "UPDATE deliveries SET status = ? WHERE dispatch_id = ?",
+            (new_status_clean, dispatch_id)
+        )
+
+        conn.commit()
+
+    print(f"[DB Update] Dispatch '{dispatch_id}' changed from {current_status} to {new_status_clean}.")
     backup_db_to_gdrive()
 
 
