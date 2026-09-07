@@ -107,6 +107,8 @@ def render_dashboard(user_name, user_role):
     st.title("📊 Executive Dashboard")
 
     is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
+    safe_user_name = (user_name or "").strip()
+
     st.caption("Real-time inventory, task reminders, and scheduled deliveries.")
 
     categories = st.session_state.get(
@@ -222,7 +224,7 @@ def render_dashboard(user_name, user_role):
                         FROM {task_table}
                         WHERE UPPER(status) IN ('OPEN', 'PENDING') AND LOWER(assigned_to) = LOWER(?)
                     """
-                    params_rem = [user_name.strip()]
+                    params_rem = [safe_user_name]
 
                 reminders_df = pd.read_sql_query(query_rem, conn, params=params_rem)
                 if not has_priority or "priority" not in reminders_df.columns:
@@ -266,20 +268,17 @@ def render_dashboard(user_name, user_role):
 
     # 2. Scheduled Deliveries (Sorted by Due Date)
     st.subheader("🚚 Pending Scheduled Deliveries")
-    if not deliveries_df.empty:
-        # Calculate days left & arrange chronologically
+    if not deliveries_df.empty and "due_date" in deliveries_df.columns:
         parsed_del_dates = deliveries_df["due_date"].apply(calculate_days_left)
         deliveries_df["days_left_num"] = [d[0] for d in parsed_del_dates]
         deliveries_df["days_left_str"] = [d[1] for d in parsed_del_dates]
 
-        # Order by closest due date first
         deliveries_df = deliveries_df.sort_values(
             by=["days_left_num", "due_date"], ascending=[True, True]
         )
 
         st.caption("Ordered from earliest due date to latest.")
 
-        # Mobile card layout display
         for _, del_row in deliveries_df.iterrows():
             st.markdown('<div class="mobile-item-card">', unsafe_allow_html=True)
             
@@ -306,9 +305,9 @@ def render_dashboard(user_name, user_role):
 
     # 3. Action Items & Reminders
     st.subheader(
-        "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({user_name})"
+        "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({safe_user_name})"
     )
-    if not reminders_df.empty:
+    if not reminders_df.empty and "due_date" in reminders_df.columns:
         parsed_dates = reminders_df["due_date"].apply(calculate_days_left)
         reminders_df["days_left_num"] = [d[0] for d in parsed_dates]
         reminders_df["days_left_str"] = [d[1] for d in parsed_dates]
