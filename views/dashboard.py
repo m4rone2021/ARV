@@ -392,7 +392,7 @@ def render_dashboard(user_name, user_role):
 
     st.divider()
 
-    # 5. Category Overview (Clean Filterable Accordions)
+    # 5. Category Overview (Clean Filterable Accordions with Frozen/Pinned Column)
     st.subheader("📋 Current Stock Levels Overview")
 
     if not df.empty:
@@ -429,24 +429,23 @@ def render_dashboard(user_name, user_role):
                 cat_items = filtered_df[filtered_df["category"] == cat]
 
                 with st.expander(f"📁 {cat} ({len(cat_items)} items)", expanded=True):
+                    # Reordered columns: Effective Available, Reserved, Total Stock, Unit, Safety Limit (ID removed)
                     display_df = cat_items[
                         [
-                            "id",
                             "item_name",
-                            "unit",
-                            "current_stock",
-                            "reserved_stock",
                             "effective_stock",
+                            "reserved_stock",
+                            "current_stock",
+                            "unit",
                             "min_threshold",
                         ]
                     ].rename(
                         columns={
-                            "id": "ID",
                             "item_name": "Item Description",
-                            "unit": "Unit",
-                            "current_stock": "Physical Stock",
-                            "reserved_stock": "Reserved Stock",
                             "effective_stock": "Effective Available",
+                            "reserved_stock": "Reserved Stock",
+                            "current_stock": "Total Stock",
+                            "unit": "Unit",
                             "min_threshold": "Safety Limit",
                         }
                     )
@@ -455,16 +454,30 @@ def render_dashboard(user_name, user_role):
                         display_df,
                         use_container_width=True,
                         hide_index=True,
+                        # Pinning Item Description so it remains frozen on horizontal scroll
+                        column_order=[
+                            "Item Description",
+                            "Effective Available",
+                            "Reserved Stock",
+                            "Total Stock",
+                            "Unit",
+                            "Safety Limit",
+                        ],
                         column_config={
-                            "Physical Stock": st.column_config.NumberColumn(
-                                "Physical Stock", format="%.2f"
-                            ),
-                            "Reserved Stock": st.column_config.NumberColumn(
-                                "Reserved Stock", format="%.2f"
+                            "Item Description": st.column_config.TextColumn(
+                                "Item Description",
+                                pinned=True,  # Freezes Item Description when scrolling right
                             ),
                             "Effective Available": st.column_config.NumberColumn(
                                 "Effective Available", format="%.2f"
                             ),
+                            "Reserved Stock": st.column_config.NumberColumn(
+                                "Reserved Stock", format="%.2f"
+                            ),
+                            "Total Stock": st.column_config.NumberColumn(
+                                "Total Stock", format="%.2f"
+                            ),
+                            "Unit": st.column_config.TextColumn("Unit"),
                             "Safety Limit": st.column_config.NumberColumn(
                                 "Safety Limit", format="%.2f"
                             ),
