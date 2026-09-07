@@ -1,381 +1,469 @@
 import sqlite3
-import hashlib
-import os
-import tempfile
-import json
-from datetime import datetime
+from datetime import date, datetime
+import pandas as pd
+import plotly.express as px
 import streamlit as st
+from database import get_db
 
-# Google Drive API Dependencies
-try:
-    from google.oauth2.credentials import Credentials
-    from google.oauth2 import service_account
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from google.auth.transport.requests import Request
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaFileUpload
-    GDRIVE_AVAILABLE = True
-except ImportError:
-    GDRIVE_AVAILABLE = False
 
-DB_NAME = "inventory.db"
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+def apply_calm_dashboard_theme():
+    """Injects custom CSS optimized for both Desktop and Mobile viewports."""
+    st.markdown(
+        """
+        <style>
+            :root {
+                --primary-accent: #E65100;
+                --secondary-accent: #00897B;
+                --alert-bg: #FFF3E0;
+                --card-bg: #FAFAFA;
+                --border-color: #E0E0E0;
+            }
 
-# ==========================================
-# 1. DATABASE INITIALIZATION & MIGRATIONS
-# ==========================================
+            .main .block-container {
+                padding-top: 1rem !important;
+                padding-bottom: 2rem !important;
+                padding-left: 0.8rem !important;
+                padding-right: 0.8rem !important;
+            }
 
-def get_connection():
-    """Returns a connection to the SQLite database with row factory set."""
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    return conn
+            div[data-testid="stMetric"] {
+                background-color: var(--card-bg);
+                border: 1px solid var(--border-color);
+                border-left: 5px solid var(--secondary-accent);
+                border-radius: 8px;
+                padding: 10px 12px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+            }
 
-def hash_password(password: str) -> str:
-    """Hashes a plaintext password using SHA-256."""
-    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+            div.stButton > button,
+            div.stFormSubmitButton > button,
+            div[data-testid="stPopover"] > button {
+                background-color: var(--primary-accent) !important;
+                color: #FFFFFF !important;
+                border: none !important;
+                border-radius: 6px !important;
+                font-weight: 600 !important;
+                min-height: 44px !important;
+                font-size: 14px !important;
+                transition: all 0.2s ease-in-out;
+            }
 
-def init_db():
-    """Initializes tables, executes structural migrations, and seeds the default admin user."""
-    conn = get_connection()
-    cursor = conn.cursor()
+            div.stButton > button:hover,
+            div.stFormSubmitButton > button:hover,
+            div[data-testid="stPopover"] > button:hover {
+                background-color: #BF360C !important;
+            }
 
-    # Create Tables
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'User'
-        )
-    """)
+            .mobile-item-card {
+                background: #FFFFFF;
+                border: 1px solid var(--border-color);
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 10px;
+            }
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS master_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sku TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL,
-            category TEXT,
-            unit TEXT DEFAULT 'pcs',
-            current_stock REAL DEFAULT 0.0,
-            reserved_stock REAL DEFAULT 0.0,
-            min_threshold REAL DEFAULT 0.0
-        )
-    """)
+            @media (max-width: 640px) {
+                div[data-testid="stMetricValue"] {
+                    font-size: 1.3rem !important;
+                }
+                div[data-testid="stMetricLabel"] {
+                    font-size: 0.8rem !important;
+                }
+                .stSelectbox, .stTextInput {
+                    margin-bottom: 8px;
+                }
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_id INTEGER NOT NULL,
-            type TEXT CHECK(type IN ('IN', 'OUT', 'ADJUSTMENT')) NOT NULL,
-            quantity REAL NOT NULL,
-            remarks TEXT,
-            user_id INTEGER,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (item_id) REFERENCES master_items(id),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-    """)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS discrepancies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_id INTEGER NOT NULL,
-            system_qty REAL NOT NULL,
-            physical_qty REAL NOT NULL,
-            difference REAL NOT NULL,
-            status TEXT CHECK(status IN ('PENDING', 'RESOLVED_ADJUSTED', 'REJECTED')) DEFAULT 'PENDING',
-            reported_by INTEGER,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (item_id) REFERENCES master_items(id),
-            FOREIGN KEY (reported_by) REFERENCES users(id)
-        )
-    """)
+def calculate_days_left(due_date_str):
+    """Calculate days remaining from today until the due date safely handling timestamps."""
+    if not due_date_str:
+        return 9999, "No Date"
+    try:
+        clean_date = str(due_date_str).strip().split(" ")[0]
+        due_dt = datetime.strptime(clean_date, "%Y-%m-%d").date()
+        today = date.today()
+        days_diff = (due_dt - today).days
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS deliveries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id TEXT NOT NULL,
-            item_id INTEGER NOT NULL,
-            destination TEXT NOT NULL,
-            driver TEXT,
-            priority TEXT DEFAULT 'Normal',
-            status TEXT CHECK(status IN ('Pending', 'In Transit', 'Completed', 'Cancelled')) DEFAULT 'Pending',
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (item_id) REFERENCES master_items(id)
-        )
-    """)
+        if days_diff < 0:
+            return days_diff, f"🔴 OVERDUE ({abs(days_diff)}d ago)"
+        elif days_diff == 0:
+            return days_diff, "🟠 DUE TODAY"
+        elif days_diff == 1:
+            return days_diff, "🟡 1 day left"
+        else:
+            return days_diff, f"🟢 {days_diff} days left"
+    except Exception:
+        return 9999, "Invalid Date"
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            assigned_to TEXT,
-            due_date TEXT,
-            status TEXT CHECK(status IN ('Open', 'Closed')) DEFAULT 'Open',
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
 
-    conn.commit()
+def render_dashboard(user_name, user_role):
+    apply_calm_dashboard_theme()
 
-    # Delivery Table Migration Check (handles legacy 'qty' column transition)
-    cursor.execute("PRAGMA table_info(deliveries)")
-    columns = [col['name'] for col in cursor.fetchall()]
-    if 'qty' not in columns:
-        try:
-            cursor.execute("ALTER TABLE deliveries ADD COLUMN qty REAL DEFAULT 0.0")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass
+    st.title("📊 Executive Dashboard")
 
-    # Default Admin Seed
-    admin_pass_hash = hash_password("admin123")
-    cursor.execute("""
-        INSERT INTO users (username, password, role) 
-        VALUES ('admin', ?, 'Admin')
-        ON CONFLICT(username) DO UPDATE SET password=excluded.password
-    """, (admin_pass_hash,))
+    is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
+    st.caption("Real-time inventory, task reminders, and scheduled deliveries.")
 
-    conn.commit()
-    conn.close()
+    categories = st.session_state.get(
+        "categories",
+        [
+            "Fuel & Oils",
+            "Construction Materials",
+            "Steel / Rebar",
+            "Nails & Fasteners",
+            "Cutting & Grinding Consumables",
+            "Welding Supplies & PPE",
+            "General Site Supplies",
+        ],
+    )
 
-# ==========================================
-# 2. GOOGLE DRIVE INTEGRATION
-# ==========================================
-
-def get_gdrive_service():
-    """Multi-tiered auth strategy checking Secrets, OAuth tokens, and local credential files."""
-    if not GDRIVE_AVAILABLE:
-        return None
-
-    creds = None
-    
-    # Tier 1: Streamlit Service Account Secrets
-    if "gcp_service_account" in st.secrets:
-        try:
-            service_account_info = dict(st.secrets["gcp_service_account"])
-            creds = service_account.Credentials.from_service_account_info(
-                service_account_info, scopes=SCOPES
-            )
-            return build('drive', 'v3', credentials=creds)
-        except Exception as e:
-            st.error(f"Service Account Auth failed: {e}")
-
-    # Tier 2: Streamlit OAuth Token Secrets
-    if "gdrive_token" in st.secrets:
-        try:
-            token_info = dict(st.secrets["gdrive_token"])
-            creds = Credentials.from_authorized_user_info(token_info, SCOPES)
-        except Exception as e:
-            st.error(f"Secrets OAuth token parse failed: {e}")
-
-    # Tier 3: Local OAuth Files
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception:
-                creds = None
-
-        if not creds:
-            if os.path.exists('token.json'):
-                creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-            elif os.path.exists('credentials.json'):
-                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-                creds = flow.run_local_server(port=0)
-                with open('token.json', 'w') as token:
-                    token.write(creds.to_json())
-
-    if creds and creds.valid:
-        return build('drive', 'v3', credentials=creds)
-    
-    return None
-
-def backup_db_to_gdrive():
-    """Creates a hot backup via sqlite3 online backup API and syncs to Google Drive."""
-    service = get_gdrive_service()
-    if not service:
-        return False, "Google Drive integration unavailable or unauthenticated."
+    deliveries_df = pd.DataFrame()
+    reminders_df = pd.DataFrame()
 
     try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_filename = f"inventory_backup_{timestamp}.db"
-        
-        temp_dir = tempfile.gettempdir()
-        temp_backup_path = os.path.join(temp_dir, backup_filename)
+        with get_db() as conn:
+            # 1. Fetch master inventory items
+            df = pd.read_sql_query(
+                """
+                SELECT id, item_name, category, unit, 
+                       COALESCE(current_stock, 0.0) AS current_stock, 
+                       COALESCE(reserved_stock, 0.0) AS reserved_stock, 
+                       COALESCE(min_threshold, 0.0) AS min_threshold 
+                FROM master_items 
+                ORDER BY category ASC, item_name ASC
+            """,
+                conn,
+            )
 
-        # SQLite Online Backup API for thread safety
-        src_conn = get_connection()
-        dst_conn = sqlite3.connect(temp_backup_path)
-        with dst_conn:
-            src_conn.backup(dst_conn)
-        dst_conn.close()
-        src_conn.close()
+            if not df.empty:
+                df["effective_stock"] = df["current_stock"] - df["reserved_stock"]
+            else:
+                df = pd.DataFrame(
+                    columns=[
+                        "id",
+                        "item_name",
+                        "category",
+                        "unit",
+                        "current_stock",
+                        "reserved_stock",
+                        "min_threshold",
+                        "effective_stock",
+                    ]
+                )
 
-        file_metadata = {
-            'name': backup_filename,
-            'mimeType': 'application/x-sqlite3'
-        }
-        
-        media = MediaFileUpload(temp_backup_path, mimetype='application/x-sqlite3', resumable=True)
-        uploaded_file = service.files().create(
-            body=file_metadata, 
-            media_body=media, 
-            fields='id'
-        ).execute()
+            # 2. Check database tables
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'reminders', 'scheduled_deliveries', 'deliveries')"
+            )
+            tables = [row[0] for row in cursor.fetchall()]
 
-        if os.path.exists(temp_backup_path):
-            os.remove(temp_backup_path)
+            # 3. Fetch Pending Scheduled Deliveries with full metadata
+            delivery_table = next(
+                (t for t in ["scheduled_deliveries", "deliveries"] if t in tables), None
+            )
 
-        return True, uploaded_file.get('id')
+            if delivery_table:
+                cursor.execute(f"PRAGMA table_info({delivery_table})")
+                del_cols = [col[1] for col in cursor.fetchall()]
+
+                # Safely map columns with fallbacks
+                date_col = next((c for c in ["due_date", "delivery_date", "expected_date", "date"] if c in del_cols), "NULL")
+                item_col = next((c for c in ["item_name", "item", "description", "title"] if c in del_cols), "'N/A'")
+                
+                if "quantity" in del_cols:
+                    qty_col = "quantity"
+                elif "qty" in del_cols:
+                    qty_col = "qty"
+                elif "amount" in del_cols:
+                    qty_col = "amount"
+                else:
+                    qty_col = "1"
+
+                supplier_col = next((c for c in ["supplier", "vendor", "source"] if c in del_cols), "'Unspecified'")
+                status_col = next((c for c in ["status", "delivery_status", "state"] if c in del_cols), "'Pending'")
+                requestor_col = next((c for c in ["requestor", "requested_by", "requested_person"] if c in del_cols), "'N/A'")
+                project_col = next((c for c in ["project_name", "project", "site_name"] if c in del_cols), "'Main Site'")
+                created_by_col = next((c for c in ["created_by", "created_user", "author"] if c in del_cols), "'System'")
+
+                query_del = f"""
+                    SELECT id, 
+                           {date_col} AS due_date, 
+                           {item_col} AS item_name, 
+                           {qty_col} AS quantity, 
+                           {supplier_col} AS supplier, 
+                           {requestor_col} AS requestor,
+                           {project_col} AS project_name,
+                           {created_by_col} AS created_by,
+                           {status_col} AS status
+                    FROM {delivery_table}
+                    WHERE UPPER({status_col}) NOT IN ('COMPLETED', 'DELIVERED', 'CANCELLED')
+                """
+                deliveries_df = pd.read_sql_query(query_del, conn)
+
+            # 4. Fetch Active Tasks
+            task_table = next(
+                (t for t in ["tasks", "reminders"] if t in tables), None
+            )
+
+            if task_table:
+                cursor.execute(f"PRAGMA table_info({task_table})")
+                rem_cols = [col[1] for col in cursor.fetchall()]
+
+                task_col = next((c for c in ["task_description", "task", "description", "title"] if c in del_cols or c in rem_cols), "'Task'")
+                has_priority = "priority" in rem_cols
+                select_priority = ", priority" if has_priority else ""
+
+                if is_admin:
+                    query_rem = f"""
+                        SELECT id, due_date, {task_col} AS task, assigned_to, status {select_priority}
+                        FROM {task_table}
+                        WHERE UPPER(status) IN ('OPEN', 'PENDING')
+                    """
+                    params_rem = []
+                else:
+                    query_rem = f"""
+                        SELECT id, due_date, {task_col} AS task, assigned_to, status {select_priority}
+                        FROM {task_table}
+                        WHERE UPPER(status) IN ('OPEN', 'PENDING') AND LOWER(assigned_to) = LOWER(?)
+                    """
+                    params_rem = [user_name.strip()]
+
+                reminders_df = pd.read_sql_query(query_rem, conn, params=params_rem)
+                if not has_priority or "priority" not in reminders_df.columns:
+                    reminders_df["priority"] = "NORMAL"
 
     except Exception as e:
-        return False, str(e)
+        st.error(f"Error loading dashboard metrics: {e}")
+        return
 
-# ==========================================
-# 3. CORE BUSINESS LOGIC FUNCTIONS
-# ==========================================
+    # Metrics Calculations
+    total_items = len(df)
+    low_stock_df = (
+        df[df["effective_stock"] <= df["min_threshold"]]
+        if not df.empty
+        else pd.DataFrame()
+    )
+    low_stock_count = len(low_stock_df)
+    total_units_stocked = df["current_stock"].sum() if not df.empty else 0.0
+    pending_deliveries_count = len(deliveries_df)
 
-def login_user(username, password):
-    """Authenticates credentials against SHA-256 hashed password."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    hashed = hash_password(password)
-    cursor.execute("SELECT id, username, role FROM users WHERE username = ? AND password = ?", (username, hashed))
-    user = cursor.fetchone()
-    conn.close()
-    return user
+    # 1. Metric Cards Grid
+    m_col1, m_col2 = st.columns(2)
+    m_col1.metric(label="📦 Unique Items", value=f"{total_items:,}")
+    m_col2.metric(label="📊 Physical Stock", value=f"{total_units_stocked:,.1f}")
 
-def register_item(sku, name, category, unit, min_threshold):
-    """Registers a new master item and triggers auto-sync."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            INSERT INTO master_items (sku, name, category, unit, min_threshold)
-            VALUES (?, ?, ?, ?, ?)
-        """, (sku, name, category, unit, min_threshold))
-        conn.commit()
-        success = True
-    except sqlite3.IntegrityError:
-        success = False
-    finally:
-        conn.close()
+    m_col3, m_col4 = st.columns(2)
+    m_col3.metric(
+        label="⚠️ Low Stock Alerts",
+        value=f"{low_stock_count}",
+        delta=f"-{low_stock_count}" if low_stock_count > 0 else "Optimal",
+        delta_color="inverse" if low_stock_count > 0 else "normal",
+    )
+    m_col4.metric(
+        label="🚚 Pending Deliveries",
+        value=f"{pending_deliveries_count}",
+        delta="Action Required" if pending_deliveries_count > 0 else "None",
+        delta_color="off",
+    )
 
-    if success:
-        backup_db_to_gdrive()
-    return success
+    st.divider()
 
-def add_stock_transaction(item_id, trans_type, quantity, remarks, user_id):
-    """Processes atomic stock alterations and appends to immutable ledger."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            INSERT INTO transactions (item_id, type, quantity, remarks, user_id)
-            VALUES (?, ?, ?, ?, ?)
-        """, (item_id, trans_type, quantity, remarks, user_id))
+    # 2. Scheduled Deliveries Log
+    st.subheader("🚚 Scheduled Deliveries Log")
+    if not deliveries_df.empty:
+        parsed_del_dates = deliveries_df["due_date"].apply(calculate_days_left)
+        deliveries_df["days_left_num"] = [d[0] for d in parsed_del_dates]
+        deliveries_df["days_left_str"] = [d[1] for d in parsed_del_dates]
 
-        if trans_type == 'IN':
-            cursor.execute("UPDATE master_items SET current_stock = current_stock + ? WHERE id = ?", (quantity, item_id))
-        elif trans_type == 'OUT':
-            cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE id = ?", (quantity, item_id))
-        elif trans_type == 'ADJUSTMENT':
-            cursor.execute("UPDATE master_items SET current_stock = ? WHERE id = ?", (quantity, item_id))
+        deliveries_df = deliveries_df.sort_values(
+            by=["days_left_num", "due_date"], ascending=[True, True]
+        )
 
-        conn.commit()
-        success = True
-    except Exception:
-        conn.rollback()
-        success = False
-    finally:
-        conn.close()
+        st.caption("Ordered chronologically by target arrival date.")
 
-    if success:
-        backup_db_to_gdrive()
-    return success
+        # Format due_date in bold Markdown for display
+        deliveries_df["Due Date"] = deliveries_df["due_date"].apply(lambda d: f"**{d}**")
 
-def update_dispatch_status(delivery_id, new_status):
-    """Manages delivery status lifecycle and recalculates stock reservations."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT item_id, qty, status FROM deliveries WHERE id = ?", (delivery_id,))
-        delivery = cursor.fetchone()
+        # Select and rename columns for the Log layout
+        display_log = deliveries_df[
+            [
+                "Due Date",
+                "days_left_str",
+                "project_name",
+                "item_name",
+                "quantity",
+                "supplier",
+                "requestor",
+                "created_by",
+            ]
+        ].rename(
+            columns={
+                "days_left_str": "Status",
+                "project_name": "Project",
+                "item_name": "Item Description",
+                "quantity": "Qty",
+                "supplier": "Supplier / Vendor",
+                "requestor": "Requestor",
+                "created_by": "Created By (Access)",
+            }
+        )
 
-        if not delivery:
-            conn.close()
-            return False
+        st.dataframe(
+            display_log,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Due Date": st.column_config.TextColumn("Due Date", help="Target delivery arrival date"),
+                "Qty": st.column_config.NumberColumn(format="%.1f"),
+            },
+        )
+    else:
+        st.success("✅ No pending scheduled deliveries found.")
 
-        item_id = delivery['item_id']
-        qty = delivery['qty']
-        old_status = delivery['status']
+    st.divider()
 
-        if old_status != new_status:
-            # Transitions leaving 'Pending' status release reservations
-            if old_status == 'Pending':
-                cursor.execute("UPDATE master_items SET reserved_stock = MAX(0, reserved_stock - ?) WHERE id = ?", (qty, item_id))
+    # 3. Action Items & Reminders
+    st.subheader(
+        "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({user_name})"
+    )
+    if not reminders_df.empty:
+        parsed_dates = reminders_df["due_date"].apply(calculate_days_left)
+        reminders_df["days_left_num"] = [d[0] for d in parsed_dates]
+        reminders_df["days_left_str"] = [d[1] for d in parsed_dates]
 
-            # Transitions entering 'Pending' reserve stock
-            if new_status == 'Pending':
-                cursor.execute("UPDATE master_items SET reserved_stock = reserved_stock + ? WHERE id = ?", (qty, item_id))
+        reminders_df = reminders_df.sort_values(
+            by=["days_left_num", "priority"], ascending=[True, False]
+        )
 
-            # Completing a delivery consumes stock
-            if new_status == 'Completed' and old_status != 'Completed':
-                cursor.execute("UPDATE master_items SET current_stock = current_stock - ? WHERE id = ?", (qty, item_id))
+        display_reminders = reminders_df[
+            ["due_date", "days_left_str", "task", "assigned_to"]
+        ].rename(
+            columns={
+                "due_date": "Due Date",
+                "days_left_str": "Status / Days Left",
+                "task": "Task Description",
+                "assigned_to": "Assigned",
+            }
+        )
 
-            cursor.execute("UPDATE deliveries SET status = ? WHERE id = ?", (new_status, delivery_id))
-            conn.commit()
+        st.dataframe(
+            display_reminders,
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.success("✅ No pending tasks found.")
 
-        success = True
-    except Exception:
-        conn.rollback()
-        success = False
-    finally:
-        conn.close()
+    st.divider()
 
-    if success:
-        backup_db_to_gdrive()
-    return success
+    # 4. Critical Low Stock Warnings
+    st.subheader("⚠️ Critical Low Stock Warnings")
+    if not low_stock_df.empty:
+        st.warning(
+            f"Attention: {low_stock_count} item(s) are at or below safety threshold!"
+        )
 
-def resolve_discrepancy(discrepancy_id, action, user_id):
-    """Resolves inventory audit discrepancies with option to override physical counts."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT item_id, physical_qty, status FROM discrepancies WHERE id = ?", (discrepancy_id,))
-        disc = cursor.fetchone()
+        low_stock_display = low_stock_df[
+            [
+                "item_name",
+                "category",
+                "current_stock",
+                "reserved_stock",
+                "effective_stock",
+                "unit",
+                "min_threshold",
+            ]
+        ].rename(
+            columns={
+                "item_name": "Item Description",
+                "category": "Category",
+                "current_stock": "Total Stock",
+                "reserved_stock": "Reserved",
+                "effective_stock": "Available",
+                "unit": "Unit",
+                "min_threshold": "Limit",
+            }
+        )
+        st.dataframe(
+            low_stock_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Total Stock": st.column_config.NumberColumn(format="%.2f"),
+                "Reserved": st.column_config.NumberColumn(format="%.2f"),
+                "Available": st.column_config.NumberColumn(format="%.2f"),
+                "Limit": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+    else:
+        st.success("✅ All stock items are currently above safety thresholds.")
 
-        if not disc or disc['status'] != 'PENDING':
-            conn.close()
-            return False
+    st.divider()
 
-        item_id = disc['item_id']
-        physical_qty = disc['physical_qty']
+    # 5. Mobile Horizontal Bar Chart for Breakdown
+    st.subheader("📦 Stock Breakdown per Item")
+    if not df.empty:
+        chart_cat_filter = st.selectbox(
+            "Filter Chart Category",
+            ["All Categories"] + categories,
+            key="item_chart_cat_filter",
+        )
 
-        if action == 'APPROVE':
-            cursor.execute("UPDATE master_items SET current_stock = ? WHERE id = ?", (physical_qty, item_id))
-            cursor.execute("UPDATE discrepancies SET status = 'RESOLVED_ADJUSTED' WHERE id = ?", (discrepancy_id,))
-            cursor.execute("""
-                INSERT INTO transactions (item_id, type, quantity, remarks, user_id)
-                VALUES (?, 'ADJUSTMENT', ?, 'Resolved via Audit Approval', ?)
-            """, (item_id, physical_qty, user_id))
-        elif action == 'REJECT':
-            cursor.execute("UPDATE discrepancies SET status = 'REJECTED' WHERE id = ?", (discrepancy_id,))
+        chart_source = df.copy()
+        if chart_cat_filter != "All Categories":
+            chart_source = chart_source[chart_source["category"] == chart_cat_filter]
 
-        conn.commit()
-        success = True
-    except Exception:
-        conn.rollback()
-        success = False
-    finally:
-        conn.close()
+        if not chart_source.empty:
+            chart_source["Available Stock"] = chart_source["effective_stock"]
 
-    if success:
-        backup_db_to_gdrive()
-    return success
+            chart_df = pd.melt(
+                chart_source,
+                id_vars=["item_name", "category"],
+                value_vars=["Available Stock", "reserved_stock"],
+                var_name="Stock Type",
+                value_name="Quantity",
+            )
+            chart_df["Stock Type"] = chart_df["Stock Type"].replace(
+                {"reserved_stock": "Reserved Stock"}
+            )
 
-# Ensures initialization if imported directly
-if __name__ == "__main__":
-    init_db()
+            fig = px.bar(
+                chart_df,
+                y="item_name",
+                x="Quantity",
+                color="Stock Type",
+                orientation="h",
+                hover_data=["category"],
+                labels={"item_name": "Item", "Quantity": "Units"},
+                text_auto=".1f",
+                color_discrete_map={
+                    "Available Stock": "#00897B",
+                    "Reserved Stock": "#E65100",
+                },
+            )
+
+            fig.update_layout(
+                barmode="stack",
+                height=max(300, len(chart_source) * 40),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="#F9F9F9",
+                font=dict(family="sans-serif", size=11, color="#333333"),
+                margin=dict(l=10, r=10, t=10, b=10),
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1,
+                    title_text="",
+                ),
+            )
+            fig.update_xaxes(showgrid=True, gridcolor="#E5E5E5")
+
+            st.plotly_chart(fig, use_container_width=True, config={"responsive": True})
