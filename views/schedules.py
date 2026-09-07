@@ -154,7 +154,7 @@ def render_dispatch_card(dispatch_id, items_df):
             "Update Status for ENTIRE Dispatch Batch",
             status_options,
             index=current_idx,
-            key=f"status_select_{dispatch_id}_{first_row['id']}",
+            key=f"status_select_{dispatch_id}",
         )
 
         driver_input = first_row["driver_name"]
@@ -168,13 +168,13 @@ def render_dispatch_card(dispatch_id, items_df):
                     "Driver Name*",
                     value=first_row["driver_name"],
                     placeholder="e.g., John Doe",
-                    key=f"driver_input_{dispatch_id}_{first_row['id']}",
+                    key=f"driver_input_{dispatch_id}",
                 ).strip()
             with col_notes:
                 add_notes_input = st.text_input(
                     "Additional Completion Notes",
                     placeholder="e.g., Received by site supervisor; gate pass #1024",
-                    key=f"add_notes_{dispatch_id}_{first_row['id']}",
+                    key=f"add_notes_{dispatch_id}",
                 ).strip()
 
         if new_status != first_row["status"] or (
@@ -183,7 +183,7 @@ def render_dispatch_card(dispatch_id, items_df):
         ):
             if st.button(
                 "Save Batch Status Changes",
-                key=f"btn_status_{dispatch_id}_{first_row['id']}",
+                key=f"btn_status_{dispatch_id}",
                 use_container_width=True,
             ):
                 if new_status == "Completed" and not driver_input:
