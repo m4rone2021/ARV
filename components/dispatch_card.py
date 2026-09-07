@@ -83,6 +83,7 @@ def render_dispatch_card(
                 ["id", "item_name", "quantity", "unit", "notes"]
             ].copy()
 
+            # Ensure quantity and notes columns are explicitly enabled for editing
             edited_data = st.data_editor(
                 editable_df,
                 column_config={
@@ -94,12 +95,18 @@ def render_dispatch_card(
                         "Unit", disabled=True
                     ),
                     "quantity": st.column_config.NumberColumn(
-                        "Quantity", min_value=0.01, format="%.2f"
+                        "Quantity",
+                        min_value=0.01,
+                        step=1.0,
+                        format="%.2f",
+                        disabled=False,  # Explicitly allow editing
                     ),
                     "notes": st.column_config.TextColumn(
-                        "Notes / Instructions"
+                        "Notes / Instructions",
+                        disabled=False,  # Explicitly allow editing
                     ),
                 },
+                disabled=["id", "item_name", "unit"],  # Lock system identity fields
                 use_container_width=True,
                 hide_index=True,
                 key=f"editor_{dispatch_id}",
@@ -165,7 +172,7 @@ def render_dispatch_card(
                             new_qty = float(edited_row["quantity"])
                             edited_note = (
                                 str(edited_row["notes"]).strip()
-                                if edited_row["notes"]
+                                if pd.notna(edited_row["notes"]) and str(edited_row["notes"]).strip()
                                 else ""
                             )
 
