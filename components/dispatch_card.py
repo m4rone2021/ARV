@@ -10,32 +10,9 @@ def render_dispatch_card(
     dispatch_id, items_df, get_due_status_label_fn, add_item_to_dispatch_fn
 ):
     """Renders a single dispatch card with non-editable quantities that auto-
+
     sync via the Add/Edit item panel.
     """
-    # -------------------------------------------------------------
-    # FETCH FRESH BATCH DATA FROM DATABASE TO PREVENT STALE STATE
-    # -------------------------------------------------------------
-    try:
-        with get_db() as conn_fresh:
-            items_df = pd.read_sql_query(
-                """
-                SELECT id, dispatch_id, item_name, quantity, unit, 
-                       destination, scheduled_date, requested_by, 
-                       project, is_priority, status, driver_name, 
-                       created_at, notes
-                FROM deliveries 
-                WHERE dispatch_id = ?
-                """,
-                conn_fresh,
-                params=(dispatch_id,),
-            )
-    except Exception as e:
-        st.error(f"Error refreshing dispatch card data: {e}")
-
-    if items_df.empty:
-        st.warning(f"Dispatch #{dispatch_id} has no remaining items or was removed.")
-        return
-
     first_row = items_df.iloc[0]
 
     # Initialize version key in session state if not present
