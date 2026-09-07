@@ -58,8 +58,8 @@ def render_schedules(user_name, user_role):
                 df = pd.read_sql_query(query, conn)
 
             if not df.empty:
-                col_status, col_prio, col_search = st.columns([1, 1, 2])
-                with col_status:
+                # Optimized controls layout: collapse filters into an expander for clean mobile viewing
+                with st.expander("🔍 Filter & Search Options", expanded=False):
                     status_filter = st.selectbox(
                         "Filter Status",
                         [
@@ -70,7 +70,6 @@ def render_schedules(user_name, user_role):
                             "Cancelled",
                         ],
                     )
-                with col_prio:
                     prio_filter = st.selectbox(
                         "Priority Filter",
                         [
@@ -79,7 +78,6 @@ def render_schedules(user_name, user_role):
                             "Normal Only",
                         ],
                     )
-                with col_search:
                     search_query = st.text_input(
                         "🔍 Search Item / Requester / Destination / Driver",
                         placeholder="e.g., DISP-1002, Cement, Main Site...",
@@ -134,17 +132,19 @@ def render_schedules(user_name, user_role):
                     )
                 ]
 
-                col_active, col_completed = st.columns(2)
+                # Use mobile-friendly sub-tabs instead of cramped side-by-side columns
+                tab_active, tab_history = st.tabs(
+                    [
+                        f"🚚 Active ({len(active_df.groupby('dispatch_id', sort=False))})",
+                        f"✅ History ({len(completed_df.groupby('dispatch_id', sort=False))})",
+                    ]
+                )
 
-                with col_active:
+                with tab_active:
+                    st.caption("Pending or In Transit Dispatches")
                     active_dispatches = active_df.groupby(
                         "dispatch_id", sort=False
                     )
-                    st.markdown(
-                        f"### 🚚 Active Dispatches ({len(active_dispatches)})"
-                    )
-                    st.caption("Pending or In Transit Dispatches")
-                    st.divider()
 
                     if not active_df.empty:
                         for disp_id, group in active_dispatches:
@@ -157,15 +157,11 @@ def render_schedules(user_name, user_role):
                     else:
                         st.info("No active dispatches found.")
 
-                with col_completed:
+                with tab_history:
+                    st.caption("Finished or Cancelled Dispatches")
                     completed_dispatches = completed_df.groupby(
                         "dispatch_id", sort=False
                     )
-                    st.markdown(
-                        f"### ✅ Completed & History ({len(completed_dispatches)})"
-                    )
-                    st.caption("Finished or Cancelled Dispatches")
-                    st.divider()
 
                     if not completed_df.empty:
                         for disp_id, group in completed_dispatches:
@@ -231,7 +227,8 @@ def render_schedules(user_name, user_role):
                 )
                 unit_name = str(item_info["unit"])
 
-                m1, m2, m3 = st.columns(3)
+                # Metrics render naturally stacked on small screens
+                m1, m2, m3 = st.columns([1, 1, 1])
                 m1.metric(
                     "Stock In Shop (Total)",
                     f"{stock_in_shop:,.2f} {unit_name}",
@@ -256,47 +253,43 @@ def render_schedules(user_name, user_role):
                         )
                     else:
                         st.markdown("##### 📄 1. Dispatch Order Details")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            input_requested_by = st.text_input(
-                                "Requested By*",
-                                placeholder="e.g., Engr. John Doe",
-                            )
-                            input_destination = st.text_input(
-                                "Destination / Site Location*",
-                                placeholder="e.g., Block 4 Site",
-                            )
-                            input_project = st.text_input(
-                                "Project Name / Code*",
-                                placeholder="e.g., PRJ-2026-A",
-                            )
-
-                        with col2:
-                            input_scheduled_date = st.date_input(
-                                "Scheduled Delivery Date*",
-                                value=date.today(),
-                            )
-                            input_is_priority = st.checkbox(
-                                "🔥 Mark as High Priority Dispatch"
-                            )
+                        # Single column vertical flow for mobile readability
+                        input_requested_by = st.text_input(
+                            "Requested By*",
+                            placeholder="e.g., Engr. John Doe",
+                        )
+                        input_destination = st.text_input(
+                            "Destination / Site Location*",
+                            placeholder="e.g., Block 4 Site",
+                        )
+                        input_project = st.text_input(
+                            "Project Name / Code*",
+                            placeholder="e.g., PRJ-2026-A",
+                        )
+                        input_scheduled_date = st.date_input(
+                            "Scheduled Delivery Date*",
+                            value=date.today(),
+                        )
+                        input_is_priority = st.checkbox(
+                            "🔥 Mark as High Priority Dispatch"
+                        )
 
                     st.markdown("##### 📦 2. Item Details")
-                    col_q, col_n = st.columns([1, 2])
-                    with col_q:
-                        input_quantity = st.number_input(
-                            f"Dispatch Quantity ({unit_name})*",
-                            min_value=0.01,
-                            value=1.0,
-                            step=1.0,
-                        )
-                    with col_n:
-                        input_notes = st.text_input(
-                            "Item Notes / Handling Instructions",
-                            placeholder="Optional site notes, batch specs...",
-                        )
+                    input_quantity = st.number_input(
+                        f"Dispatch Quantity ({unit_name})*",
+                        min_value=0.01,
+                        value=1.0,
+                        step=1.0,
+                    )
+                    input_notes = st.text_input(
+                        "Item Notes / Handling Instructions",
+                        placeholder="Optional site notes, batch specs...",
+                    )
 
                     btn_add_to_cart = st.form_submit_button(
-                        "➕ Add Item to Dispatch Batch", type="primary"
+                        "➕ Add Item to Dispatch Batch",
+                        type="primary",
+                        use_container_width=True,
                     )
 
                 if btn_add_to_cart:
@@ -348,75 +341,72 @@ def render_schedules(user_name, user_role):
                     cart_df = pd.DataFrame(st.session_state.delivery_cart)
                     st.dataframe(cart_df, use_container_width=True)
 
-                    btn_col1, btn_col2 = st.columns([2, 1])
+                    # Full width stacked buttons for primary touchscreen actions
+                    if st.button(
+                        "💾 Confirm & Create Dispatch Order",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        try:
+                            with get_db() as conn_save:
+                                cursor = conn_save.cursor()
+                                for item in st.session_state.delivery_cart:
+                                    cursor.execute(
+                                        """
+                                        INSERT INTO deliveries (
+                                            dispatch_id, item_name, unit, expected_quantity,
+                                            expected_date, destination, requested_by,
+                                            project, status, is_priority, notes
+                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
+                                    """,
+                                        (
+                                            hdr["dispatch_id"],
+                                            item["item_name"],
+                                            item["unit"],
+                                            item["quantity"],
+                                            hdr["scheduled_date"],
+                                            hdr["destination"],
+                                            hdr["requested_by"],
+                                            hdr["project"],
+                                            hdr["is_priority"],
+                                            item["notes"],
+                                        ),
+                                    )
 
-                    with btn_col1:
-                        if st.button(
-                            "💾 Confirm & Create Dispatch Order",
-                            type="primary",
-                            use_container_width=True,
-                        ):
-                            try:
-                                with get_db() as conn_save:
-                                    cursor = conn_save.cursor()
-                                    for item in st.session_state.delivery_cart:
-                                        cursor.execute(
-                                            """
-                                            INSERT INTO deliveries (
-                                                dispatch_id, item_name, unit, expected_quantity,
-                                                expected_date, destination, requested_by,
-                                                project, status, is_priority, notes
-                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
-                                        """,
-                                            (
-                                                hdr["dispatch_id"],
-                                                item["item_name"],
-                                                item["unit"],
-                                                item["quantity"],
-                                                hdr["scheduled_date"],
-                                                hdr["destination"],
-                                                hdr["requested_by"],
-                                                hdr["project"],
-                                                hdr["is_priority"],
-                                                item["notes"],
-                                            ),
-                                        )
+                                    cursor.execute(
+                                        """
+                                        UPDATE master_items 
+                                        SET reserved_stock = COALESCE(reserved_stock, 0) + ? 
+                                        WHERE item_name = ?
+                                    """,
+                                        (
+                                            item["quantity"],
+                                            item["item_name"],
+                                        ),
+                                    )
 
-                                        cursor.execute(
-                                            """
-                                            UPDATE master_items 
-                                            SET reserved_stock = COALESCE(reserved_stock, 0) + ? 
-                                            WHERE item_name = ?
-                                        """,
-                                            (
-                                                item["quantity"],
-                                                item["item_name"],
-                                            ),
-                                        )
+                                conn_save.commit()
 
-                                    conn_save.commit()
-
-                                backup_db_to_gdrive()
-                                st.session_state.delivery_cart = []
-                                st.session_state.current_dispatch_header = (
-                                    None
-                                )
-                                st.success(
-                                    f"Successfully created dispatch order `{hdr['dispatch_id']}`!"
-                                )
-                                st.rerun()
-
-                            except Exception as e:
-                                st.error(f"Error creating dispatch order: {e}")
-
-                    with btn_col2:
-                        if st.button(
-                            "🗑️ Clear Batch Staging",
-                            use_container_width=True,
-                        ):
+                            backup_db_to_gdrive()
                             st.session_state.delivery_cart = []
-                            st.session_state.current_dispatch_header = None
+                            st.session_state.current_dispatch_header = (
+                                None
+                            )
+                            st.success(
+                                f"Successfully created dispatch order `{hdr['dispatch_id']}`!"
+                            )
                             st.rerun()
+
+                        except Exception as e:
+                            st.error(f"Error creating dispatch order: {e}")
+
+                    if st.button(
+                        "🗑️ Clear Batch Staging",
+                        use_container_width=True,
+                    ):
+                        st.session_state.delivery_cart = []
+                        st.session_state.current_dispatch_header = None
+                        st.rerun()
 
             else:
                 st.info(
