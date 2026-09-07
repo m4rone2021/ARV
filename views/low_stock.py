@@ -35,12 +35,12 @@ def render_low_stock(user_name: str, user_role: str):
         # Filter items breaching safety thresholds
         low_stock_df = df[df["effective_stock"] <= df["min_threshold"]].copy()
 
-        # Overview KPI Metrics
-        col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Total Catalog Items", len(df))
-        col_m2.metric("Low Stock Items", len(low_stock_df), delta=-len(low_stock_df), delta_color="inverse")
+        # Mobile-Optimized Overview KPI Metrics
+        m1, m2, m3 = st.columns([1, 1, 1])
+        m1.metric("Total Items", len(df))
+        m2.metric("Low Stock", len(low_stock_df), delta=-len(low_stock_df), delta_color="inverse")
         critical_count = len(low_stock_df[low_stock_df["effective_stock"] <= 0])
-        col_m3.metric("Critical Out of Stock", critical_count, delta=-critical_count, delta_color="inverse")
+        m3.metric("Critical", critical_count, delta=-critical_count, delta_color="inverse")
 
         if low_stock_df.empty:
             st.success("✅ Great news! All inventory items are currently above their minimum safety thresholds.")
@@ -68,31 +68,45 @@ def render_low_stock(user_name: str, user_role: str):
             }
         )
 
-        st.dataframe(
-            df_display[
-                [
-                    "ID",
-                    "Item Description",
-                    "Category",
-                    "Unit",
-                    "Physical Stock",
-                    "Reserved",
-                    "Available Stock",
-                    "Min Threshold",
-                    "Shortage Quantity",
-                    "Storage / Remarks",
-                ]
-            ],
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Physical Stock": st.column_config.NumberColumn(format="%.2f"),
-                "Reserved": st.column_config.NumberColumn(format="%.2f"),
-                "Available Stock": st.column_config.NumberColumn(format="%.2f"),
-                "Shortage Quantity": st.column_config.NumberColumn(format="%.2f"),
-                "Min Threshold": st.column_config.NumberColumn(format="%.2f"),
-            },
-        )
+        # Quick Mobile View Toggle (Card List vs Data Table)
+        view_mode = st.radio("Display View Mode", ["Cards (Mobile)", "Full Table"], horizontal=True, label_visibility="collapsed")
+
+        if view_mode == "Cards (Mobile)":
+            for _, item in df_display.iterrows():
+                is_critical = item["Available Stock"] <= 0
+                badge = "🔴 CRITICAL" if is_critical else "🟡 LOW"
+                with st.expander(f"{badge} {item['Item Description']} ({item['Category']})"):
+                    st.markdown(f"**Available:** `{item['Available Stock']:.2f} {item['Unit']}` (Min: `{item['Min Threshold']:.2f}`)")
+                    st.markdown(f"**Shortage Deficit:** `{item['Shortage Quantity']:.2f} {item['Unit']}`")
+                    st.caption(f"Physical: {item['Physical Stock']:.2f} | Reserved: {item['Reserved']:.2f}")
+                    if item["Storage / Remarks"]:
+                        st.caption(f"Remarks: {item['Storage / Remarks']}")
+        else:
+            st.dataframe(
+                df_display[
+                    [
+                        "ID",
+                        "Item Description",
+                        "Category",
+                        "Unit",
+                        "Physical Stock",
+                        "Reserved",
+                        "Available Stock",
+                        "Min Threshold",
+                        "Shortage Quantity",
+                        "Storage / Remarks",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Physical Stock": st.column_config.NumberColumn(format="%.2f"),
+                    "Reserved": st.column_config.NumberColumn(format="%.2f"),
+                    "Available Stock": st.column_config.NumberColumn(format="%.2f"),
+                    "Shortage Quantity": st.column_config.NumberColumn(format="%.2f"),
+                    "Min Threshold": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
 
         st.divider()
 
@@ -106,22 +120,19 @@ def render_low_stock(user_name: str, user_role: str):
         selected_info = low_stock_df[low_stock_df["item_name"] == selected_item].iloc[0]
         suggested_qty = float(max(1.0, selected_info["Shortage Quantity"]))
 
+        # Form fields stacked vertically for optimized mobile entry
         with st.form("quick_schedule_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
+            expected_qty = st.number_input(
+                f"Expected Restock Quantity ({selected_info['unit']})*",
+                min_value=0.01,
+                value=suggested_qty,
+                step=1.0,
+                format="%.2f",
+            )
+            supplier = st.text_input("Supplier / Source", placeholder="e.g., Prime Steel Corp")
 
-            with col1:
-                expected_qty = st.number_input(
-                    f"Expected Restock Quantity ({selected_info['unit']})*",
-                    min_value=0.01,
-                    value=suggested_qty,
-                    step=1.0,
-                    format="%.2f",
-                )
-                supplier = st.text_input("Supplier / Source", placeholder="e.g., Prime Steel Corp")
-
-            with col2:
-                expected_date = st.date_input("Expected Delivery Date*")
-                schedule_notes = st.text_input("Delivery Notes", placeholder="e.g., Urgent site restock")
+            expected_date = st.date_input("Expected Delivery Date*")
+            schedule_notes = st.text_input("Delivery Notes", placeholder="e.g., Urgent site restock")
 
             submit_schedule = st.form_submit_button("➕ Schedule Delivery", use_container_width=True)
 
