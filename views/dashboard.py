@@ -125,6 +125,8 @@ def render_dashboard(user_name="Guest", user_role="User"):
     deliveries_df = pd.DataFrame()
     reminders_df = pd.DataFrame()
 
+    clean_user = str(user_name).strip() if user_name else "Guest"
+
     try:
         with get_db() as conn:
             # 1. Fetch master inventory items
@@ -163,7 +165,7 @@ def render_dashboard(user_name="Guest", user_role="User"):
             )
             tables = [row[0] for row in cursor.fetchall()]
 
-            # 3. Fetch Pending Scheduled Deliveries
+            # 3. Fetch Pending Scheduled Deliveries (Unrestricted database fetch)
             delivery_table = next(
                 (t for t in ["scheduled_deliveries", "deliveries"] if t in tables), None
             )
@@ -214,7 +216,6 @@ def render_dashboard(user_name="Guest", user_role="User"):
                 cursor.execute(f"PRAGMA table_info({task_table})")
                 rem_cols = [col[1] for col in cursor.fetchall()]
 
-                # Fix Bug 1: Only check rem_cols for task table
                 task_col = next((c for c in ["task_description", "task", "description", "title"] if c in rem_cols), "'Task'")
                 has_priority = "priority" in rem_cols
                 select_priority = ", priority" if has_priority else ""
@@ -232,8 +233,6 @@ def render_dashboard(user_name="Guest", user_role="User"):
                         FROM {task_table}
                         WHERE UPPER(status) IN ('OPEN', 'PENDING') AND LOWER(assigned_to) = LOWER(?)
                     """
-                    # Fix Bug 2: Ensure user_name is safely formatted string
-                    clean_user = str(user_name).strip() if user_name else "Guest"
                     params_rem = [clean_user]
 
                 reminders_df = pd.read_sql_query(query_rem, conn, params=params_rem)
@@ -276,53 +275,76 @@ def render_dashboard(user_name="Guest", user_role="User"):
 
     st.divider()
 
-    # 2. Scheduled Deliveries Log
+    # 2. Scheduled Deliveries Log with Radio Filter Toggle
     st.subheader("🚚 Scheduled Deliveries Log")
     if not deliveries_df.empty:
-        parsed_del_dates = deliveries_df["due_date"].apply(calculate_days_left)
-        deliveries_df["days_left_num"] = [d[0] for d in parsed_del_dates]
-        deliveries_df["days_left_str"] = [d[1] for d in parsed_del_dates]
+        
+        # UI Toggle Filter allowing users to switch between viewing all deliveries and their own
+        filter_col1, filter_col2 = st.columns([1, 2])
+        with filter_col1:
+            delivery_view_mode = st.radio(
+                "Filter View",
+                options=["All Deliveries", f"My Deliveries ({clean_user})"],
+                index=0,
+                key="delivery_filter_radio",
+                horizontal=True,
+            )
 
-        deliveries_df = deliveries_df.sort_values(
-            by=["days_left_num", "due_date"], ascending=[True, True]
-        )
+        if delivery_view_mode == f"My Deliveries ({clean_user})":
+            filtered_del_df = deliveries_df[
+                (deliveries_df["requestor"].astype(str).str.lower() == clean_user.lower()) |
+                (deliveries_df["created_by"].astype(str).str.lower() == clean_user.lower())
+            ].copy()
+        else:
+            filtered_del_df = deliveries_df.copy()
 
-        st.caption("Ordered chronologically by target arrival date.")
+        if not filtered_del_df.empty:
+            parsed_del_dates = filtered_del_df["due_date"].apply(calculate_days_left)
+            filtered_del_df["days_left_num"] = [d[0] for d in parsed_del_dates]
+            filtered_del_df["days_left_str"] = [d[1] for d in parsed_del_dates]
 
-        deliveries_df["Due Date"] = deliveries_df["due_date"].apply(lambda d: f"**{d}**")
+            filtered_del_df = filtered_del_df.sort_values(
+                by=["days_left_num", "due_date"], ascending=[True, True]
+            )
 
-        display_log = deliveries_df[
-            [
-                "Due Date",
-                "days_left_str",
-                "project_name",
-                "item_name",
-                "quantity",
-                "supplier",
-                "requestor",
-                "created_by",
-            ]
-        ].rename(
-            columns={
-                "days_left_str": "Status",
-                "project_name": "Project",
-                "item_name": "Item Description",
-                "quantity": "Qty",
-                "supplier": "Supplier / Vendor",
-                "requestor": "Requestor",
-                "created_by": "Created By (Access)",
-            }
-        )
+            st.caption("Ordered chronologically by target arrival date.")
 
-        st.dataframe(
-            display_log,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Due Date": st.column_config.TextColumn("Due Date", help="Target delivery arrival date"),
-                "Qty": st.column_config.NumberColumn(format="%.1f"),
-            },
-        )
+            filtered_del_df["Due Date"] = filtered_del_df["due_date"].apply(lambda d: f"**{d}**")
+
+            display_log = filtered_del_df[
+                [
+                    "Due Date",
+                    "days_left_str",
+                    "project_name",
+                    "item_name",
+                    "quantity",
+                    "supplier",
+                    "requestor",
+                    "created_by",
+                ]
+            ].rename(
+                columns={
+                    "days_left_str": "Status",
+                    "project_name": "Project",
+                    "item_name": "Item Description",
+                    "quantity": "Qty",
+                    "supplier": "Supplier / Vendor",
+                    "requestor": "Requestor",
+                    "created_by": "Created By (Access)",
+                }
+            )
+
+            st.dataframe(
+                display_log,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Due Date": st.column_config.TextColumn("Due Date", help="Target delivery arrival date"),
+                    "Qty": st.column_config.NumberColumn(format="%.1f"),
+                },
+            )
+        else:
+            st.info(f"No pending deliveries found specifically for {clean_user}.")
     else:
         st.success("✅ No pending scheduled deliveries found.")
 
