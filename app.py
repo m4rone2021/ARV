@@ -223,7 +223,8 @@ def render_app():
             from views.manage_items import render_manage_items
             render_manage_items(st.session_state.user_name, st.session_state.user_role)
         elif choice == "Physical Inventory":
-            from views.physical_inventory import render_physical_inventory)
+            from views.physical_inventory import render_physical_inventory
+            render_physical_inventory(st.session_state.user_name, st.session_state.user_role)
         elif choice == "Stock IN":
             from views.stock_in import render_stock_in
             render_stock_in(st.session_state.user_name, st.session_state.user_role)
