@@ -1,491 +1,191 @@
-import sqlite3
-from datetime import date, datetime
 import pandas as pd
-import plotly.express as px
 import streamlit as st
-from database import get_db
+from datetime import datetime, date
 
+# Set page configuration for mobile responsiveness
+st.set_page_config(page_title="Deliveries Dashboard", layout="wide")
 
-def apply_calm_dashboard_theme():
-    """Injects custom CSS optimized for both Desktop and Mobile viewports."""
-    st.markdown(
-        """
-        <style>
-            :root {
-                --primary-accent: #E65100;
-                --secondary-accent: #00897B;
-                --alert-bg: #FFF3E0;
-                --card-bg: #FAFAFA;
-                --border-color: #E0E0E0;
-            }
-
-            .main .block-container {
-                padding-top: 1rem !important;
-                padding-bottom: 2rem !important;
-                padding-left: 0.8rem !important;
-                padding-right: 0.8rem !important;
-            }
-
-            div[data-testid="stMetric"] {
-                background-color: var(--card-bg);
-                border: 1px solid var(--border-color);
-                border-left: 5px solid var(--secondary-accent);
-                border-radius: 8px;
-                padding: 10px 12px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-            }
-
-            div.stButton > button,
-            div.stFormSubmitButton > button,
-            div[data-testid="stPopover"] > button {
-                background-color: var(--primary-accent) !important;
-                color: #FFFFFF !important;
-                border: none !important;
-                border-radius: 6px !important;
-                font-weight: 600 !important;
-                min-height: 44px !important;
-                font-size: 14px !important;
-                transition: all 0.2s ease-in-out;
-            }
-
-            div.stButton > button:hover,
-            div.stFormSubmitButton > button:hover,
-            div[data-testid="stPopover"] > button:hover {
-                background-color: #BF360C !important;
-            }
-
-            .mobile-item-card {
-                background: #FFFFFF;
-                border: 1px solid var(--border-color);
-                border-radius: 8px;
-                padding: 12px;
-                margin-bottom: 10px;
-            }
-
-            @media (max-width: 640px) {
-                div[data-testid="stMetricValue"] {
-                    font-size: 1.3rem !important;
-                }
-                div[data-testid="stMetricLabel"] {
-                    font-size: 0.8rem !important;
-                }
-                .stSelectbox, .stTextInput {
-                    margin-bottom: 8px;
-                }
-            }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
+# Mock function to compute remaining days
 def calculate_days_left(due_date_str):
-    """Calculate days remaining from today until the due date safely handling timestamps."""
-    if not due_date_str:
-        return 9999, "No Date"
     try:
-        clean_date = str(due_date_str).strip().split(" ")[0]
-        due_dt = datetime.strptime(clean_date, "%Y-%m-%d").date()
+        due_date = datetime.strptime(str(due_date_str), "%Y-%m-%d").date()
         today = date.today()
-        days_diff = (due_dt - today).days
-
-        if days_diff < 0:
-            return days_diff, f"🔴 OVERDUE ({abs(days_diff)}d ago)"
-        elif days_diff == 0:
-            return days_diff, "🟠 DUE TODAY"
-        elif days_diff == 1:
-            return days_diff, "🟡 1 day left"
+        diff = (due_date - today).days
+        if diff < 0:
+            return (diff, f"⚠️ Overdue ({abs(diff)}d)")
+        elif diff == 0:
+            return (diff, "⚡ Due Today")
         else:
-            return days_diff, f"🟢 {days_diff} days left"
+            return (diff, f"⏳ {diff} days left")
     except Exception:
-        return 9999, "Invalid Date"
+        return (9999, "Unknown")
 
+# Sample Data Generation
+@st.cache_data
+def load_sample_data():
+    return pd.DataFrame([
+        {
+            "due_date": "2026-09-10",
+            "item_name": "Steel Beams 20ft",
+            "project_name": "Site Alpha",
+            "quantity": 15.0,
+            "supplier": "BuildCorp",
+            "requestor": "john_doe",
+            "created_by": "john_doe"
+        },
+        {
+            "due_date": "2026-09-05",
+            "item_name": "Portland Cement Bags",
+            "project_name": "Site Beta",
+            "quantity": 100.0,
+            "supplier": "Concrete Co.",
+            "requestor": "jane_smith",
+            "created_by": "admin"
+        },
+        {
+            "due_date": "2026-09-15",
+            "item_name": "Copper Wiring Spools",
+            "project_name": "Site Alpha",
+            "quantity": 8.0,
+            "supplier": "Electro Supplies",
+            "requestor": "john_doe",
+            "created_by": "jane_smith"
+        },
+        {
+            "due_date": "2026-09-07",
+            "item_name": "Safety Helmets",
+            "project_name": "Site Gamma",
+            "quantity": 50.0,
+            "supplier": "SafeGear Ltd",
+            "requestor": "alex_gear",
+            "created_by": "alex_gear"
+        }
+    ])
 
-def render_dashboard(user_name="Guest", user_role="User"):
-    apply_calm_dashboard_theme()
+# Application State Setup
+clean_user = "john_doe"
+deliveries_df = load_sample_data()
 
-    st.title("📊 Executive Dashboard")
+# Main Application Layout
+st.title("📦 Logistics & Procurement Tracker")
 
-    is_admin = user_role.lower() in ["admin", "manager"] if user_role else False
-    st.caption("Real-time inventory, task reminders, and scheduled deliveries.")
+# ---------------------------------------------------------
+# 2. Scheduled Deliveries Log
+# ---------------------------------------------------------
+st.subheader("🚚 Scheduled Deliveries Log")
 
-    categories = st.session_state.get(
-        "categories",
-        [
-            "Fuel & Oils",
-            "Construction Materials",
-            "Steel / Rebar",
-            "Nails & Fasteners",
-            "Cutting & Grinding Consumables",
-            "Welding Supplies & PPE",
-            "General Site Supplies",
-        ],
-    )
+if not deliveries_df.empty:
 
-    deliveries_df = pd.DataFrame()
-    reminders_df = pd.DataFrame()
+    # UI Filter & Sort Controls optimized for Mobile Viewports
+    filter_col, sort_col, order_col = st.columns([2, 2, 1])
 
-    clean_user = str(user_name).strip() if user_name else "Guest"
+    with filter_col:
+        delivery_view_mode = st.radio(
+            "Filter View",
+            options=["All Deliveries", f"My Deliveries ({clean_user})"],
+            index=0,
+            key="delivery_filter_radio",
+            horizontal=True,
+        )
 
-    try:
-        with get_db() as conn:
-            # 1. Fetch master inventory items
-            df = pd.read_sql_query(
-                """
-                SELECT id, item_name, category, unit, 
-                       COALESCE(current_stock, 0.0) AS current_stock, 
-                       COALESCE(reserved_stock, 0.0) AS reserved_stock, 
-                       COALESCE(min_threshold, 0.0) AS min_threshold 
-                FROM master_items 
-                ORDER BY category ASC, item_name ASC
-            """,
-                conn,
-            )
+    # Apply User Filtering
+    if delivery_view_mode == f"My Deliveries ({clean_user})":
+        filtered_del_df = deliveries_df[
+            (deliveries_df["requestor"].astype(str).str.lower() == clean_user.lower())
+            | (deliveries_df["created_by"].astype(str).str.lower() == clean_user.lower())
+        ].copy()
+    else:
+        filtered_del_df = deliveries_df.copy()
 
-            if not df.empty:
-                df["effective_stock"] = df["current_stock"] - df["reserved_stock"]
-            else:
-                df = pd.DataFrame(
-                    columns=[
-                        "id",
-                        "item_name",
-                        "category",
-                        "unit",
-                        "current_stock",
-                        "reserved_stock",
-                        "min_threshold",
-                        "effective_stock",
-                    ]
-                )
+    if not filtered_del_df.empty:
+        # Parse target dates
+        parsed_del_dates = filtered_del_df["due_date"].apply(calculate_days_left)
+        filtered_del_df["days_left_num"] = [d[0] for d in parsed_del_dates]
+        filtered_del_df["days_left_str"] = [d[1] for d in parsed_del_dates]
 
-            # 2. Check database tables
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'reminders', 'scheduled_deliveries', 'deliveries')"
-            )
-            tables = [row[0] for row in cursor.fetchall()]
-
-            # 3. Fetch Pending Scheduled Deliveries (Unrestricted database fetch)
-            delivery_table = next(
-                (t for t in ["scheduled_deliveries", "deliveries"] if t in tables), None
-            )
-
-            if delivery_table:
-                cursor.execute(f"PRAGMA table_info({delivery_table})")
-                del_cols = [col[1] for col in cursor.fetchall()]
-
-                date_col = next((c for c in ["due_date", "delivery_date", "expected_date", "date"] if c in del_cols), "NULL")
-                item_col = next((c for c in ["item_name", "item", "description", "title"] if c in del_cols), "'N/A'")
-                
-                if "quantity" in del_cols:
-                    qty_col = "quantity"
-                elif "qty" in del_cols:
-                    qty_col = "qty"
-                elif "amount" in del_cols:
-                    qty_col = "amount"
-                else:
-                    qty_col = "1"
-
-                supplier_col = next((c for c in ["supplier", "vendor", "source"] if c in del_cols), "'Unspecified'")
-                status_col = next((c for c in ["status", "delivery_status", "state"] if c in del_cols), "'Pending'")
-                requestor_col = next((c for c in ["requestor", "requested_by", "requested_person"] if c in del_cols), "'N/A'")
-                project_col = next((c for c in ["project_name", "project", "site_name"] if c in del_cols), "'Main Site'")
-                created_by_col = next((c for c in ["created_by", "created_user", "author"] if c in del_cols), "'System'")
-
-                query_del = f"""
-                    SELECT id, 
-                           {date_col} AS due_date, 
-                           {item_col} AS item_name, 
-                           {qty_col} AS quantity, 
-                           {supplier_col} AS supplier, 
-                           {requestor_col} AS requestor,
-                           {project_col} AS project_name,
-                           {created_by_col} AS created_by,
-                           {status_col} AS status
-                    FROM {delivery_table}
-                    WHERE UPPER({status_col}) NOT IN ('COMPLETED', 'DELIVERED', 'CANCELLED')
-                """
-                deliveries_df = pd.read_sql_query(query_del, conn)
-
-            # 4. Fetch Active Tasks
-            task_table = next(
-                (t for t in ["tasks", "reminders"] if t in tables), None
-            )
-
-            if task_table:
-                cursor.execute(f"PRAGMA table_info({task_table})")
-                rem_cols = [col[1] for col in cursor.fetchall()]
-
-                task_col = next((c for c in ["task_description", "task", "description", "title"] if c in rem_cols), "'Task'")
-                has_priority = "priority" in rem_cols
-                select_priority = ", priority" if has_priority else ""
-
-                if is_admin:
-                    query_rem = f"""
-                        SELECT id, due_date, {task_col} AS task, assigned_to, status {select_priority}
-                        FROM {task_table}
-                        WHERE UPPER(status) IN ('OPEN', 'PENDING')
-                    """
-                    params_rem = []
-                else:
-                    query_rem = f"""
-                        SELECT id, due_date, {task_col} AS task, assigned_to, status {select_priority}
-                        FROM {task_table}
-                        WHERE UPPER(status) IN ('OPEN', 'PENDING') AND LOWER(assigned_to) = LOWER(?)
-                    """
-                    params_rem = [clean_user]
-
-                reminders_df = pd.read_sql_query(query_rem, conn, params=params_rem)
-                if not has_priority or "priority" not in reminders_df.columns:
-                    reminders_df["priority"] = "NORMAL"
-
-    except Exception as e:
-        st.error(f"Error loading dashboard metrics: {e}")
-        return
-
-    # Metrics Calculations
-    total_items = len(df)
-    low_stock_df = (
-        df[df["effective_stock"] <= df["min_threshold"]]
-        if not df.empty
-        else pd.DataFrame()
-    )
-    low_stock_count = len(low_stock_df)
-    total_units_stocked = df["current_stock"].sum() if not df.empty else 0.0
-    pending_deliveries_count = len(deliveries_df)
-
-    # 1. Metric Cards Grid
-    m_col1, m_col2 = st.columns(2)
-    m_col1.metric(label="📦 Unique Items", value=f"{total_items:,}")
-    m_col2.metric(label="📊 Physical Stock", value=f"{total_units_stocked:,.1f}")
-
-    m_col3, m_col4 = st.columns(2)
-    m_col3.metric(
-        label="⚠️ Low Stock Alerts",
-        value=f"{low_stock_count}",
-        delta=f"-{low_stock_count}" if low_stock_count > 0 else "Optimal",
-        delta_color="inverse" if low_stock_count > 0 else "normal",
-    )
-    m_col4.metric(
-        label="🚚 Pending Deliveries",
-        value=f"{pending_deliveries_count}",
-        delta="Action Required" if pending_deliveries_count > 0 else "None",
-        delta_color="off",
-    )
-
-    st.divider()
-
-    # 2. Scheduled Deliveries Log with Radio Filter Toggle
-    st.subheader("🚚 Scheduled Deliveries Log")
-    if not deliveries_df.empty:
-        
-        # UI Toggle Filter allowing users to switch between viewing all deliveries and their own
-        filter_col1, filter_col2 = st.columns([1, 2])
-        with filter_col1:
-            delivery_view_mode = st.radio(
-                "Filter View",
-                options=["All Deliveries", f"My Deliveries ({clean_user})"],
-                index=0,
-                key="delivery_filter_radio",
-                horizontal=True,
-            )
-
-        if delivery_view_mode == f"My Deliveries ({clean_user})":
-            filtered_del_df = deliveries_df[
-                (deliveries_df["requestor"].astype(str).str.lower() == clean_user.lower()) |
-                (deliveries_df["created_by"].astype(str).str.lower() == clean_user.lower())
-            ].copy()
-        else:
-            filtered_del_df = deliveries_df.copy()
-
-        if not filtered_del_df.empty:
-            parsed_del_dates = filtered_del_df["due_date"].apply(calculate_days_left)
-            filtered_del_df["days_left_num"] = [d[0] for d in parsed_del_dates]
-            filtered_del_df["days_left_str"] = [d[1] for d in parsed_del_dates]
-
-            filtered_del_df = filtered_del_df.sort_values(
-                by=["days_left_num", "due_date"], ascending=[True, True]
-            )
-
-            st.caption("Ordered chronologically by target arrival date.")
-
-            filtered_del_df["Due Date"] = filtered_del_df["due_date"].apply(lambda d: f"**{d}**")
-
-            display_log = filtered_del_df[
-                [
-                    "Due Date",
-                    "days_left_str",
-                    "project_name",
+        # Mobile-Friendly Sorting Inputs
+        with sort_col:
+            sort_field = st.selectbox(
+                "Sort By",
+                options=[
+                    "due_date",
                     "item_name",
+                    "project_name",
                     "quantity",
                     "supplier",
-                    "requestor",
-                    "created_by",
-                ]
-            ].rename(
-                columns={
-                    "days_left_str": "Status",
-                    "project_name": "Project",
+                ],
+                format_func=lambda x: {
+                    "due_date": "Due Date",
                     "item_name": "Item Description",
-                    "quantity": "Qty",
-                    "supplier": "Supplier / Vendor",
-                    "requestor": "Requestor",
-                    "created_by": "Created By (Access)",
-                }
+                    "project_name": "Project",
+                    "quantity": "Quantity",
+                    "supplier": "Supplier",
+                }.get(x, x),
+                key="delivery_sort_field",
             )
 
-            st.dataframe(
-                display_log,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Due Date": st.column_config.TextColumn("Due Date", help="Target delivery arrival date"),
-                    "Qty": st.column_config.NumberColumn(format="%.1f"),
-                },
+        with order_col:
+            sort_order = st.radio(
+                "Order",
+                options=["Asc", "Desc"],
+                horizontal=True,
+                key="delivery_sort_order",
             )
-        else:
-            st.info(f"No pending deliveries found specifically for {clean_user}.")
-    else:
-        st.success("✅ No pending scheduled deliveries found.")
 
-    st.divider()
-
-    # 3. Action Items & Reminders
-    st.subheader(
-        "📌 Action Items & Reminders" if is_admin else f"📌 My Tasks ({user_name})"
-    )
-    if not reminders_df.empty:
-        parsed_dates = reminders_df["due_date"].apply(calculate_days_left)
-        reminders_df["days_left_num"] = [d[0] for d in parsed_dates]
-        reminders_df["days_left_str"] = [d[1] for d in parsed_dates]
-
-        reminders_df = reminders_df.sort_values(
-            by=["days_left_num", "priority"], ascending=[True, False]
+        # Perform sorting directly on the DataFrame
+        is_ascending = (sort_order == "Asc")
+        filtered_del_df = filtered_del_df.sort_values(
+            by=sort_field, ascending=is_ascending
         )
 
-        display_reminders = reminders_df[
-            ["due_date", "days_left_str", "task", "assigned_to"]
-        ].rename(
-            columns={
-                "due_date": "Due Date",
-                "days_left_str": "Status / Days Left",
-                "task": "Task Description",
-                "assigned_to": "Assigned",
-            }
+        st.caption(
+            f"Sorted by **{sort_field.replace('_', ' ').title()}** ({'Ascending' if is_ascending else 'Descending'})"
         )
 
-        st.dataframe(
-            display_reminders,
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.success("✅ No pending tasks found.")
-
-    st.divider()
-
-    # 4. Critical Low Stock Warnings
-    st.subheader("⚠️ Critical Low Stock Warnings")
-    if not low_stock_df.empty:
-        st.warning(
-            f"Attention: {low_stock_count} item(s) are at or below safety threshold!"
+        # Format Due Date for Display
+        filtered_del_df["Due Date"] = filtered_del_df["due_date"].apply(
+            lambda d: f"**{d}**"
         )
 
-        low_stock_display = low_stock_df[
+        display_log = filtered_del_df[
             [
+                "Due Date",
+                "days_left_str",
+                "project_name",
                 "item_name",
-                "category",
-                "current_stock",
-                "reserved_stock",
-                "effective_stock",
-                "unit",
-                "min_threshold",
+                "quantity",
+                "supplier",
+                "requestor",
+                "created_by",
             ]
         ].rename(
             columns={
+                "days_left_str": "Status",
+                "project_name": "Project",
                 "item_name": "Item Description",
-                "category": "Category",
-                "current_stock": "Total Stock",
-                "reserved_stock": "Reserved",
-                "effective_stock": "Available",
-                "unit": "Unit",
-                "min_threshold": "Limit",
+                "quantity": "Qty",
+                "supplier": "Supplier / Vendor",
+                "requestor": "Requestor",
+                "created_by": "Created By (Access)",
             }
         )
+
+        # Dynamic key forces Streamlit to re-render component state on touch devices
+        table_key = f"del_tbl_{delivery_view_mode}_{sort_field}_{sort_order}"
+
         st.dataframe(
-            low_stock_display,
+            display_log,
             use_container_width=True,
             hide_index=True,
+            key=table_key,
             column_config={
-                "Total Stock": st.column_config.NumberColumn(format="%.2f"),
-                "Reserved": st.column_config.NumberColumn(format="%.2f"),
-                "Available": st.column_config.NumberColumn(format="%.2f"),
-                "Limit": st.column_config.NumberColumn(format="%.2f"),
+                "Due Date": st.column_config.TextColumn(
+                    "Due Date", help="Target delivery arrival date"
+                ),
+                "Qty": st.column_config.NumberColumn(format="%.1f"),
             },
         )
     else:
-        st.success("✅ All stock items are currently above safety thresholds.")
-
-    st.divider()
-
-    # 5. Mobile Horizontal Bar Chart for Breakdown
-    st.subheader("📦 Stock Breakdown per Item")
-    if not df.empty:
-        chart_cat_filter = st.selectbox(
-            "Filter Chart Category",
-            ["All Categories"] + categories,
-            key="item_chart_cat_filter",
-        )
-
-        chart_source = df.copy()
-        if chart_cat_filter != "All Categories":
-            chart_source = chart_source[chart_source["category"] == chart_cat_filter]
-
-        if not chart_source.empty:
-            chart_source["Available Stock"] = chart_source["effective_stock"]
-
-            chart_df = pd.melt(
-                chart_source,
-                id_vars=["item_name", "category"],
-                value_vars=["Available Stock", "reserved_stock"],
-                var_name="Stock Type",
-                value_name="Quantity",
-            )
-            chart_df["Stock Type"] = chart_df["Stock Type"].replace(
-                {"reserved_stock": "Reserved Stock"}
-            )
-
-            fig = px.bar(
-                chart_df,
-                y="item_name",
-                x="Quantity",
-                color="Stock Type",
-                orientation="h",
-                hover_data=["category"],
-                labels={"item_name": "Item", "Quantity": "Units"},
-                text_auto=".1f",
-                color_discrete_map={
-                    "Available Stock": "#00897B",
-                    "Reserved Stock": "#E65100",
-                },
-            )
-
-            fig.update_layout(
-                barmode="stack",
-                height=max(300, len(chart_source) * 40),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="#F9F9F9",
-                font=dict(family="sans-serif", size=11, color="#333333"),
-                margin=dict(l=10, r=10, t=10, b=10),
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1,
-                    title_text="",
-                ),
-            )
-            fig.update_xaxes(showgrid=True, gridcolor="#E5E5E5")
-
-            st.plotly_chart(fig, use_container_width=True, config={"responsive": True})
+        st.info(f"No pending deliveries found specifically for {clean_user}.")
+else:
+    st.success("✅ No pending scheduled deliveries found.")
