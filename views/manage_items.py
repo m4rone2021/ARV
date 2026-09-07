@@ -161,9 +161,9 @@ def render_manage_items(user_name, user_role):
                                 """, (clean_name, final_category, clean_unit, initial_stock, min_threshold, remarks.strip()))
                                 conn.commit()
 
-                                trigger_gdrive_sync()
-                                st.success(f"Master item **{clean_name}** added successfully!")
-                                st.rerun()
+                            trigger_gdrive_sync()
+                            st.success(f"Master item **{clean_name}** added successfully!")
+                            st.rerun()
                         except sqlite3.IntegrityError:
                             st.error(f"⚠️ An item named **{clean_name}** already exists.")
                         except sqlite3.OperationalError as e:
@@ -208,7 +208,7 @@ def render_manage_items(user_name, user_role):
                             edit_stock = st.number_input("Stock In Shop (Total)*", min_value=0.0, value=float(selected_row["current_stock"]), step=1.0, format="%.2f")
 
                         with col2:
-                            st.text_input("Reserved Stock (Read-Only)", value=f"{selected_row['reserved_stock']} {selected_row['unit']}", disabled=True)
+                            edit_reserved = st.number_input("Reserved Stock*", min_value=0.0, value=float(selected_row["reserved_stock"]), step=1.0, format="%.2f")
                             edit_threshold = st.number_input("Min Threshold Alert*", min_value=0.0, value=float(selected_row["min_threshold"]), step=1.0, format="%.2f")
                             edit_remarks = st.text_input("Remarks", value=selected_row["remarks"] if selected_row["remarks"] else "")
 
@@ -219,22 +219,22 @@ def render_manage_items(user_name, user_role):
 
                             if not final_edit_cat:
                                 st.error("⚠️ Category cannot be empty.")
-                            elif edit_stock < float(selected_row["reserved_stock"]):
-                                st.error(f"❌ Stock in Shop cannot be less than Reserved Stock ({selected_row['reserved_stock']} {selected_row['unit']}).")
+                            elif edit_stock < edit_reserved:
+                                st.error(f"❌ Stock in Shop ({edit_stock:.2f}) cannot be less than Reserved Stock ({edit_reserved:.2f}).")
                             else:
                                 try:
                                     with get_db() as conn:
                                         cursor = conn.cursor()
                                         cursor.execute("""
                                             UPDATE master_items
-                                            SET category = ?, unit = ?, current_stock = ?, min_threshold = ?, remarks = ?
+                                            SET category = ?, unit = ?, current_stock = ?, reserved_stock = ?, min_threshold = ?, remarks = ?
                                             WHERE item_name = ?
-                                        """, (final_edit_cat, edit_unit.strip(), edit_stock, edit_threshold, edit_remarks.strip(), selected_item_name))
+                                        """, (final_edit_cat, edit_unit.strip(), edit_stock, edit_reserved, edit_threshold, edit_remarks.strip(), selected_item_name))
                                         conn.commit()
 
-                                        trigger_gdrive_sync()
-                                        st.success(f"Item **{selected_item_name}** updated successfully.")
-                                        st.rerun()
+                                    trigger_gdrive_sync()
+                                    st.success(f"Item **{selected_item_name}** updated successfully.")
+                                    st.rerun()
                                 except sqlite3.OperationalError as e:
                                     st.error(f"Failed to update item: {e}")
                 else:
@@ -268,9 +268,9 @@ def render_manage_items(user_name, user_role):
                                         cursor.execute("DELETE FROM master_items WHERE item_name = ?", (target_item,))
                                         conn.commit()
 
-                                        trigger_gdrive_sync()
-                                        st.success(f"Item **{target_item}** removed from Master Catalog.")
-                                        st.rerun()
+                                    trigger_gdrive_sync()
+                                    st.success(f"Item **{target_item}** removed from Master Catalog.")
+                                    st.rerun()
                                 except sqlite3.OperationalError as e:
                                     st.error(f"Failed to delete item: {e}")
                 else:
