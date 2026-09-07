@@ -6,53 +6,46 @@ import streamlit as st
 from database import backup_db_to_gdrive, get_db
 
 
-def fetch_latest_items_df(d_id):
-    """Fetches the freshest batch items for a given dispatch ID from SQLite."""
-    with get_db() as conn_fetch:
-        return pd.read_sql_query(
-            """
-            SELECT 
-                id, 
-                dispatch_id, 
-                item_name, 
-                unit, 
-                expected_quantity AS quantity, 
-                notes, 
-                status, 
-                destination, 
-                expected_date AS scheduled_date, 
-                COALESCE(requested_by, 'N/A') AS requested_by, 
-                project, 
-                is_priority, 
-                driver_name, 
-                created_at
-            FROM deliveries 
-            WHERE dispatch_id = ?
-        """,
-            conn_fetch,
-            params=(d_id,),
-        )
-
-
 def render_dispatch_card(
     dispatch_id, items_df, get_due_status_label_fn, add_item_to_dispatch_fn
 ):
-    """Renders a single dispatch card with reactive batch item modifications."""
+    """Renders a single dispatch card where batch item modifications
+    immediately update the dispatch review table.
+    """
 
-    # Always fetch the latest state from DB
-    current_items_df = fetch_latest_items_df(dispatch_id)
-    if current_items_df.empty:
-        st.warning(f"No active items found for Dispatch ID #{dispatch_id}")
-        return
+    def fetch_latest_items_df(d_id):
+        """Helper to re-fetch the latest items for this dispatch batch directly
+        from DB.
+        """
+        with get_db() as conn_fetch:
+            return pd.read_sql_query(
+                """
+                SELECT id, dispatch_id, item_name, unit, 
+                       expected_quantity AS quantity, notes, status,
+                       destination, scheduled_date, requested_by, project,
+                       is_priority, driver_name, created_at
+                FROM deliveries 
+                WHERE dispatch_id = ?
+            """,
+                conn_fetch,
+                params=(d_id,),
+            )
 
-    # Version tracking key for forcing st.data_editor resets
+    # Always ensure we are using the freshest state of items
+    current_items_df = items_df.copy()
+
+    # Initialize a version key for st.data_editor to force UI refresh on data change
     if f"editor_ver_{dispatch_id}" not in st.session_state:
         st.session_state[f"editor_ver_{dispatch_id}"] = 0
 
     first_row = current_items_df.iloc[0]
 
     prio_badge = "🔥 HIGH PRIORITY | " if first_row["is_priority"] == 1 else ""
-    req_info = f"Requested by: {first_row['requested_by']}"
+    req_info = (
+        f"Requested by: {first_row['requested_by']}"
+        if first_row["requested_by"]
+        else "Requested by: N/A"
+    )
     project_info = (
         f" | Project: {first_row['project']}" if first_row["project"] else ""
     )
@@ -67,7 +60,9 @@ def render_dispatch_card(
             "created_at", first_row.get("requested_date", "N/A")
         )
 
-        c1.markdown(f"**Requested By:** {first_row['requested_by']}")
+        c1.markdown(
+            f"**Requested By:** {first_row['requested_by'] if first_row['requested_by'] else 'N/A'}"
+        )
         c1.markdown(f"**Destination:** {first_row['destination']}")
 
         c2.markdown(
@@ -91,7 +86,7 @@ def render_dispatch_card(
         st.divider()
 
         # -------------------------------------------------------------
-        # 1. ADD OR MODIFY BATCH QUANTITIES
+        # 1. ADD OR EDIT ITEM SECTION (MODIFIES QUANTITY & RESERVED STOCK)
         # -------------------------------------------------------------
         with st.expander("➕ Add Item or Modify Batch Quantities"):
             try:
@@ -170,42 +165,64 @@ def render_dispatch_card(
                                     f"Quantity exceeds available stock ({avail_qty})."
                                 )
                             else:
-                                with get_db() as conn_upd:
-                                    c = conn_upd.cursor()
-                                    if is_existing:
-                                        item_id_to_upd = existing_match.iloc[0]["id"]
-                                        new_total = current_batch_qty + adj_qty
+                                if is_existing:
+                                    item_id_to_upd = existing_match.iloc[0][
+                                        "id"
+                                    ]
+                                    new_total = current_batch_qty + adj_qty
+                                    with get_db() as conn_upd:
+                                        c = conn_upd.cursor()
                                         c.execute(
                                             "UPDATE deliveries SET expected_quantity = ? WHERE id = ?",
                                             (new_total, item_id_to_upd),
                                         )
-                                    else:
-                                        add_item_to_dispatch_fn(
-                                            dispatch_id,
-                                            add_item_selected,
-                                            add_item_info["unit"],
-                                            adj_qty,
-                                            add_notes,
-                                            first_row,
-                                        )
+                                        if first_row["status"] in [
+                                            "Pending",
+                                            "In Transit",
+                                        ]:
+                                            c.execute(
+                                                "UPDATE master_items SET reserved_stock = COALESCE(reserved_stock, 0) + ? WHERE item_name = ?",
+                                                (adj_qty, add_item_selected),
+                                            )
+                                        conn_upd.commit()
 
-                                    if first_row["status"] in ["Pending", "In Transit"]:
-                                        c.execute(
-                                            "UPDATE master_items SET reserved_stock = COALESCE(reserved_stock, 0) + ? WHERE item_name = ?",
-                                            (adj_qty, add_item_selected),
-                                        )
-                                    conn_upd.commit()
+                                    st.toast(
+                                        f"Updated {add_item_selected} total to {new_total:,.2f} {add_item_info['unit']}.",
+                                        icon="✅",
+                                    )
+                                else:
+                                    add_item_to_dispatch_fn(
+                                        dispatch_id,
+                                        add_item_selected,
+                                        add_item_info["unit"],
+                                        adj_qty,
+                                        add_notes,
+                                        first_row,
+                                    )
+                                    st.toast(
+                                        f"Added {add_item_selected} ({adj_qty:,.2f} {add_item_info['unit']}) to batch.",
+                                        icon="✅",
+                                    )
 
-                                st.session_state[f"editor_ver_{dispatch_id}"] += 1
+                                # Force editor reload and sync state
+                                st.session_state[
+                                    f"editor_ver_{dispatch_id}"
+                                ] += 1
                                 backup_db_to_gdrive()
-                                st.toast("Batch successfully updated!", icon="✅")
+                                current_items_df = fetch_latest_items_df(
+                                    dispatch_id
+                                )
                                 st.rerun()
 
                         elif adjustment_type == "Decrease Batch":
                             if not is_existing:
-                                st.error(f"Cannot decrease {add_item_selected} standard item since it is not in this batch.")
+                                st.error(
+                                    f"Cannot decrease {add_item_selected} because it is not currently in this dispatch batch."
+                                )
                             elif adj_qty >= current_batch_qty:
-                                st.error("To remove an item completely, use the 'Remove Item' section below.")
+                                st.error(
+                                    f"Decrease amount ({adj_qty}) must be less than current scheduled quantity ({current_batch_qty}). To remove it completely, use 'Remove Item' below."
+                                )
                             else:
                                 item_id_to_upd = existing_match.iloc[0]["id"]
                                 new_total = current_batch_qty - adj_qty
@@ -215,40 +232,54 @@ def render_dispatch_card(
                                         "UPDATE deliveries SET expected_quantity = ? WHERE id = ?",
                                         (new_total, item_id_to_upd),
                                     )
-                                    if first_row["status"] in ["Pending", "In Transit"]:
+                                    if first_row["status"] in [
+                                        "Pending",
+                                        "In Transit",
+                                    ]:
                                         c.execute(
                                             "UPDATE master_items SET reserved_stock = MAX(0, COALESCE(reserved_stock, 0) - ?) WHERE item_name = ?",
                                             (adj_qty, add_item_selected),
                                         )
                                     conn_upd.commit()
 
-                                st.session_state[f"editor_ver_{dispatch_id}"] += 1
+                                st.toast(
+                                    f"Decreased {add_item_selected} total to {new_total:,.2f} {add_item_info['unit']}.",
+                                    icon="✅",
+                                )
+
+                                # Force editor reload and sync state
+                                st.session_state[
+                                    f"editor_ver_{dispatch_id}"
+                                ] += 1
                                 backup_db_to_gdrive()
-                                st.toast("Batch quantity decreased!", icon="✅")
+                                current_items_df = fetch_latest_items_df(
+                                    dispatch_id
+                                )
                                 st.rerun()
 
             except Exception as e:
-                st.error(f"Error updating inventory: {e}")
+                st.error(f"Error loading master items: {e}")
 
         st.divider()
 
         # -------------------------------------------------------------
-        # 2. MAIN UNIFIED UPDATE FORM
+        # 2. MAIN UNIFIED UPDATE FORM (READ-ONLY LIVE QUANTITY DISPLAY)
         # -------------------------------------------------------------
         st.markdown("##### ✏️ Edit & Review Dispatch Details")
 
         with st.form(key=f"update_dispatch_form_{dispatch_id}"):
-            current_date = datetime.strptime(
-                str(first_row["scheduled_date"]).split()[0], "%Y-%m-%d"
-            ).date()
+            current_date = pd.to_datetime(first_row["scheduled_date"]).date()
             new_sched_date = st.date_input(
                 "Reschedule Delivery Date",
                 value=current_date,
                 key=f"resched_date_{dispatch_id}",
             )
 
-            st.markdown("###### 📦 Current Batch Items To Be Dispatched")
+            st.markdown(
+                "###### 📦 Current Batch Items To Be Dispatched (Quantities are auto-synced)"
+            )
 
+            # Re-read fresh data right before rendering the table
             editable_df = current_items_df[
                 ["id", "item_name", "quantity", "unit", "notes"]
             ].copy()
@@ -259,23 +290,42 @@ def render_dispatch_card(
                 editable_df,
                 column_config={
                     "id": None,
-                    "item_name": st.column_config.TextColumn("Item Name", disabled=True),
-                    "unit": st.column_config.TextColumn("Unit", disabled=True),
+                    "item_name": st.column_config.TextColumn(
+                        "Item Name", disabled=True
+                    ),
+                    "unit": st.column_config.TextColumn(
+                        "Unit", disabled=True
+                    ),
                     "quantity": st.column_config.NumberColumn(
                         "Total Quantity To Dispatch",
                         format="%.2f",
                         disabled=True,
                     ),
-                    "notes": st.column_config.TextColumn("Notes / Instructions"),
+                    "notes": st.column_config.TextColumn(
+                        "Notes / Instructions",
+                        disabled=False,
+                    ),
                 },
+                disabled=["id", "item_name", "unit", "quantity"],
                 use_container_width=True,
                 hide_index=True,
                 key=editor_key,
             )
 
             st.divider()
-            status_options = ["Pending", "In Transit", "Completed", "Cancelled"]
-            current_idx = status_options.index(first_row["status"]) if first_row["status"] in status_options else 0
+            st.markdown("###### 🚦 Dispatch Status & Info")
+
+            status_options = [
+                "Pending",
+                "In Transit",
+                "Completed",
+                "Cancelled",
+            ]
+            current_idx = (
+                status_options.index(first_row["status"])
+                if first_row["status"] in status_options
+                else 0
+            )
 
             col_status_sel, col_driver_sel = st.columns(2)
 
@@ -297,10 +347,11 @@ def render_dispatch_card(
 
             add_notes_input = st.text_input(
                 "Completion / Overall Notes",
-                placeholder="Optional delivery details...",
+                placeholder="Optional delivery details, gate passes, site instructions...",
                 key=f"add_notes_{dispatch_id}",
             ).strip()
 
+            st.write("")
             submit_dispatch_update = st.form_submit_button(
                 "💾 Update Dispatch & Confirm Changes",
                 use_container_width=True,
@@ -309,7 +360,9 @@ def render_dispatch_card(
 
         if submit_dispatch_update:
             if new_status == "Completed" and not driver_input:
-                st.error("⚠️ Driver Name is required to set status to Completed.")
+                st.error(
+                    "⚠️ Please specify the Driver Name before marking the dispatch as Completed."
+                )
             else:
                 try:
                     with get_db() as conn:
@@ -318,25 +371,41 @@ def render_dispatch_card(
 
                         for _, edited_row in edited_data.iterrows():
                             item_id = edited_row["id"]
-                            edited_note = str(edited_row["notes"]).strip() if pd.notna(edited_row["notes"]) else ""
+                            edited_note = (
+                                str(edited_row["notes"]).strip()
+                                if pd.notna(edited_row["notes"])
+                                and str(edited_row["notes"]).strip()
+                                else ""
+                            )
 
-                            orig_row = current_items_df[current_items_df["id"] == item_id].iloc[0]
+                            orig_row = current_items_df[
+                                current_items_df["id"] == item_id
+                            ].iloc[0]
                             curr_qty = float(orig_row["quantity"])
                             item_name = orig_row["item_name"]
 
                             final_notes = edited_note
                             if add_notes_input:
-                                final_notes = f"{edited_note} [{add_notes_input}]".strip()
+                                final_notes = (
+                                    f"{edited_note} [{add_notes_input}]".strip()
+                                )
 
                             cursor.execute(
                                 """
                                 UPDATE deliveries 
-                                SET expected_date = ?, status = ?, driver_name = ?, notes = ? 
+                                SET scheduled_date = ?, status = ?, driver_name = ?, notes = ? 
                                 WHERE id = ?
                             """,
-                                (str(new_sched_date), new_status, driver_input, final_notes, item_id),
+                                (
+                                    str(new_sched_date),
+                                    new_status,
+                                    driver_input,
+                                    final_notes,
+                                    item_id,
+                                ),
                             )
 
+                            # Stock deduction logic for master inventory
                             if old_status in ["Pending", "In Transit"]:
                                 if new_status == "Completed":
                                     cursor.execute(
@@ -362,7 +431,10 @@ def render_dispatch_card(
 
                     st.session_state[f"editor_ver_{dispatch_id}"] += 1
                     backup_db_to_gdrive()
-                    st.toast("Dispatch batch updated successfully!", icon="✅")
+                    st.toast(
+                        "Dispatch batch successfully updated!",
+                        icon="✅",
+                    )
                     st.rerun()
 
                 except Exception as e:
@@ -378,23 +450,37 @@ def render_dispatch_card(
             item_to_remove = st.selectbox(
                 "Remove Single Item from Batch",
                 options=current_items_df["id"].tolist(),
-                format_func=lambda x: current_items_df[current_items_df["id"] == x]["item_name"].values[0],
+                format_func=lambda x: current_items_df[
+                    current_items_df["id"] == x
+                ]["item_name"].values[0],
                 key=f"select_remove_{dispatch_id}",
             )
-            if st.button("🗑️ Remove Selected Item", key=f"btn_remove_{dispatch_id}"):
+            if st.button(
+                "🗑️ Remove Selected Item", key=f"btn_remove_{dispatch_id}"
+            ):
                 if len(current_items_df) <= 1:
-                    st.error("Cannot remove the only item in a batch. Cancel the dispatch instead.")
+                    st.error(
+                        "Cannot remove the only item in a dispatch batch. Cancel the dispatch status instead."
+                    )
                 else:
                     try:
-                        rem_row = current_items_df[current_items_df["id"] == item_to_remove].iloc[0]
+                        rem_row = current_items_df[
+                            current_items_df["id"] == item_to_remove
+                        ].iloc[0]
                         rem_qty = float(rem_row["quantity"])
                         rem_name = rem_row["item_name"]
 
                         with get_db() as conn_rem:
                             cursor = conn_rem.cursor()
-                            cursor.execute("DELETE FROM deliveries WHERE id = ?", (item_to_remove,))
+                            cursor.execute(
+                                "DELETE FROM deliveries WHERE id = ?",
+                                (item_to_remove,),
+                            )
 
-                            if first_row["status"] in ["Pending", "In Transit"]:
+                            if first_row["status"] in [
+                                "Pending",
+                                "In Transit",
+                            ]:
                                 cursor.execute(
                                     """
                                     UPDATE master_items 
@@ -407,7 +493,10 @@ def render_dispatch_card(
 
                         st.session_state[f"editor_ver_{dispatch_id}"] += 1
                         backup_db_to_gdrive()
-                        st.toast(f"Removed {rem_name} from dispatch batch.", icon="🗑️")
+                        st.toast(
+                            f"Removed {rem_name} from dispatch batch.",
+                            icon="🗑️",
+                        )
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error removing item: {e}")
