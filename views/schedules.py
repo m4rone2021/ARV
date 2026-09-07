@@ -314,52 +314,14 @@ def render_schedules(user_name, user_role):
                     st.divider()
 
                     if not active_df.empty:
-                        for idx, (disp_id, group) in enumerate(active_dispatches):
+                        for disp_id, group in active_dispatches:
+                            # Render dispatch card directly without wrapping in an extra st.expander
                             render_dispatch_card(
                                 disp_id,
                                 group,
                                 get_due_status_label,
                                 add_item_to_dispatch,
                             )
-                            
-                            # Unique key index suffix prevents DuplicateWidgetID errors
-                            key_suffix = f"{disp_id}_{idx}"
-                            with st.expander(f"✏️ Edit & Review Batch Details ({disp_id})", expanded=False):
-                                items_in_batch = group["item_name"].unique().tolist()
-                                if items_in_batch:
-                                    st.markdown("##### ➕ Add Item or Modify Batch Quantities")
-                                    mod_col1, mod_col2 = st.columns(2)
-                                    with mod_col1:
-                                        target_item = st.selectbox(
-                                            "Select Batch Item", options=items_in_batch, key=f"sel_{key_suffix}"
-                                        )
-                                        action_type = st.radio(
-                                            "Action", ["Increase Batch", "Decrease Batch"], key=f"act_{key_suffix}"
-                                        )
-                                    with mod_col2:
-                                        change_q = st.number_input(
-                                            "Quantity Change", min_value=0.01, value=1.0, step=1.0, key=f"qty_{key_suffix}"
-                                        )
-                                        mod_notes = st.text_input(
-                                            "Update Notes", placeholder="Optional batch notes...", key=f"notes_{key_suffix}"
-                                        )
-
-                                    if st.button("💾 Apply Changes to Batch Item", key=f"btn_{key_suffix}", type="primary"):
-                                        update_dispatch_item_quantity(
-                                            disp_id, target_item, action_type, change_q, mod_notes
-                                        )
-
-                                st.markdown("##### 📦 Current Batch Items To Be Dispatched")
-                                review_df = group[["item_name", "quantity", "unit", "notes"]].rename(
-                                    columns={
-                                        "item_name": "Item Name",
-                                        "quantity": "Total Quantity To Dispatch",
-                                        "unit": "Unit",
-                                        "notes": "Notes / Instructions",
-                                    }
-                                )
-                                st.dataframe(review_df, use_container_width=True)
-
                     else:
                         st.info("No active dispatches found.")
 
