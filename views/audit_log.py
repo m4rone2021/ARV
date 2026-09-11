@@ -75,11 +75,11 @@ def upload_csv_to_gdrive(csv_bytes: bytes, filename: str = "audit_log.csv") -> s
 
 
 def render_audit_log(user_name: str, user_role: str):
-    """Renders the transaction history and audit log page with filters, downloads, and Drive sync (Mobile-Optimized)."""
-    st.title("📜 Audit Log")
-    st.caption("Track stock movement, receipts, and Drive links.")
+    """Renders the comprehensive system audit log with unified queries, filters, downloads, and Drive sync."""
+    st.title("📜 Complete Audit Log")
+    st.caption("Track stock movement, deliveries, physical logs, user activity, and attachments.")
 
-    # MOBILE-OPTIMIZED: Collapsible or vertically stacked filters to save vertical screen space
+    # Search & Filter Controls
     with st.expander("🔍 Search & Filter Controls", expanded=True):
         search_query = st.text_input(
             "Search Item, Handler, or Notes", 
@@ -88,8 +88,15 @@ def render_audit_log(user_name: str, user_role: str):
         )
         
         type_filter = st.selectbox(
-            "Filter by Type", 
-            ["All", "STOCK IN", "STOCK OUT"],
+            "Filter by Category / Log Type", 
+            [
+                "All Activity", 
+                "STOCK IN", 
+                "STOCK OUT", 
+                "SCHEDULED DELIVERY", 
+                "PHYSICAL INVENTORY", 
+                "USER LOG"
+            ],
             key="mobile_type"
         )
 
@@ -97,62 +104,121 @@ def render_audit_log(user_name: str, user_role: str):
 
     try:
         with get_db() as conn:
-            query = """
-                SELECT id, timestamp, type, item_name, quantity, unit, handled_by, notes 
-                FROM transactions 
-                WHERE 1=1
+            # Unified query aggregating stock transactions, scheduled deliveries, inventory checks, and user logs
+            unified_query = """
+                SELECT 
+                    id, 
+                    timestamp, 
+                    type, 
+                    item_name, 
+                    CAST(quantity AS TEXT) AS quantity, 
+                    unit, 
+                    handled_by, 
+                    notes 
+                FROM transactions
+
+                UNION ALL
+
+                SELECT 
+                    id, 
+                    created_at AS timestamp, 
+                    'SCHEDULED DELIVERY' AS type, 
+                    item_name, 
+                    CAST(quantity AS TEXT) AS quantity, 
+                    unit, 
+                    created_by AS handled_by, 
+                    COALESCE(status, '') || ' | ' || COALESCE(notes, '') AS notes 
+                FROM scheduled_deliveries
+
+                UNION ALL
+
+                SELECT 
+                    id, 
+                    timestamp, 
+                    'PHYSICAL INVENTORY' AS type, 
+                    item_name, 
+                    CAST(counted_qty AS TEXT) AS quantity, 
+                    unit, 
+                    counted_by AS handled_by, 
+                    'System Qty: ' || CAST(system_qty AS TEXT) || ' | Variance: ' || CAST(variance AS TEXT) || ' | ' || COALESCE(notes, '') AS notes 
+                FROM physical_inventory_logs
+
+                UNION ALL
+
+                SELECT 
+                    id, 
+                    timestamp, 
+                    'USER LOG' AS type, 
+                    '-' AS item_name, 
+                    '-' AS quantity, 
+                    '-' AS unit, 
+                    username AS handled_by, 
+                    action || ' | ' || COALESCE(details, '') AS notes 
+                FROM user_logs
             """
+
+            # Build outer filtering query
+            final_query = f"SELECT * FROM ({unified_query}) WHERE 1=1"
             params = []
 
+            # Filter by Log Type
             if type_filter == "STOCK IN":
-                query += " AND (type = 'STOCK IN' OR type = 'IN')"
+                final_query += " AND type IN ('STOCK IN', 'IN')"
             elif type_filter == "STOCK OUT":
-                query += " AND (type = 'STOCK OUT' OR type = 'OUT')"
+                final_query += " AND type IN ('STOCK OUT', 'OUT')"
+            elif type_filter != "All Activity":
+                final_query += " AND type = ?"
+                params.append(type_filter)
 
+            # Keyword Search Filter
             if search_query.strip():
-                query += " AND (item_name LIKE ? OR handled_by LIKE ? OR notes LIKE ?)"
+                final_query += " AND (item_name LIKE ? OR handled_by LIKE ? OR notes LIKE ? OR type LIKE ?)"
                 wildcard = f"%{search_query.strip()}%"
-                params.extend([wildcard, wildcard, wildcard])
+                params.extend([wildcard, wildcard, wildcard, wildcard])
 
-            query += " ORDER BY id DESC"
+            final_query += " ORDER BY timestamp DESC, id DESC"
 
-            df = pd.read_sql_query(query, conn, params=params)
+            df = pd.read_sql_query(final_query, conn, params=params)
 
         if not df.empty:
-            # Metrics Summary calculated BEFORE column renaming
+            # Dynamic metrics overview
             in_count = len(df[df["type"].isin(["STOCK IN", "IN"])])
             out_count = len(df[df["type"].isin(["STOCK OUT", "OUT"])])
+            delivery_count = len(df[df["type"] == "SCHEDULED DELIVERY"])
+            physical_count = len(df[df["type"] == "PHYSICAL INVENTORY"])
+            user_count = len(df[df["type"] == "USER LOG"])
 
-            # MOBILE-OPTIMIZED: Compact Metric Layout
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Total", len(df))
-            m2.metric("In", in_count)
-            m3.metric("Out", out_count)
+            # Metric Columns Layout
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Total Logs", len(df))
+            m2.metric("Stock IN", in_count)
+            m3.metric("Stock OUT", out_count)
+            m4.metric("Deliveries", delivery_count)
+            m5.metric("User / Physical", user_count + physical_count)
 
             # Display formatting
             df_display = df.rename(
                 columns={
-                    "id": "Trans ID",
+                    "id": "Log ID",
                     "timestamp": "Date & Time",
-                    "type": "Type",
+                    "type": "Log Type",
                     "item_name": "Item Name",
                     "quantity": "Quantity",
                     "unit": "Unit",
-                    "handled_by": "Handled By",
-                    "notes": "Notes / Remarks",
+                    "handled_by": "Handled / Executed By",
+                    "notes": "Notes / Details / Audit Ref",
                 }
             )
 
             st.divider()
             
-            # MOBILE-OPTIMIZED: Datatable with horizontal scrolling enabled
+            # Datatable Output
             st.dataframe(
                 df_display, 
                 use_container_width=True, 
                 hide_index=True,
                 column_config={
-                    "Trans ID": st.column_config.NumberColumn(format="%d"),
-                    "Quantity": st.column_config.NumberColumn(format="%.2f"),
+                    "Log ID": st.column_config.NumberColumn(format="%d"),
                 }
             )
 
@@ -194,7 +260,7 @@ def render_audit_log(user_name: str, user_role: str):
                     st.info("No external file links or attachments found in records.")
 
             # -------------------------------------------------------------
-            # EXPORT & GOOGLE DRIVE SYNC (Stacked for Mobile Thumb Taps)
+            # EXPORT & GOOGLE DRIVE SYNC
             # -------------------------------------------------------------
             st.divider()
             csv_data = df_display.to_csv(index=False).encode("utf-8")
@@ -215,7 +281,7 @@ def render_audit_log(user_name: str, user_role: str):
                         st.markdown(f"🔗 [Open Uploaded File in Drive]({file_link})")
 
         else:
-            st.info("No transaction logs found matching the selected filters.")
+            st.info("No audit logs found matching the selected filters.")
 
     except Exception as e:
         st.error(f"Error loading audit log: {e}")
