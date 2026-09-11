@@ -74,23 +74,23 @@ def render_stock_in(user_name: str, user_role: str):
     # TAB 1: RECEIVE STOCK FORM
     # -------------------------------------------------------------
     with tab_receive:
+        # Placed OUTSIDE st.form to enable live updates on selection change
+        selected_item = st.selectbox(
+            "Select Master Item*", items_df["item_name"].tolist()
+        )
+
+        item_info = items_df[
+            items_df["item_name"] == selected_item
+        ].iloc[0]
+        current_stock = float(item_info["current_stock"])
+        unit = str(item_info["unit"])
+        category = str(item_info["category"])
+
+        st.info(
+            f"Category: **{category}** | Current Balance: **{current_stock:,.2f} {unit}**"
+        )
+
         with st.form("stock_in_form", clear_on_submit=True):
-            # Single-column vertical stacking for optimal mobile display
-            selected_item = st.selectbox(
-                "Select Master Item*", items_df["item_name"].tolist()
-            )
-
-            item_info = items_df[
-                items_df["item_name"] == selected_item
-            ].iloc[0]
-            current_stock = float(item_info["current_stock"])
-            unit = str(item_info["unit"])
-            category = str(item_info["category"])
-
-            st.info(
-                f"Category: **{category}** | Current Balance: **{current_stock:,.2f} {unit}**"
-            )
-
             quantity = st.number_input(
                 f"Received Quantity ({unit})*",
                 min_value=0.01,
