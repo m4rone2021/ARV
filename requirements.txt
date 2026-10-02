@@ -1,15 +1,23 @@
-streamlit
-pandas
-reportlab
-openpyxl
-bcrypt
-plotly
-google-api-python-client
-google-auth
-google-auth-httplib2
-google-auth-oauthlib
-streamlit
-pandas
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
+﻿# Core
+streamlit>=1.38,<2
+pandas>=2.2,<3
+numpy>=1.26,<3
+
+# Data backend
+supabase>=2.10,<3
+
+# Auth
+bcrypt>=4.1,<6
+
+# Charts
+plotly>=5.22,<7
+
+# Exports
+reportlab>=4.0,<5
+openpyxl>=3.1,<4
+
+# Google Drive (attachments)
+google-api-python-client>=2.130,<3
+google-auth>=2.30,<3
+google-auth-httplib2>=0.2,<1
+google-auth-oauthlib>=1.2,<2

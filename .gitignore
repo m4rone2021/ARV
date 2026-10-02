@@ -28,3 +28,9 @@ Thumbs.db
 
 # Migration workspace
 _migration/
+
+# Migration artifacts
+_migration/
+test_*.py
+list_drive_backups.py
+*_sqlite_backup.py
