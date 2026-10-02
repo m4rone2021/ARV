@@ -247,7 +247,7 @@ def render_audit_log(user_name, user_role):
             )
             summary_display = summary.copy()
             summary_display = summary_display.astype(str).replace("None", "").replace("nan", "")
-            st.dataframe(summary_display, use_container_width=True, hide_index=True)
+            st.dataframe(summary_display, width='stretch', hide_index=True)
 
     # Main table
     display_cols = [
@@ -274,7 +274,7 @@ def render_audit_log(user_name, user_role):
     display_df = display_df.replace(["None", "nan", "NaT", "<NA>"], "")
 
     st.divider()
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width='stretch', hide_index=True)
 
     # Attachments
     with st.expander("Attachments and Drive Links"):
@@ -315,10 +315,10 @@ def render_audit_log(user_name, user_role):
             data=csv_data,
             file_name="audit_log.csv",
             mime="text/csv",
-            use_container_width=True,
+            width='stretch',
         )
     with c2:
-        if st.button("Upload CSV to Google Drive", use_container_width=True):
+        if st.button("Upload CSV to Google Drive", width='stretch'):
             with st.spinner("Uploading..."):
                 link = upload_file_to_gdrive(
                     file_bytes=csv_data,
