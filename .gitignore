@@ -40,3 +40,9 @@ _migration/
 test_*.py
 list_drive_backups.py
 *_sqlite_backup.py
+
+# Session backups
+*_session*.py
+*_v1.py
+*_before_rewrite.py
+*_backup.py
