@@ -1,6 +1,5 @@
-﻿import io
 import re
-from pathlib import Path
+from pathlib import Path as _Path
 
 import pandas as pd
 import streamlit as st
@@ -8,62 +7,58 @@ import streamlit as st
 from database import UPLOAD_DIR, sb, upload_file_to_gdrive
 
 
-def extract_drive_link(notes_str: str) -> str:
-    if not isinstance(notes_str, str):
+def _extract_drive_link(notes):
+    if not isinstance(notes, str):
         return ""
-    match = re.search(r"(?:Drive Link|Attachment):\s*(https?://[^\s|]+)", notes_str)
-    return match.group(1) if match else ""
+    m = re.search(r"(?:Drive Link|Attachment):\s*(https?://\S+)", notes)
+    return m.group(1) if m else ""
 
 
-def extract_attachment_filename(notes_str: str) -> str:
-    if not isinstance(notes_str, str):
+def _extract_attachment_filename(notes):
+    if not isinstance(notes, str):
         return ""
-    match = re.search(r"Attachment:\s*([^\s|]+)", notes_str)
-    if match and not match.group(1).startswith("http"):
-        return match.group(1)
+    m = re.search(r"Attachment:\s*([^\s|]+)", notes)
+    if m and not m.group(1).startswith("http"):
+        return m.group(1)
     return ""
 
 
-def upload_csv_to_gdrive(csv_bytes: bytes, filename: str = "audit_log.csv"):
-    """Upload a CSV to Google Drive (uses same DB-less Drive path as stock_in)."""
-    try:
-        link = upload_file_to_gdrive(
-            file_bytes=csv_bytes,
-            file_name=filename,
-            mime_type="text/csv",
-        )
-        return link
-    except Exception as e:
-        st.error(f"Failed to sync with Google Drive: {e}")
-        return None
+def _extract_field(notes, label):
+    if not isinstance(notes, str):
+        return ""
+    pattern = re.compile(re.escape(label) + r"\s*:\s*([^|]+)", re.IGNORECASE)
+    m = pattern.search(notes)
+    return m.group(1).strip() if m else ""
 
 
-def render_audit_log(user_name: str, user_role: str):
-    st.title("📜 Complete Audit Log")
-    st.caption("Track stock movement, deliveries, physical logs, user activity, and attachments.")
+def _extract_req_ref(notes):
+    if not isinstance(notes, str):
+        return ("", "")
+    req_m = re.search(r"([A-Z0-9\-]+-REQ-\d{4})", notes)
+    rcv_m = re.search(r"([A-Z0-9\-]+-RCV-\d{4})", notes)
+    return (req_m.group(1) if req_m else "", rcv_m.group(1) if rcv_m else "")
 
-    # ---- Filters ----
-    with st.expander("🔍 Search & Filter Controls", expanded=True):
-        search_query = st.text_input(
-            "Search Item, Handler, or Notes",
-            placeholder="Type keyword...",
-            key="mobile_search",
-        )
-        type_filter = st.selectbox(
-            "Filter by Category / Log Type",
-            [
-                "All Activity",
-                "STOCK IN",
-                "STOCK OUT",
-                "SCHEDULED DELIVERY",
-                "PHYSICAL INVENTORY",
-                "USER LOG",
-            ],
-            key="mobile_type",
-        )
-        st.button("🔄 Refresh Data", width='stretch')
 
-    # ---- Fetch each source table separately, then merge ----
+def _build_delivery_notes(row):
+    status = str(row.get("status") or "")
+    notes = str(row.get("notes") or "")
+    return status + " | " + notes
+
+
+def _build_phys_notes(row):
+    sysq = str(row.get("system_qty") or "")
+    var = str(row.get("variance") or "")
+    notes = str(row.get("notes") or "")
+    return "System Qty: " + sysq + " | Variance: " + var + " | " + notes
+
+
+def render_audit_log(user_name, user_role):
+    st.title("Complete Audit Log")
+    st.caption(
+        "Track stock movement, deliveries, physical counts, and user activity "
+        "with full project traceability."
+    )
+
     frames = []
 
     # 1. transactions
@@ -71,28 +66,24 @@ def render_audit_log(user_name: str, user_role: str):
         res = (
             sb()
             .table("transactions")
-            .select("id, timestamp, type, item_name, quantity, unit, handled_by, notes")
+            .select("id, timestamp, type, item_name, quantity, unit, handled_by, notes, project_name")
             .order("timestamp", desc=True)
             .limit(500)
             .execute()
         )
         if res.data:
             df = pd.DataFrame(res.data)
-            df["type"] = df["type"].apply(
-                lambda t: "STOCK IN" if t == "IN"
-                else "STOCK OUT" if t == "OUT"
-                else t
-            )
+            df["type"] = df["type"].apply(_normalize_tx_type)
             frames.append(df)
     except Exception as e:
-        st.warning(f"Could not load transactions: {e}")
+        st.warning("Could not load transactions: " + str(e))
 
-    # 2. deliveries (as scheduled delivery)
+    # 2. deliveries
     try:
         res = (
             sb()
             .table("deliveries")
-            .select("id, created_at, item_name, expected_quantity, unit, created_by, status, notes")
+            .select("id, created_at, item_name, expected_quantity, unit, created_by, status, notes, project")
             .order("created_at", desc=True)
             .limit(500)
             .execute()
@@ -103,14 +94,13 @@ def render_audit_log(user_name: str, user_role: str):
                 "created_at": "timestamp",
                 "expected_quantity": "quantity",
                 "created_by": "handled_by",
+                "project": "project_name",
             })
             df["type"] = "SCHEDULED DELIVERY"
-            df["notes"] = df.apply(
-                lambda r: f"{r.get('status', '')} | {r.get('notes') or ''}", axis=1
-            )
-            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes"]])
+            df["notes"] = df.apply(_build_delivery_notes, axis=1)
+            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes", "project_name"]])
     except Exception as e:
-        st.warning(f"Could not load deliveries: {e}")
+        st.warning("Could not load deliveries: " + str(e))
 
     # 3. physical_inventory_logs
     try:
@@ -129,18 +119,13 @@ def render_audit_log(user_name: str, user_role: str):
                 "counted_by": "handled_by",
             })
             df["type"] = "PHYSICAL INVENTORY"
-            df["notes"] = df.apply(
-                lambda r: (
-                    f"System Qty: {r['system_qty']} | Variance: {r['variance']} | "
-                    f"{r.get('notes') or ''}"
-                ),
-                axis=1,
-            )
-            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes"]])
+            df["project_name"] = None
+            df["notes"] = df.apply(_build_phys_notes, axis=1)
+            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes", "project_name"]])
     except Exception as e:
-        st.warning(f"Could not load physical inventory logs: {e}")
+        st.warning("Could not load physical inventory logs: " + str(e))
 
-    # 4. user_logs (currently empty, but supported)
+    # 4. user_logs
     try:
         res = (
             sb()
@@ -160,118 +145,208 @@ def render_audit_log(user_name: str, user_role: str):
             df["quantity"] = "-"
             df["unit"] = "-"
             df["notes"] = df["details"]
-            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes"]])
+            df["project_name"] = None
+            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes", "project_name"]])
     except Exception as e:
-        st.warning(f"Could not load user logs: {e}")
+        st.warning("Could not load user logs: " + str(e))
 
-    # ---- Merge ----
     if not frames:
-        st.info("No audit logs found matching the selected filters.")
+        st.info("No audit logs found.")
         return
 
     df = pd.concat(frames, ignore_index=True)
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.sort_values("timestamp", ascending=False).reset_index(drop=True)
 
-    # ---- Apply filters ----
-    if type_filter == "STOCK IN":
-        df = df[df["type"].isin(["STOCK IN", "IN"])]
-    elif type_filter == "STOCK OUT":
-        df = df[df["type"].isin(["STOCK OUT", "OUT"])]
-    elif type_filter != "All Activity":
-        df = df[df["type"] == type_filter]
+    # Derive extended fields
+    df["Destination"] = df["notes"].apply(_extract_destination)
+    df["Requested By"] = df["notes"].apply(_extract_requested_by)
+    df["Supplier"] = df["notes"].apply(_extract_supplier)
+    refs = df["notes"].apply(_extract_req_ref)
+    df["Requisition"] = [r[0] for r in refs]
+    df["Receipt"] = [r[1] for r in refs]
 
+    # Filters
+    with st.expander("Search and Filter", expanded=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            proj_vals = sorted([p for p in df["project_name"].dropna().unique() if p])
+            project_filter = st.selectbox("Project", ["All Projects"] + proj_vals)
+            type_filter = st.selectbox(
+                "Log Type",
+                ["All Activity", "STOCK IN", "STOCK OUT", "SCHEDULED DELIVERY",
+                 "PHYSICAL INVENTORY", "USER LOG"],
+            )
+        with c2:
+            search_query = st.text_input(
+                "Search (item, handler, notes)",
+                placeholder="Type keyword...",
+            )
+            ref_filter = st.text_input(
+                "Requisition / Receipt ID",
+                placeholder="e.g., PRJ-2026-A-REQ-0001",
+            )
+
+    filtered = df.copy()
+    if project_filter != "All Projects":
+        filtered = filtered[filtered["project_name"] == project_filter]
+    if type_filter == "STOCK IN":
+        filtered = filtered[filtered["type"].isin(["STOCK IN", "IN"])]
+    elif type_filter == "STOCK OUT":
+        filtered = filtered[filtered["type"].isin(["STOCK OUT", "OUT"])]
+    elif type_filter != "All Activity":
+        filtered = filtered[filtered["type"] == type_filter]
     if search_query.strip():
         q = search_query.strip().lower()
         mask = (
-            df["item_name"].astype(str).str.lower().str.contains(q, na=False)
-            | df["handled_by"].astype(str).str.lower().str.contains(q, na=False)
-            | df["notes"].astype(str).str.lower().str.contains(q, na=False)
-            | df["type"].astype(str).str.lower().str.contains(q, na=False)
+            filtered["item_name"].astype(str).str.lower().str.contains(q, na=False)
+            | filtered["handled_by"].astype(str).str.lower().str.contains(q, na=False)
+            | filtered["notes"].astype(str).str.lower().str.contains(q, na=False)
         )
-        df = df[mask]
+        filtered = filtered[mask]
+    if ref_filter.strip():
+        q = ref_filter.strip().lower()
+        mask = (
+            filtered["Requisition"].astype(str).str.lower().str.contains(q, na=False)
+            | filtered["Receipt"].astype(str).str.lower().str.contains(q, na=False)
+        )
+        filtered = filtered[mask]
 
-    if df.empty:
-        st.info("No audit logs found matching the selected filters.")
+    if filtered.empty:
+        st.info("No audit logs match the selected filters.")
         return
 
-    # ---- KPI metrics ----
-    in_count = len(df[df["type"].isin(["STOCK IN", "IN"])])
-    out_count = len(df[df["type"].isin(["STOCK OUT", "OUT"])])
-    delivery_count = len(df[df["type"] == "SCHEDULED DELIVERY"])
-    physical_count = len(df[df["type"] == "PHYSICAL INVENTORY"])
-    user_count = len(df[df["type"] == "USER LOG"])
+    # KPI metrics
+    in_count = len(filtered[filtered["type"].isin(["STOCK IN", "IN"])])
+    out_count = len(filtered[filtered["type"].isin(["STOCK OUT", "OUT"])])
+    del_count = len(filtered[filtered["type"] == "SCHEDULED DELIVERY"])
+    phys_count = len(filtered[filtered["type"] == "PHYSICAL INVENTORY"])
+    user_count = len(filtered[filtered["type"] == "USER LOG"])
 
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Total Logs", len(df))
+    m1.metric("Total Logs", len(filtered))
     m2.metric("Stock IN", in_count)
     m3.metric("Stock OUT", out_count)
-    m4.metric("Deliveries", delivery_count)
-    m5.metric("User / Physical", user_count + physical_count)
+    m4.metric("Deliveries", del_count)
+    m5.metric("Phys / User", phys_count + user_count)
 
-    df_display = df.rename(columns={
-        "id": "Log ID",
-        "timestamp": "Date & Time",
+    # Project summary
+    with_project = filtered[filtered["project_name"].notna() & (filtered["project_name"] != "")]
+    if not with_project.empty:
+        with st.expander("Project Summary", expanded=False):
+            summary = (
+                with_project.groupby("project_name")
+                .agg(
+                    Lines=("id", "count"),
+                    First_Move=("timestamp", "min"),
+                    Last_Move=("timestamp", "max"),
+                )
+                .reset_index()
+                .rename(columns={"project_name": "Project"})
+                .sort_values("Last_Move", ascending=False)
+            )
+            summary_display = summary.copy()
+            summary_display = summary_display.astype(str).replace("None", "").replace("nan", "")
+            st.dataframe(summary_display, use_container_width=True, hide_index=True)
+
+    # Main table
+    display_cols = [
+        "timestamp", "type", "project_name", "Requisition", "Receipt",
+        "item_name", "quantity", "unit", "Destination",
+        "Requested By", "Supplier", "handled_by", "notes",
+    ]
+    display_df = filtered[display_cols].rename(columns={
+        "timestamp": "Date and Time",
         "type": "Log Type",
-        "item_name": "Item Name",
-        "quantity": "Quantity",
+        "project_name": "Project",
+        "item_name": "Item",
+        "quantity": "Qty",
         "unit": "Unit",
-        "handled_by": "Handled / Executed By",
-        "notes": "Notes / Details / Audit Ref",
+        "handled_by": "Handled By",
+        "notes": "Details",
     })
 
+    # Clean None/NaN before string coercion
+    display_df = display_df.fillna("")
+    display_df = display_df.replace(["None", "nan", "NaT", "<NA>"], "")
+    display_df = display_df.astype(str)
+    # In case astype re-introduced None as string
+    display_df = display_df.replace(["None", "nan", "NaT", "<NA>"], "")
+
     st.divider()
-    st.dataframe(df_display, width='stretch', hide_index=True)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-    # ---- Attachments ----
-    with st.expander("📎 Attachments & Drive Links"):
+    # Attachments
+    with st.expander("Attachments and Drive Links"):
         has_media = False
-        for _, row in df.iterrows():
-            notes = str(row["notes"])
-            drive_url = extract_drive_link(notes)
-            local_file = extract_attachment_filename(notes)
-
-            if drive_url:
+        for _, row in filtered.iterrows():
+            notes_str = str(row["notes"])
+            link = _extract_drive_link(notes_str)
+            local = _extract_attachment_filename(notes_str)
+            if link:
                 has_media = True
                 st.markdown(
-                    f"🔗 **Log #{str(row['id'])[:8]} ({row['type']} - {row['item_name']})**  \n"
-                    f"[Open Document]({drive_url})"
+                    "Log #" + str(row["id"])[:8] + " (" + row["type"] + " - " +
+                    row["item_name"] + "): [Open Document](" + link + ")"
                 )
-                st.divider()
-            elif local_file:
+            elif local:
                 has_media = True
-                file_path = Path(UPLOAD_DIR) / local_file
+                file_path = _Path(str(UPLOAD_DIR)) / local
                 if file_path.exists():
                     with open(file_path, "rb") as f:
                         st.download_button(
-                            label=f"📄 Download #{str(row['id'])[:8]}: {local_file}",
+                            label="Download " + local,
                             data=f.read(),
-                            file_name=local_file,
-                            key=f"audit_dl_{row['id']}",
-                            width='stretch',
+                            file_name=local,
+                            key="audit_dl_" + str(row["id"]),
                         )
                 else:
-                    st.caption(f"⚠️ Log local file `{local_file}` not found on disk.")
-
+                    st.caption("Local file not found: " + local)
         if not has_media:
-            st.info("No external file links or attachments found in records.")
+            st.info("No attachments in the current filter.")
 
-    # ---- Export ----
+    # Export
     st.divider()
-    csv_data = df_display.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="📥 Export Audit Log (CSV)",
-        data=csv_data,
-        file_name="audit_log.csv",
-        mime="text/csv",
-        width='stretch',
-    )
+    csv_data = display_df.to_csv(index=False).encode("utf-8")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            label="Export to CSV",
+            data=csv_data,
+            file_name="audit_log.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with c2:
+        if st.button("Upload CSV to Google Drive", use_container_width=True):
+            with st.spinner("Uploading..."):
+                link = upload_file_to_gdrive(
+                    file_bytes=csv_data,
+                    file_name="audit_log_backup.csv",
+                    mime_type="text/csv",
+                )
+                if link:
+                    st.success("Uploaded to Google Drive.")
+                    st.markdown("[Open in Drive](" + link + ")")
+                else:
+                    st.error("Drive upload failed. Check Drive credentials.")
 
-    if st.button("☁️ Sync Audit Log to Google Drive", width='stretch'):
-        with st.spinner("Uploading to Google Drive..."):
-            link = upload_csv_to_gdrive(csv_data, filename="audit_log_backup.csv")
-            if link:
-                st.success("Successfully uploaded to Google Drive!")
-                st.markdown(f"🔗 [Open Uploaded File in Drive]({link})")
-            else:
-                st.error("Upload failed — check Drive credentials.")
+
+def _normalize_tx_type(t):
+    if t == "IN":
+        return "STOCK IN"
+    if t == "OUT":
+        return "STOCK OUT"
+    return t
+
+
+def _extract_destination(notes):
+    return _extract_field(notes, "Destination")
+
+
+def _extract_requested_by(notes):
+    return _extract_field(notes, "Requested by")
+
+
+def _extract_supplier(notes):
+    return _extract_field(notes, "Supplier")
