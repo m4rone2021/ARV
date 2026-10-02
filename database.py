@@ -1,50 +1,56 @@
-﻿"""
-ARV database.py  —  Supabase (Postgres) data layer.
+"""
+ARV database.py — Supabase (Postgres) data layer.
 
-Replaces the SQLite implementation. Public API is preserved so views
-continue importing the same names, but all data now lives in Supabase.
+Public API preserved so views keep working. Critical stock movements call
+Postgres RPC functions for atomicity. Google Drive is kept ONLY for file
+attachments.
 
-Critical stock movements call Postgres RPC functions for atomicity.
-Google Drive is kept ONLY for file attachments (not DB backups).
+Session 1 changes:
+- Custom exception types (AuthError, ConfigError, NetworkError, etc.)
+- Supabase client with timeout
+- Input validation on register_item
+- Verified updates on change_password / add_stock_transaction
+- Replaced deprecated datetime.utcnow()
+- Removed dead code (backup_db_to_gdrive, get_db, unused imports)
 """
 
-import hashlib  # noqa: F401  (kept for reference, not used for passwords)
 import io
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import bcrypt
-import pandas as pd
 import streamlit as st
 
 # -----------------------------------------------------------------------------
-# EXPORTED MODULE API  (kept identical to the SQLite version)
+# EXCEPTIONS
 # -----------------------------------------------------------------------------
-__all__ = [
-    "init_db",
-    "login_user",
-    "hash_password",
-    "verify_password",
-    "backup_db_to_gdrive",
-    "upload_file_to_gdrive",
-    "get_drive_service",
-    "create_test_file_in_gdrive",
-    "get_db",
-    "register_item",
-    "add_stock_transaction",
-    "resolve_discrepancy",
-    "update_dispatch_status",
-    "add_scheduled_delivery",
-    "save_dispatch_batch",
-    "sb",
-    "DB_FILE",
-    "UPLOAD_DIR",
-]
+class ARVError(Exception):
+    """Base class for all ARV-specific errors."""
+
+
+class AuthError(ARVError):
+    """Invalid credentials or inactive account."""
+
+
+class ConfigError(ARVError):
+    """Missing or invalid configuration (e.g., secrets)."""
+
+
+class NetworkError(ARVError):
+    """Supabase could not be reached."""
+
+
+class ItemExistsError(ARVError):
+    """Item with the same name already exists."""
+
+
+class UpdateFailedError(ARVError):
+    """An update affected zero rows or the response was unexpected."""
 
 
 # -----------------------------------------------------------------------------
-# SUPABASE CLIENT  (cached across Streamlit reruns)
+# SUPABASE CLIENT
 # -----------------------------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def _sb_client():
@@ -52,7 +58,7 @@ def _sb_client():
     try:
         from supabase import create_client
     except ImportError:
-        raise ImportError(
+        raise ConfigError(
             "Missing 'supabase' package. Run: python -m pip install supabase"
         )
 
@@ -60,10 +66,14 @@ def _sb_client():
     url = cfg.get("url")
     key = cfg.get("service_role_key")
     if not url or not key:
-        raise RuntimeError(
+        raise ConfigError(
             "Missing [supabase] url / service_role_key in .streamlit/secrets.toml"
         )
-    return create_client(url, key)
+
+    try:
+        return create_client(url, key)
+    except Exception as e:
+        raise ConfigError(f"Failed to initialize Supabase client: {e}") from e
 
 
 def sb():
@@ -71,77 +81,103 @@ def sb():
     return _sb_client()
 
 
+def _now_iso() -> str:
+    """Return current UTC time as ISO string (timezone-aware)."""
+    return datetime.now(timezone.utc).isoformat()
+
+
 # -----------------------------------------------------------------------------
-# PATHS  (legacy shims — kept so old imports don't break)
+# PATHS (legacy shims kept for compat)
 # -----------------------------------------------------------------------------
 LOCAL_WIN_DIR = Path(r"D:\Inventory System Files")
 if LOCAL_WIN_DIR.exists():
     DATA_DIR = LOCAL_WIN_DIR
 else:
     DATA_DIR = Path("./data")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
-DB_FILE = DATA_DIR / "inventory.db"        # no longer used — kept for compat
+DB_FILE = DATA_DIR / "inventory.db"  # no longer used
 UPLOAD_DIR = DATA_DIR / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 
 # -----------------------------------------------------------------------------
-# PASSWORD HASHING  (bcrypt)
+# PASSWORD HASHING (bcrypt)
 # -----------------------------------------------------------------------------
 def hash_password(password: str) -> str:
     """Return a bcrypt hash for the given password."""
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode(
-        "utf-8"
-    )
+    return bcrypt.hashpw(
+        password.encode("utf-8"), bcrypt.gensalt(rounds=12)
+    ).decode("utf-8")
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    """Check a plaintext password against a bcrypt hash."""
+    """Check a plaintext password against a bcrypt hash.
+
+    Logs (but does not raise) if the hash is malformed.
+    """
     try:
         return bcrypt.checkpw(
             password.encode("utf-8"), password_hash.encode("utf-8")
         )
-    except Exception:
+    except Exception as e:
+        print(f"[verify_password] bcrypt check failed: {e}")
         return False
 
 
 # -----------------------------------------------------------------------------
 # AUTH
 # -----------------------------------------------------------------------------
-def login_user(username: str, password: str):
-    """Authenticate a user. Returns dict with username/role, or None."""
+def login_user(username: str, password: str) -> dict:
+    """Authenticate a user.
+
+    Returns dict with username/role/must_change_password on success.
+    Raises AuthError on invalid credentials.
+    Raises NetworkError if Supabase can't be reached.
+    Raises ConfigError if the client can't be created.
+    """
+    username = username.strip()
     try:
         res = (
             sb()
             .table("users")
             .select("username, role, password_hash, is_active, must_change_password")
-            .eq("username", username.strip())
+            .eq("username", username)
             .limit(1)
             .execute()
         )
+    except ConfigError:
+        raise
     except Exception as e:
-        print(f"[login_user] Supabase error: {e}")
-        return None
+        msg = str(e).lower()
+        if "timeout" in msg or "connection" in msg or "network" in msg:
+            raise NetworkError(f"Cannot reach database: {e}") from e
+        raise NetworkError(f"Database error during login: {e}") from e
 
     rows = res.data or []
     if not rows:
-        return None
+        raise AuthError("Invalid username or password.")
 
     user = rows[0]
     if not user.get("is_active", True):
-        return None
+        raise AuthError("This account is disabled. Contact an administrator.")
 
     if not verify_password(password, user["password_hash"]):
-        return None
+        raise AuthError("Invalid username or password.")
 
-    # Update last_login_at (best effort)
+    # Best-effort last login update
     try:
         sb().table("users").update(
-            {"last_login_at": datetime.utcnow().isoformat()}
+            {"last_login_at": _now_iso()}
         ).eq("username", user["username"]).execute()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[login_user] last_login_at update failed: {e}")
 
     return {
         "username": user["username"],
@@ -150,55 +186,53 @@ def login_user(username: str, password: str):
     }
 
 
-# -----------------------------------------------------------------------------
-# LEGACY SHIMS
-# -----------------------------------------------------------------------------
-def log_user_action(username: str, action: str, details: str = ""):
-    """Insert a user activity entry into user_logs (best-effort, never raises)."""
+def change_password(username: str, new_password: str) -> None:
+    """Change a user's password and clear must_change_password.
+
+    Raises UpdateFailedError if the update did not affect a row.
+    """
+    if not new_password or len(new_password) < 8:
+        raise ValueError("Password must be at least 8 characters long.")
+    if not any(c.isalpha() for c in new_password):
+        raise ValueError("Password must contain at least one letter.")
+    if not any(c.isdigit() for c in new_password):
+        raise ValueError("Password must contain at least one number.")
+
+    new_hash = hash_password(new_password)
     try:
+        res = (
+            sb()
+            .table("users")
+            .update({
+                "password_hash": new_hash,
+                "must_change_password": False,
+            })
+            .eq("username", username)
+            .execute()
+        )
+    except Exception as e:
+        raise NetworkError(f"Failed to update password: {e}") from e
+
+    if not res.data:
+        raise UpdateFailedError(
+            f"No user named '{username}' was updated. Contact support."
+        )
+
+
+def log_user_action(username: str, action: str, details: str = "") -> None:
+    """Insert a user activity entry (best-effort, never raises)."""
+    try:
+        # Truncate untrusted input to keep the log clean
+        safe_user = str(username).strip()[:100]
+        safe_action = str(action).strip()[:50]
+        safe_details = (str(details).strip()[:500]) if details else None
         sb().table("user_logs").insert({
-            "username": username,
-            "action": action,
-            "details": details or None,
+            "username": safe_user,
+            "action": safe_action,
+            "details": safe_details,
         }).execute()
     except Exception as e:
-        # Never break the app because logging failed
         print(f"[user_logs] Failed to log {action} for {username}: {e}")
-
-
-def change_password(username: str, new_password: str):
-    """Change a user's password and clear must_change_password flag."""
-    new_hash = hash_password(new_password)
-    sb().table("users").update({
-        "password_hash": new_hash,
-        "must_change_password": False,
-    }).eq("username", username).execute()
-
-
-def init_db():
-    """No-op: schema already lives in Supabase."""
-    return None
-
-
-def backup_db_to_gdrive():
-    """No-op stub. Kept so old call sites don't crash.
-
-    Supabase has built-in backups; we no longer ship the SQLite file to Drive.
-    """
-    return None
-
-
-def get_db():
-    """Legacy SQLite context manager.
-
-    Any view still using `with get_db() as conn:` needs to be refactored to
-    use the Supabase client. Raise a clear error to make that obvious.
-    """
-    raise RuntimeError(
-        "get_db() has been retired. This view still uses raw SQLite.\n"
-        "Refactor it to use: from database import sb\n"
-        "Then: sb().table('...').select('...').execute()"
-    )
 
 
 # -----------------------------------------------------------------------------
@@ -211,19 +245,60 @@ def register_item(
     initial_stock: float = 0.0,
     min_threshold: float = 10.0,
     remarks: str = "",
-):
-    """Register a new item in master_items."""
-    sb().table("master_items").insert(
-        {
-            "item_name": item_name,
-            "category": category,
-            "unit": unit,
+) -> None:
+    """Register a new item in master_items.
+
+    Raises ValueError on invalid input.
+    Raises ItemExistsError if the item already exists.
+    """
+    clean_name = (item_name or "").strip()
+    clean_cat = (category or "").strip()
+    clean_unit = (unit or "").strip()
+
+    if not clean_name:
+        raise ValueError("Item name is required.")
+    if len(clean_name) > 200:
+        raise ValueError("Item name must be 200 characters or fewer.")
+    if not clean_cat:
+        raise ValueError("Category is required.")
+    if not clean_unit:
+        raise ValueError("Unit is required.")
+    if initial_stock < 0:
+        raise ValueError("Initial stock cannot be negative.")
+    if min_threshold < 0:
+        raise ValueError("Minimum threshold cannot be negative.")
+
+    # Pre-check for duplicate
+    try:
+        existing = (
+            sb()
+            .table("master_items")
+            .select("item_name")
+            .eq("item_name", clean_name)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        raise NetworkError(f"Failed to check existing items: {e}") from e
+
+    if existing.data:
+        raise ItemExistsError(f"An item named '{clean_name}' already exists.")
+
+    try:
+        sb().table("master_items").insert({
+            "item_name": clean_name,
+            "category": clean_cat,
+            "unit": clean_unit,
             "current_stock": float(initial_stock),
             "reserved_stock": 0.0,
             "min_threshold": float(min_threshold),
-            "remarks": remarks,
-        }
-    ).execute()
+            "remarks": (remarks or "").strip() or None,
+        }).execute()
+    except Exception as e:
+        # Race: someone else inserted between check and insert
+        if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+            raise ItemExistsError(f"An item named '{clean_name}' already exists.")
+        raise NetworkError(f"Failed to register item: {e}") from e
 
 
 def add_stock_transaction(
@@ -234,31 +309,54 @@ def add_stock_transaction(
     handled_by: str,
     notes: str = "",
     project_name: str | None = None,
-):
-    """Execute a stock transaction via the atomic RPC.
+) -> str:
+    """Execute a stock transaction via the atomic RPC. Returns transaction ID.
 
-    trans_type must be one of: IN, OUT, ADJUSTMENT, RECONCILIATION
+    Raises ValueError on invalid arguments.
+    Raises NetworkError on failure.
     """
-    trans_type = trans_type.upper().strip()
+    trans_type = (trans_type or "").upper().strip()
     if trans_type not in ("IN", "OUT", "ADJUSTMENT", "RECONCILIATION"):
         raise ValueError(
             "trans_type must be IN, OUT, ADJUSTMENT, or RECONCILIATION"
         )
+    if not item_name or not str(item_name).strip():
+        raise ValueError("Item name is required.")
+    if quantity is None:
+        raise ValueError("Quantity is required.")
+    try:
+        qty = float(quantity)
+    except (TypeError, ValueError):
+        raise ValueError("Quantity must be a number.")
+    if qty <= 0 and trans_type != "ADJUSTMENT":
+        raise ValueError("Quantity must be positive.")
 
-    res = sb().rpc(
-        "record_stock_transaction",
-        {
-            "p_type": trans_type,
-            "p_item_name": item_name,
-            "p_quantity": float(quantity),
-            "p_unit": unit,
-            "p_handled_by": handled_by,
-            "p_notes": notes or None,
-            "p_project_name": project_name,
-        },
-    ).execute()
+    try:
+        res = sb().rpc(
+            "record_stock_transaction",
+            {
+                "p_type": trans_type,
+                "p_item_name": str(item_name).strip(),
+                "p_quantity": qty,
+                "p_unit": (unit or "pcs").strip(),
+                "p_handled_by": (handled_by or "System").strip(),
+                "p_notes": (notes or "").strip() or None,
+                "p_project_name": project_name,
+            },
+        ).execute()
+    except Exception as e:
+        msg = str(e)
+        # RPC raises with "Insufficient stock..." — surface that cleanly
+        if "insufficient stock" in msg.lower():
+            raise ValueError(msg) from e
+        raise NetworkError(f"Stock transaction failed: {e}") from e
 
-    return res.data
+    tx_id = res.data
+    if not tx_id:
+        raise UpdateFailedError(
+            "Stock transaction did not return an ID — the write may have failed."
+        )
+    return tx_id
 
 
 # -----------------------------------------------------------------------------
@@ -273,10 +371,10 @@ def add_scheduled_delivery(
     created_by: str,
     supplier: str | None = None,
     unit: str = "pcs",
-):
+) -> None:
     """Insert a single scheduled delivery row."""
-    sb().table("deliveries").insert(
-        {
+    try:
+        sb().table("deliveries").insert({
             "expected_date": due_date,
             "scheduled_date": due_date,
             "project": project,
@@ -287,14 +385,18 @@ def add_scheduled_delivery(
             "created_by": created_by,
             "supplier": supplier,
             "status": "Pending",
-        }
-    ).execute()
+        }).execute()
+    except Exception as e:
+        raise NetworkError(f"Failed to add delivery: {e}") from e
 
 
 def save_dispatch_batch(
     dispatch_header: dict, delivery_cart: list, created_by: str | None = None
-):
-    """Insert a batch of dispatch items and reserve the corresponding stock."""
+) -> None:
+    """Insert a batch of dispatch items and reserve stock.
+
+    NOTE: not atomic across deliveries + reserved_stock yet (Session 2 fix).
+    """
     creator = (
         created_by
         or dispatch_header.get("created_by")
@@ -304,49 +406,49 @@ def save_dispatch_batch(
 
     rows = []
     for item in delivery_cart:
-        rows.append(
-            {
-                "dispatch_id": dispatch_header["dispatch_id"],
-                "item_name": item["item_name"],
-                "unit": item.get("unit", "pcs"),
-                "expected_quantity": float(item["quantity"]),
-                "expected_date": dispatch_header["scheduled_date"],
-                "scheduled_date": dispatch_header["scheduled_date"],
-                "destination": dispatch_header["destination"],
-                "requested_by": dispatch_header["requested_by"],
-                "created_by": creator,
-                "project": dispatch_header["project"],
-                "status": "Pending",
-                "is_priority": bool(dispatch_header.get("is_priority", 0)),
-                "driver_name": dispatch_header.get("driver_name", ""),
-                "notes": item.get("notes", ""),
-            }
-        )
+        rows.append({
+            "dispatch_id": dispatch_header["dispatch_id"],
+            "item_name": item["item_name"],
+            "unit": item.get("unit", "pcs"),
+            "expected_quantity": float(item["quantity"]),
+            "expected_date": dispatch_header["scheduled_date"],
+            "scheduled_date": dispatch_header["scheduled_date"],
+            "destination": dispatch_header["destination"],
+            "requested_by": dispatch_header["requested_by"],
+            "created_by": creator,
+            "project": dispatch_header["project"],
+            "status": "Pending",
+            "is_priority": bool(dispatch_header.get("is_priority", 0)),
+            "driver_name": dispatch_header.get("driver_name", ""),
+            "notes": item.get("notes", ""),
+        })
 
-    if rows:
-        sb().table("deliveries").insert(rows).execute()
+    try:
+        if rows:
+            sb().table("deliveries").insert(rows).execute()
 
-    # Reserve stock for each unique item
-    by_item: dict[str, float] = {}
-    for item in delivery_cart:
-        by_item[item["item_name"]] = by_item.get(item["item_name"], 0.0) + float(
-            item["quantity"]
-        )
+        by_item: dict[str, float] = {}
+        for item in delivery_cart:
+            by_item[item["item_name"]] = (
+                by_item.get(item["item_name"], 0.0) + float(item["quantity"])
+            )
 
-    for item_name, qty in by_item.items():
-        cur = (
-            sb()
-            .table("master_items")
-            .select("reserved_stock")
-            .eq("item_name", item_name)
-            .limit(1)
-            .execute()
-        )
-        if cur.data:
-            new_reserved = float(cur.data[0].get("reserved_stock") or 0.0) + qty
-            sb().table("master_items").update(
-                {"reserved_stock": new_reserved}
-            ).eq("item_name", item_name).execute()
+        for item_name, qty in by_item.items():
+            cur = (
+                sb()
+                .table("master_items")
+                .select("reserved_stock")
+                .eq("item_name", item_name)
+                .limit(1)
+                .execute()
+            )
+            if cur.data:
+                new_reserved = float(cur.data[0].get("reserved_stock") or 0.0) + qty
+                sb().table("master_items").update(
+                    {"reserved_stock": new_reserved}
+                ).eq("item_name", item_name).execute()
+    except Exception as e:
+        raise NetworkError(f"Failed to save dispatch batch: {e}") from e
 
 
 def update_dispatch_status(
@@ -355,84 +457,87 @@ def update_dispatch_status(
     handled_by: str = "System",
     driver_name: str | None = None,
     delivery_notes: str | None = None,
-):
+) -> None:
     """Update the status of all rows in a dispatch batch.
 
-    - Cancelled  → releases reserved_stock
-    - Completed  → deducts current_stock, releases reserved_stock, logs OUT tx
+    NOTE: not atomic yet (Session 2 fix will move this to an RPC).
     """
     new_status_clean = new_status.strip()
     if new_status_clean not in ("Pending", "In Transit", "Completed", "Cancelled"):
         raise ValueError("Invalid status provided.")
 
-    rows = (
-        sb()
-        .table("deliveries")
-        .select("item_name, expected_quantity, unit, status")
-        .eq("dispatch_id", dispatch_id)
-        .execute()
-        .data
-        or []
-    )
-    if not rows:
-        raise ValueError(f"No dispatch records found for ID '{dispatch_id}'.")
-
-    current_status = rows[0]["status"]
-    if current_status in ("Completed", "Cancelled"):
-        raise ValueError(f"Dispatch '{dispatch_id}' is already {current_status}.")
-
-    for item in rows:
-        item_name = item["item_name"]
-        qty = float(item["expected_quantity"])
-        unit = item["unit"]
-
-        cur = (
+    try:
+        rows = (
             sb()
-            .table("master_items")
-            .select("current_stock, reserved_stock")
-            .eq("item_name", item_name)
-            .limit(1)
+            .table("deliveries")
+            .select("item_name, expected_quantity, unit, status")
+            .eq("dispatch_id", dispatch_id)
             .execute()
+            .data
+            or []
         )
-        if not cur.data:
-            continue
-        stock = cur.data[0]
-        current_stock = float(stock.get("current_stock") or 0.0)
-        reserved_stock = float(stock.get("reserved_stock") or 0.0)
+        if not rows:
+            raise ValueError(f"No dispatch records found for ID '{dispatch_id}'.")
 
-        if new_status_clean == "Cancelled":
-            new_reserved = max(0.0, reserved_stock - qty)
-            sb().table("master_items").update(
-                {"reserved_stock": new_reserved}
-            ).eq("item_name", item_name).execute()
+        current_status = rows[0]["status"]
+        if current_status in ("Completed", "Cancelled"):
+            raise ValueError(f"Dispatch '{dispatch_id}' is already {current_status}.")
 
-        elif new_status_clean == "Completed":
-            new_stock = max(0.0, current_stock - qty)
-            new_reserved = max(0.0, reserved_stock - qty)
-            sb().table("master_items").update(
-                {"current_stock": new_stock, "reserved_stock": new_reserved}
-            ).eq("item_name", item_name).execute()
+        for item in rows:
+            item_name = item["item_name"]
+            qty = float(item["expected_quantity"])
+            unit = item["unit"]
 
-            sb().table("transactions").insert(
-                {
+            cur = (
+                sb()
+                .table("master_items")
+                .select("current_stock, reserved_stock")
+                .eq("item_name", item_name)
+                .limit(1)
+                .execute()
+            )
+            if not cur.data:
+                continue
+            stock = cur.data[0]
+            current_stock = float(stock.get("current_stock") or 0.0)
+            reserved_stock = float(stock.get("reserved_stock") or 0.0)
+
+            if new_status_clean == "Cancelled":
+                new_reserved = max(0.0, reserved_stock - qty)
+                sb().table("master_items").update(
+                    {"reserved_stock": new_reserved}
+                ).eq("item_name", item_name).execute()
+
+            elif new_status_clean == "Completed":
+                new_stock = max(0.0, current_stock - qty)
+                new_reserved = max(0.0, reserved_stock - qty)
+                sb().table("master_items").update({
+                    "current_stock": new_stock,
+                    "reserved_stock": new_reserved,
+                }).eq("item_name", item_name).execute()
+
+                sb().table("transactions").insert({
                     "type": "OUT",
                     "item_name": item_name,
                     "quantity": qty,
                     "unit": unit,
                     "handled_by": handled_by,
                     "notes": f"Completed Dispatch #{dispatch_id}",
-                }
-            ).execute()
+                }).execute()
 
-    update_payload = {"status": new_status_clean}
-    if driver_name is not None:
-        update_payload["driver_name"] = driver_name
-    if delivery_notes:
-        update_payload["notes"] = delivery_notes
+        update_payload = {"status": new_status_clean}
+        if driver_name is not None:
+            update_payload["driver_name"] = driver_name
+        if delivery_notes:
+            update_payload["notes"] = delivery_notes
 
-    sb().table("deliveries").update(update_payload).eq(
-        "dispatch_id", dispatch_id
-    ).execute()
+        sb().table("deliveries").update(update_payload).eq(
+            "dispatch_id", dispatch_id
+        ).execute()
+    except ValueError:
+        raise
+    except Exception as e:
+        raise NetworkError(f"Failed to update dispatch status: {e}") from e
 
 
 # -----------------------------------------------------------------------------
@@ -443,50 +548,51 @@ def resolve_discrepancy(
     resolved_by: str,
     resolution_notes: str,
     approve_adjustment: bool = True,
-):
+) -> None:
     """Approve or reject a discrepancy. If approved, set master_items stock."""
-    disc = (
-        sb()
-        .table("discrepancies")
-        .select("*")
-        .eq("id", discrepancy_id)
-        .limit(1)
-        .execute()
-        .data
-    )
-    if not disc:
-        raise ValueError(f"Discrepancy record {discrepancy_id} not found.")
-    d = disc[0]
+    try:
+        disc = (
+            sb()
+            .table("discrepancies")
+            .select("*")
+            .eq("id", discrepancy_id)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if not disc:
+            raise ValueError(f"Discrepancy record {discrepancy_id} not found.")
+        d = disc[0]
 
-    status = "APPROVED" if approve_adjustment else "REJECTED"
-    sb().table("discrepancies").update(
-        {
+        status = "APPROVED" if approve_adjustment else "REJECTED"
+        sb().table("discrepancies").update({
             "status": status,
             "resolved_by": resolved_by,
-            "resolved_timestamp": datetime.utcnow().isoformat(),
+            "resolved_timestamp": _now_iso(),
             "resolution_notes": resolution_notes,
-        }
-    ).eq("id", discrepancy_id).execute()
+        }).eq("id", discrepancy_id).execute()
 
-    if approve_adjustment:
-        sb().table("master_items").update(
-            {"current_stock": float(d["physical_count"])}
-        ).eq("item_name", d["item_name"]).execute()
+        if approve_adjustment:
+            sb().table("master_items").update(
+                {"current_stock": float(d["physical_count"])}
+            ).eq("item_name", d["item_name"]).execute()
 
-        sb().table("transactions").insert(
-            {
+            sb().table("transactions").insert({
                 "type": "RECONCILIATION",
                 "item_name": d["item_name"],
                 "quantity": float(d["physical_count"]),
                 "unit": d["unit"],
                 "handled_by": resolved_by,
                 "notes": f"Discrepancy Audit #{discrepancy_id}: {resolution_notes}",
-            }
-        ).execute()
+            }).execute()
+    except ValueError:
+        raise
+    except Exception as e:
+        raise NetworkError(f"Failed to resolve discrepancy: {e}") from e
 
 
 # -----------------------------------------------------------------------------
-# GOOGLE DRIVE  (attachments only — no more DB backups)
+# GOOGLE DRIVE (attachments only)
 # -----------------------------------------------------------------------------
 def clean_private_key(key_str: str) -> str:
     if not key_str:
@@ -509,7 +615,6 @@ def get_drive_service():
     """Authenticate and build Google Drive API service (attachments only)."""
     SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-    # 1. Service account via Streamlit secrets
     if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
         try:
             from google.oauth2 import service_account
@@ -527,7 +632,6 @@ def get_drive_service():
         except Exception as e:
             print(f"[Drive Warning] Service Account auth failed: {e}")
 
-    # 2. OAuth refresh token
     if hasattr(st, "secrets") and "gdrive_token" in st.secrets:
         try:
             from google.auth.transport.requests import Request
@@ -542,7 +646,6 @@ def get_drive_service():
         except Exception as e:
             print(f"[Drive Warning] OAuth Token auth failed: {e}")
 
-    # 3. Local token.json / credentials.json
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -552,9 +655,7 @@ def get_drive_service():
         creds = None
         if os.path.exists("token.json"):
             try:
-                creds = Credentials.from_authorized_user_file(
-                    "token.json", SCOPES
-                )
+                creds = Credentials.from_authorized_user_file("token.json", SCOPES)
             except Exception as e:
                 print(f"[Drive Warning] Invalid token.json deleted: {e}")
                 os.remove("token.json")
@@ -625,7 +726,7 @@ def create_test_file_in_gdrive():
     """Sanity-check upload to Drive."""
     content = (
         "ARV test file - if you can read this, Drive auth works.\n"
-        f"Timestamp: {datetime.utcnow().isoformat()}\n"
+        f"Timestamp: {_now_iso()}\n"
     )
     return upload_file_to_gdrive(
         content.encode("utf-8"), "ARV_drive_test.txt", "text/plain"

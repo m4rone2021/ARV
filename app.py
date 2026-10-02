@@ -3,12 +3,15 @@ from pathlib import Path
 
 import streamlit as st
 
-# Ensure root workspace directory is on sys.path for Cloud execution
 ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from database import (
+    AuthError,
+    ConfigError,
+    NetworkError,
+    ARVError,
     change_password,
     create_test_file_in_gdrive,
     log_user_action,
@@ -32,6 +35,44 @@ if "user_role" not in st.session_state:
     st.session_state.user_role = "User"
 if "must_change_password" not in st.session_state:
     st.session_state.must_change_password = False
+if "flash_msg" not in st.session_state:
+    st.session_state.flash_msg = None
+
+
+def _show_flash():
+    """Display and clear any pending flash message (survives st.rerun)."""
+    msg = st.session_state.get("flash_msg")
+    if not msg:
+        return
+    level, text = msg
+    if level == "success":
+        st.success(text)
+    elif level == "warning":
+        st.warning(text)
+    elif level == "error":
+        st.error(text)
+    elif level == "info":
+        st.info(text)
+    st.session_state.flash_msg = None
+
+
+def _friendly_error(e: Exception) -> str:
+    """Convert an exception into a user-facing message."""
+    if isinstance(e, ConfigError):
+        return (
+            "⚙️ Configuration error — the app is not properly connected. "
+            "Please contact an administrator."
+        )
+    if isinstance(e, NetworkError):
+        return (
+            "🌐 Cannot reach the database right now. "
+            "Please check your connection and try again."
+        )
+    if isinstance(e, AuthError):
+        return f"❌ {e}"
+    if isinstance(e, ARVError):
+        return f"⚠️ {e}"
+    return f"⚠️ Something went wrong: {e}"
 
 
 def render_login():
@@ -48,29 +89,63 @@ def render_login():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.subheader("🔑 Sign In")
+        _show_flash()
+
         with st.form("login_form", clear_on_submit=False):
             username = st.text_input("Username", placeholder="Enter your username")
-            password = st.text_input("Password", type="password", placeholder="Enter your password")
+            password = st.text_input(
+                "Password", type="password", placeholder="Enter your password"
+            )
             submit = st.form_submit_button("Login", use_container_width=True)
 
             if submit:
                 if not username.strip() or not password.strip():
                     st.error("⚠️ Please enter both Username and Password.")
                 else:
-                    user_data = login_user(username.strip(), password.strip())
+                    try:
+                        user_data = login_user(username.strip(), password.strip())
+                    except AuthError as e:
+                        log_user_action(
+                            username.strip()[:100], "LOGIN_FAILED", "Invalid credentials"
+                        )
+                        st.error(f"❌ {e}")
+                        user_data = None
+                    except (ConfigError, NetworkError) as e:
+                        log_user_action(
+                            username.strip()[:100],
+                            "LOGIN_FAILED",
+                            f"Infrastructure error: {type(e).__name__}",
+                        )
+                        st.error(_friendly_error(e))
+                        user_data = None
+                    except ARVError as e:
+                        st.error(_friendly_error(e))
+                        user_data = None
+                    except Exception as e:
+                        # Unexpected error — log it but don't leak the traceback
+                        print(f"[render_login] Unexpected error: {e}")
+                        st.error(
+                            "⚠️ Unexpected error during login. "
+                            "Please contact an administrator."
+                        )
+                        user_data = None
+
                     if user_data:
                         st.session_state.logged_in = True
                         st.session_state.user_name = user_data["username"]
                         st.session_state.user_role = user_data["role"]
-                        st.session_state.must_change_password = user_data.get("must_change_password", False)
+                        st.session_state.must_change_password = user_data.get(
+                            "must_change_password", False
+                        )
 
-                        log_user_action(user_data["username"], "LOGIN", "Successful login")
+                        log_user_action(
+                            user_data["username"], "LOGIN", "Successful login"
+                        )
 
-                        st.toast(f"Welcome back, {user_data['username']}!", icon="👋")
+                        st.toast(
+                            f"Welcome back, {user_data['username']}!", icon="👋"
+                        )
                         st.rerun()
-                    else:
-                        log_user_action(username.strip(), "LOGIN_FAILED", "Invalid credentials")
-                        st.error("❌ Invalid Username or Password.")
 
 
 def render_force_password_change():
@@ -92,13 +167,26 @@ def render_force_password_change():
         with st.form("change_pw_form", clear_on_submit=False):
             new_pw = st.text_input("New Password*", type="password")
             confirm_pw = st.text_input("Confirm New Password*", type="password")
-            submit = st.form_submit_button("🔐 Set New Password", use_container_width=True)
+
+            st.caption(
+                "Password must be **at least 8 characters**, contain at least "
+                "**one letter** and **one number**."
+            )
+
+            submit = st.form_submit_button(
+                "🔐 Set New Password", use_container_width=True
+            )
 
             if submit:
+                # Client-side pre-checks (mirror server-side policy)
                 if not new_pw:
                     st.error("⚠️ Please enter a new password.")
-                elif len(new_pw) < 6:
-                    st.error("⚠️ Password must be at least 6 characters long.")
+                elif len(new_pw) < 8:
+                    st.error("⚠️ Password must be at least 8 characters long.")
+                elif not any(c.isalpha() for c in new_pw):
+                    st.error("⚠️ Password must contain at least one letter.")
+                elif not any(c.isdigit() for c in new_pw):
+                    st.error("⚠️ Password must contain at least one number.")
                 elif new_pw != confirm_pw:
                     st.error("⚠️ Passwords do not match.")
                 else:
@@ -110,15 +198,31 @@ def render_force_password_change():
                             "User set a new password after forced change",
                         )
                         st.session_state.must_change_password = False
-                        st.success("✅ Password changed successfully!")
-                        st.toast("Welcome to ARV!", icon="🎉")
+                        st.session_state.flash_msg = (
+                            "success",
+                            "✅ Password changed successfully! Welcome to ARV.",
+                        )
                         st.rerun()
+                    except ValueError as e:
+                        st.error(f"⚠️ {e}")
+                    except (ConfigError, NetworkError) as e:
+                        st.error(_friendly_error(e))
+                    except ARVError as e:
+                        st.error(_friendly_error(e))
                     except Exception as e:
-                        st.error(f"Failed to change password: {e}")
+                        print(f"[change_password] Unexpected: {e}")
+                        st.error(
+                            "⚠️ Failed to change password. Please try again or "
+                            "contact an administrator."
+                        )
 
         st.divider()
         if st.button("🚪 Cancel and Logout", use_container_width=True):
-            log_user_action(st.session_state.user_name, "LOGOUT", "Cancelled forced password change")
+            log_user_action(
+                st.session_state.user_name,
+                "LOGOUT",
+                "Cancelled forced password change",
+            )
             st.session_state.logged_in = False
             st.session_state.user_name = ""
             st.session_state.user_role = "User"
@@ -160,9 +264,14 @@ def render_app():
                     if file_id:
                         st.sidebar.success("✅ Drive auth works!")
                     else:
-                        st.sidebar.error("❌ Drive upload failed.")
+                        st.sidebar.error(
+                            "❌ Drive upload failed. Check credentials or folder ID."
+                        )
                 except Exception as e:
-                    st.sidebar.error(f"❌ Error: {e}")
+                    print(f"[Drive test] {e}")
+                    st.sidebar.error(
+                        "❌ Drive upload error. See server logs for details."
+                    )
         st.sidebar.divider()
 
     if st.sidebar.button("🚪 Logout", use_container_width=True):
@@ -172,6 +281,9 @@ def render_app():
         st.session_state.user_role = "User"
         st.session_state.must_change_password = False
         st.rerun()
+
+    # Flash message from previous rerun
+    _show_flash()
 
     try:
         if choice == "Dashboard":
@@ -210,7 +322,20 @@ def render_app():
     except ModuleNotFoundError as e:
         st.error(f"⚠️ Navigation error: Missing view module ({e.name}).")
     except Exception as e:
-        st.error(f"An unexpected error occurred while loading view '{choice}': {e}")
+        # Log view crashes so we can diagnose later
+        try:
+            log_user_action(
+                st.session_state.user_name,
+                "VIEW_ERROR",
+                f"{choice}: {type(e).__name__}: {str(e)[:300]}",
+            )
+        except Exception:
+            pass
+        print(f"[render_app] View '{choice}' crashed: {e}")
+        st.error(
+            f"⚠️ An error occurred while loading **{choice}**. "
+            "The error has been logged. Please try again or contact an administrator."
+        )
 
 
 if __name__ == "__main__":
