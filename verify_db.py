@@ -1,51 +1,45 @@
-# verify_db.py
+﻿"""Quick sanity check that the Supabase data layer works."""
+
 import sys
+sys.path.insert(0, r"C:\Users\admin\ARV")
 
-def run_verification():
-    print("🔍 Starting Database & Backup Verification...\n")
+from database import sb
 
-    # 1. Test Module Import & Exports
-    try:
-        import database
-        print("✅ Successfully imported 'database.py'")
-        
-        required_funcs = ["init_db", "login_user", "backup_db_to_gdrive"]
-        for func in required_funcs:
-            if hasattr(database, func):
-                print(f"  └─ Function '{func}' is present.")
-            else:
-                print(f"  ❌ Missing expected function '{func}'!")
-    except Exception as e:
-        print(f"❌ Failed to import database.py: {e}")
-        sys.exit(1)
+def main():
+    print("Connecting to Supabase...")
+    client = sb()
+    print("  OK\n")
 
-    # 2. Test DB Initialization & Schema
-    try:
-        database.init_db()
-        print("\n✅ Database initialized successfully.")
-        
-        import sqlite3
-        conn = sqlite3.connect(database.DB_PATH)
-        cursor = conn.cursor()
-        
-        # Verify tables
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = [row[0] for row in cursor.fetchall()]
-        print(f"  └─ Existing Tables: {tables}")
-        
-        # Verify admin user
-        cursor.execute("SELECT username, role FROM users WHERE username='admin';")
-        admin = cursor.fetchone()
-        if admin:
-            print(f"  └─ Default Admin verified: username='{admin[0]}', role='{admin[1]}'")
-        else:
-            print("  ❌ Default Admin record missing!")
-            
-        conn.close()
-    except Exception as e:
-        print(f"❌ Database initialization check failed: {e}")
+    tables = [
+        "master_items",
+        "users",
+        "transactions",
+        "deliveries",
+        "discrepancies",
+        "reminders",
+        "user_logs",
+        "physical_inventory_logs",
+    ]
 
-    print("\n🎉 Verification Complete!")
+    print(f"{'Table':<28} {'Rows':>6}")
+    print("-" * 36)
+    total = 0
+    for t in tables:
+        try:
+            res = client.table(t).select("id", count="exact").execute()
+            print(f"{t:<28} {res.count:>6}")
+            total += res.count
+        except Exception as e:
+            print(f"{t:<28} ERROR: {e}")
+    print("-" * 36)
+    print(f"{'TOTAL':<28} {total:>6}")
+
+    # Spot check: first 3 master_items
+    print("\nSample master_items:")
+    items = client.table("master_items").select("item_name, category, current_stock").limit(3).execute()
+    for it in items.data:
+        print(f"  - {it['item_name']}  ({it['category']})  stock={it['current_stock']}")
+
 
 if __name__ == "__main__":
-    run_verification()
+    main()

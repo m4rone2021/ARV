@@ -1,88 +1,51 @@
-import os
-import sqlite3
+﻿import os
 import tempfile
 import uuid
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from database import backup_db_to_gdrive, get_db, init_db, upload_file_to_gdrive
-
-# Safe fallback directory resolution across OS platforms
-try:
-    from database import UPLOAD_DIR
-except ImportError:
-    UPLOAD_DIR = Path(tempfile.gettempdir()) / "inventory_uploads"
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+from database import UPLOAD_DIR, sb, upload_file_to_gdrive
 
 
 def sanitize_filename(filename: str) -> str:
-    """Sanitize uploaded filenames to prevent path traversal issues."""
     clean_name = os.path.basename(filename)
     return "".join(c for c in clean_name if c.isalnum() or c in "._- ")
 
 
-def trigger_gdrive_sync():
-    """Helper function to run backup to Google Drive without breaking UI flow on failure."""
-    try:
-        file_id = backup_db_to_gdrive()
-        if file_id:
-            st.toast("☁️ Database synced to Google Drive!", icon="✅")
-        else:
-            st.toast(
-                "⚠️ Database saved locally (Drive sync disabled or unconfigured).",
-                icon="ℹ️",
-            )
-    except Exception as e:
-        st.warning(
-            f"⚠️ Saved transaction locally, but Drive backup failed: {e}"
-        )
-
-
 def render_stock_in(user_name: str, user_role: str):
-    st.title("📥 Stock IN Receive Log")
-    st.caption(
-        "Record site material receipts, deliveries, and stock replenishment."
-    )
+    st.title("Stock IN Receive Log")
+    st.caption("Record site material receipts, deliveries, and stock replenishment.")
 
-    init_db()
-
-    # Load master items catalog
     try:
-        with get_db() as conn:
-            items_df = pd.read_sql_query(
-                "SELECT item_name, category, unit, current_stock FROM master_items ORDER BY item_name ASC",
-                conn,
-            )
+        res = (
+            sb()
+            .table("master_items")
+            .select("item_name, category, unit, current_stock")
+            .order("item_name")
+            .execute()
+        )
+        items_df = pd.DataFrame(res.data or [])
     except Exception as e:
         st.error(f"Failed to fetch master items: {e}")
         return
 
     if items_df.empty:
-        st.warning(
-            "⚠️ No master items found in the database. Please add items in **Manage Master Items** first."
-        )
+        st.warning("No master items found. Please add items in Manage Master Items first.")
         return
 
     tab_receive, tab_history = st.tabs(
-        ["📥 Receive Stock", "📜 Recent Stock IN History"]
+        ["Receive Stock", "Recent Stock IN History"]
     )
 
-    # -------------------------------------------------------------
-    # TAB 1: RECEIVE STOCK FORM
-    # -------------------------------------------------------------
     with tab_receive:
-        # Placed OUTSIDE st.form to enable live updates on selection change
         selected_item = st.selectbox(
             "Select Master Item*", items_df["item_name"].tolist()
         )
 
-        item_info = items_df[
-            items_df["item_name"] == selected_item
-        ].iloc[0]
-        current_stock = float(item_info["current_stock"])
+        item_info = items_df[items_df["item_name"] == selected_item].iloc[0]
+        current_stock = float(item_info["current_stock"] or 0)
         unit = str(item_info["unit"])
         category = str(item_info["category"])
 
@@ -98,7 +61,6 @@ def render_stock_in(user_name: str, user_role: str):
                 step=1.00,
                 format="%.2f",
             )
-
             supplier_source = st.text_input(
                 "Supplier / Source / DR No.*",
                 placeholder="e.g., ABC Hardware, DR #10293",
@@ -113,7 +75,7 @@ def render_stock_in(user_name: str, user_role: str):
             )
 
             submit_btn = st.form_submit_button(
-                "📥 Log Stock IN Receipt", use_container_width=True
+                "Log Stock IN Receipt", use_container_width=True
             )
 
             if submit_btn:
@@ -121,189 +83,127 @@ def render_stock_in(user_name: str, user_role: str):
                 remarks_clean = remarks.strip()
 
                 if not supplier_clean:
-                    st.error("⚠️ 'Supplier / Source / DR No.' is required.")
+                    st.error("Supplier / Source / DR No. is required.")
                 elif quantity <= 0:
-                    st.error(
-                        "⚠️ Received quantity must be greater than zero."
-                    )
+                    st.error("Quantity must be greater than zero.")
                 else:
                     attachment_filename = None
                     drive_link = None
 
-                    # Handle file saving and drive synchronization
                     if uploaded_file is not None:
                         clean_original = sanitize_filename(uploaded_file.name)
-                        attachment_filename = (
-                            f"IN_{uuid.uuid4().hex[:8]}_{clean_original}"
-                        )
+                        attachment_filename = f"IN_{uuid.uuid4().hex[:8]}_{clean_original}"
                         save_path = Path(UPLOAD_DIR) / attachment_filename
                         file_bytes = uploaded_file.getvalue()
 
                         try:
-                            # 1. Save locally
                             with open(save_path, "wb") as f:
                                 f.write(file_bytes)
-
-                            # 2. Upload raw bytes to Google Drive
                             drive_link = upload_file_to_gdrive(
                                 file_bytes=file_bytes,
                                 file_name=attachment_filename,
-                                mime_type=uploaded_file.type
-                                or "application/octet-stream",
+                                mime_type=uploaded_file.type or "application/octet-stream",
                             )
                         except Exception as file_err:
-                            st.error(
-                                f"Failed to process uploaded receipt: {file_err}"
-                            )
+                            st.error(f"Failed to process attachment: {file_err}")
                             attachment_filename = None
 
+                    notes_parts = [f"Supplier/DR: {supplier_clean}"]
+                    if remarks_clean:
+                        notes_parts.append(f"Remarks: {remarks_clean}")
+                    if drive_link:
+                        notes_parts.append(f"Drive Link: {drive_link}")
+                    elif attachment_filename:
+                        notes_parts.append(f"Attachment: {attachment_filename}")
+                    full_notes = " | ".join(notes_parts)
+
                     try:
-                        # Construct audit details string
-                        notes_parts = [f"Supplier/DR: {supplier_clean}"]
-                        if remarks_clean:
-                            notes_parts.append(f"Remarks: {remarks_clean}")
-                        if drive_link:
-                            notes_parts.append(f"Drive Link: {drive_link}")
-                        elif attachment_filename:
-                            notes_parts.append(
-                                f"Attachment: {attachment_filename}"
-                            )
-
-                        full_notes = " | ".join(notes_parts)
-
-                        # Atomic transaction write
-                        with get_db() as conn:
-                            cursor = conn.cursor()
-
-                            cursor.execute(
-                                """
-                                UPDATE master_items 
-                                SET current_stock = current_stock + ? 
-                                WHERE item_name = ?
-                                """,
-                                (quantity, selected_item),
-                            )
-
-                            cursor.execute(
-                                """
-                                INSERT INTO transactions (type, item_name, quantity, unit, handled_by, notes)
-                                VALUES ('STOCK IN', ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    selected_item,
-                                    quantity,
-                                    unit,
-                                    user_name,
-                                    full_notes,
-                                ),
-                            )
-
-                            conn.commit()
-
-                        # Run Google Drive backup safely after DB update
-                        trigger_gdrive_sync()
-
-                        st.toast(
-                            f"✅ Received {quantity:,.2f} {unit} of {selected_item}.",
-                            icon="📥",
-                        )
-                        st.rerun()
-
+                        sb().rpc(
+                            "record_stock_transaction",
+                            {
+                                "p_type": "IN",
+                                "p_item_name": selected_item,
+                                "p_quantity": float(quantity),
+                                "p_unit": unit,
+                                "p_handled_by": user_name,
+                                "p_notes": full_notes,
+                                "p_project_name": None,
+                            },
+                        ).execute()
                     except Exception as e:
-                        st.error(
-                            f"Error executing stock-in transaction: {e}"
-                        )
+                        st.error(f"Error executing stock-in transaction: {e}")
+                        st.stop()
 
-    # -------------------------------------------------------------
-    # TAB 2: RECEIPT HISTORY & AUDIT LOG
-    # -------------------------------------------------------------
+                    st.toast(f"Received {quantity:,.2f} {unit} of {selected_item}.")
+                    st.rerun()
+
     with tab_history:
         st.subheader("Recent Stock IN Entries")
         try:
-            with get_db() as conn:
-                history_df = pd.read_sql_query(
-                    """
-                    SELECT id, timestamp, item_name, quantity, unit, handled_by, notes 
-                    FROM transactions 
-                    WHERE type = 'STOCK IN' 
-                    ORDER BY id DESC LIMIT 50
-                    """,
-                    conn,
-                )
-
-            if not history_df.empty:
-                # Extract links directly into a visual column
-                def extract_drive_link(notes: str):
-                    if "Drive Link: " in str(notes):
-                        return (
-                            notes.split("Drive Link: ")[-1]
-                            .split(" | ")[0]
-                            .strip()
-                        )
-                    return None
-
-                history_df["Drive Receipt"] = history_df["notes"].apply(
-                    extract_drive_link
-                )
-
-                st.dataframe(
-                    history_df.rename(
-                        columns={
-                            "id": "ID",
-                            "timestamp": "Timestamp",
-                            "item_name": "Item Name",
-                            "quantity": "Quantity",
-                            "unit": "Unit",
-                            "handled_by": "Received By",
-                            "notes": "Details & Attachment Ref",
-                        }
-                    ),
-                    column_config={
-                        "Drive Receipt": st.column_config.LinkColumn(
-                            "Drive Link", display_text="🔗 View Receipt"
-                        )
-                    },
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                # Expandable Inspector for Local Fallback Attachments
-                with st.expander("📎 Download Local Fallback Attachments"):
-                    has_local_attachments = False
-                    for _, row in history_df.iterrows():
-                        notes_str = str(row["notes"])
-
-                        if (
-                            "Attachment: " in notes_str
-                            and "Drive Link: " not in notes_str
-                        ):
-                            has_local_attachments = True
-                            att_file = (
-                                notes_str.split("Attachment: ")[-1]
-                                .split(" | ")[0]
-                                .strip()
-                            )
-                            file_path = Path(UPLOAD_DIR) / att_file
-
-                            if file_path.exists():
-                                with open(file_path, "rb") as f:
-                                    st.download_button(
-                                        label=f"📄 Download {att_file} (Log #{row['id']} - {row['item_name']})",
-                                        data=f.read(),
-                                        file_name=att_file,
-                                        key=f"dl_btn_{row['id']}",
-                                        use_container_width=True,
-                                    )
-                            else:
-                                st.caption(
-                                    f"⚠️ Attachment `{att_file}` not found on local storage."
-                                )
-
-                    if not has_local_attachments:
-                        st.info(
-                            "No local fallback attachments stored in recent history."
-                        )
-            else:
-                st.info("No recent Stock IN transactions recorded yet.")
+            res = (
+                sb()
+                .table("transactions")
+                .select("id, timestamp, item_name, quantity, unit, handled_by, notes")
+                .eq("type", "IN")
+                .order("timestamp", desc=True)
+                .limit(50)
+                .execute()
+            )
+            history_df = pd.DataFrame(res.data or [])
         except Exception as e:
-            st.error(f"Error loading stock-in transaction history: {e}")
+            st.error(f"Error loading stock-in history: {e}")
+            return
+
+        if history_df.empty:
+            st.info("No recent Stock IN transactions recorded yet.")
+            return
+
+        def extract_drive_link(notes: str):
+            if "Drive Link: " in str(notes):
+                return notes.split("Drive Link: ")[-1].split(" | ")[0].strip()
+            return None
+
+        history_df["Drive Receipt"] = history_df["notes"].apply(extract_drive_link)
+
+        st.dataframe(
+            history_df.rename(
+                columns={
+                    "id": "ID",
+                    "timestamp": "Timestamp",
+                    "item_name": "Item Name",
+                    "quantity": "Quantity",
+                    "unit": "Unit",
+                    "handled_by": "Received By",
+                    "notes": "Details & Attachment Ref",
+                }
+            ),
+            column_config={
+                "Drive Receipt": st.column_config.LinkColumn(
+                    "Drive Link", display_text="View Receipt"
+                )
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        with st.expander("Download Local Fallback Attachments"):
+            has_local = False
+            for _, row in history_df.iterrows():
+                notes_str = str(row["notes"])
+                if "Attachment: " in notes_str and "Drive Link: " not in notes_str:
+                    has_local = True
+                    att_file = notes_str.split("Attachment: ")[-1].split(" | ")[0].strip()
+                    file_path = Path(UPLOAD_DIR) / att_file
+                    if file_path.exists():
+                        with open(file_path, "rb") as f:
+                            st.download_button(
+                                label=f"Download {att_file} (Log #{row['id']} - {row['item_name']})",
+                                data=f.read(),
+                                file_name=att_file,
+                                key=f"dl_btn_{row['id']}",
+                                use_container_width=True,
+                            )
+                    else:
+                        st.caption(f"Attachment {att_file} not found locally.")
+            if not has_local:
+                st.info("No local fallback attachments in recent history.")

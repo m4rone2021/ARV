@@ -1,6 +1,8 @@
-﻿import sys
+import sys
+import os
+import io
+import tempfile
 from pathlib import Path
-
 import streamlit as st
 
 # Ensure root workspace directory is on sys.path for Cloud execution
@@ -8,11 +10,14 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-# Supabase data layer
+# Core database imports
 from database import (
+    init_db,
     login_user,
-    sb,
+    backup_db_to_gdrive,
+    get_drive_service,
     create_test_file_in_gdrive,
+    DB_FILE,
 )
 
 # Page Configuration
@@ -23,6 +28,52 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
+# -----------------------------------------------------------------------------
+# GOOGLE DRIVE AUTOMATIC RESTORE ON STARTUP
+# -----------------------------------------------------------------------------
+def restore_latest_db_from_gdrive():
+    """Downloads the most recent database backup from Google Drive if local DB is missing/empty."""
+    if DB_FILE.exists() and DB_FILE.stat().st_size > 0:
+        return  # Local database exists and is valid
+
+    service, auth_type = get_drive_service()
+    if not service:
+        return
+
+    try:
+        folder_id = st.secrets.get("google_drive", {}).get("folder_id", None) if st and hasattr(st, "secrets") else None
+        query = f"'{folder_id}' in parents and name contains 'inventory_backup_' and trashed = false" if folder_id else "name contains 'inventory_backup_' and trashed = false"
+
+        results = service.files().list(
+            q=query,
+            orderBy="createdTime desc",
+            pageSize=1,
+            fields="files(id, name)"
+        ).execute()
+
+        files = results.get('files', [])
+        if files:
+            latest_file = files[0]
+            file_id = latest_file['id']
+            
+            from googleapiclient.http import MediaIoBaseDownload
+            request = service.files().get_media(fileId=file_id)
+            
+            with open(DB_FILE, 'wb') as f:
+                downloader = MediaIoBaseDownload(f, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+            print(f"[Drive Sync] Successfully restored {latest_file['name']} from Google Drive.")
+    except Exception as e:
+        print(f"[Drive Sync Error] Failed to restore database on startup: {e}")
+
+
+# Restore remote DB first, then initialize schema
+restore_latest_db_from_gdrive()
+init_db()
+
 # Initialize Session States
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -31,7 +82,7 @@ if "user_name" not in st.session_state:
 if "user_role" not in st.session_state:
     st.session_state.user_role = "User"
 
-# Global Site Categories (in case a view reads this)
+# Global Site Categories List
 if "categories" not in st.session_state:
     st.session_state.categories = [
         "Fuel & Oils",
@@ -64,7 +115,9 @@ def render_login():
         st.subheader("🔑 Sign In")
         with st.form("login_form", clear_on_submit=False):
             username = st.text_input("Username", placeholder="Enter your username")
-            password = st.text_input("Password", type="password", placeholder="Enter your password")
+            password = st.text_input(
+                "Password", type="password", placeholder="Enter your password"
+            )
             submit = st.form_submit_button("Login", use_container_width=True)
 
             if submit:
@@ -77,15 +130,21 @@ def render_login():
                         st.session_state.user_name = user_data["username"]
                         st.session_state.user_role = user_data["role"]
 
-                        st.toast(f"Welcome back, {user_data['username']}!", icon="👋")
+                        # Backup database to Google Drive upon Admin login
+                        if user_data["role"] == "Admin":
+                            try:
+                                backup_db_to_gdrive()
+                            except Exception as e:
+                                st.warning(f"⚠️ Initial Admin backup warning: {e}")
+
+                        st.toast(
+                            f"Welcome back, {user_data['username']}!", icon="👋"
+                        )
                         st.rerun()
                     else:
                         st.error("❌ Invalid Username or Password.")
 
-        st.caption(
-            "Migrated users have temporary password `ARV-TempPass-2026!` — "
-            "please reset via User Management after first login."
-        )
+        st.caption("Default Admin Credentials: **admin** / **admin123**")
 
 
 # -----------------------------------------------------------------------------
@@ -108,30 +167,45 @@ def render_app():
         "🚚 Schedules & Deliveries": "Schedules & Deliveries",
         "📝 Reminders & Tasks": "Reminders & Tasks",
         "📜 Transaction Ledger": "Transaction Ledger",
-        "📝 Edit / Void Transactions": "Edit / Void Transactions",
     }
 
+    # Add Admin-only view options
     if st.session_state.user_role == "Admin":
         menu_map["👥 User Management"] = "User Management"
 
-    selected_label = st.sidebar.radio("Main Menu", list(menu_map.keys()), index=0)
+    selected_label = st.sidebar.radio(
+        "Main Menu", list(menu_map.keys()), index=0
+    )
     choice = menu_map[selected_label]
 
     st.sidebar.divider()
 
-    # Admin Utilities (kept minimal — Drive backup removed)
+    # Admin Utilities / Test Tools
     if st.session_state.user_role == "Admin":
         st.sidebar.subheader("🛠️ Admin Tools")
-        if st.sidebar.button("🧪 Test Drive Upload", use_container_width=True):
+        
+        # 1. Manual DB Backup Button
+        if st.sidebar.button("💾 Backup Database to Drive", use_container_width=True):
+            with st.spinner("Backing up SQLite DB to Google Drive..."):
+                try:
+                    file_id = backup_db_to_gdrive()
+                    if file_id:
+                        st.sidebar.success("✅ Backup upload complete!")
+                except Exception as e:
+                    st.sidebar.error(f"❌ Backup failed: {e}")
+
+        # 2. Test Drive Upload Button
+        if st.sidebar.button("🧪 Generate Test File in Drive", use_container_width=True):
             with st.spinner("Uploading test file to Google Drive..."):
                 try:
                     file_id = create_test_file_in_gdrive()
                     if file_id:
-                        st.sidebar.success("✅ Drive auth works!")
+                        st.sidebar.success(f"✅ Success! ID: {file_id[:8]}...")
                     else:
-                        st.sidebar.error("❌ Drive upload failed.")
+                        st.sidebar.error("❌ Failed to create file.")
                 except Exception as e:
                     st.sidebar.error(f"❌ Error: {e}")
+                    
         st.sidebar.divider()
 
     if st.sidebar.button("🚪 Logout", use_container_width=True):
@@ -140,7 +214,7 @@ def render_app():
         st.session_state.user_role = "User"
         st.rerun()
 
-    # Router
+    # Lazy router import with error fallback
     try:
         if choice == "Dashboard":
             from views.dashboard import render_dashboard
@@ -169,16 +243,12 @@ def render_app():
         elif choice == "Transaction Ledger":
             from views.audit_log import render_audit_log
             render_audit_log(st.session_state.user_name, st.session_state.user_role)
-        elif choice == "Edit / Void Transactions":
-            from views.edit_void import render_edit_void
-            render_edit_void(st.session_state.user_name, st.session_state.user_role)
         elif choice == "User Management" and st.session_state.user_role == "Admin":
             from views.user_management import render_user_management
             render_user_management(st.session_state.user_name, st.session_state.user_role)
     except ModuleNotFoundError as e:
         st.error(
-            f"⚠️ Navigation error: Missing view module ({e.name}). "
-            f"Please ensure all view files exist in the `/views` folder."
+            f"⚠️ Navigation error: Missing view module ({e.name}). Please ensure all view files exist in the `/views` folder."
         )
     except Exception as e:
         st.error(f"An unexpected error occurred while loading view '{choice}': {e}")

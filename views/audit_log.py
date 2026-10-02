@@ -1,287 +1,277 @@
-import io
+﻿import io
 import re
 from pathlib import Path
+
 import pandas as pd
 import streamlit as st
-from database import get_db
 
-# Google API imports for sync
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
-
-# Ensure UPLOAD_DIR fallback
-try:
-    from database import UPLOAD_DIR
-except ImportError:
-    UPLOAD_DIR = Path(r"D:\Inventory System Files\uploads")
+from database import UPLOAD_DIR, sb, upload_file_to_gdrive
 
 
 def extract_drive_link(notes_str: str) -> str:
-    """Extract Google Drive URL from notes string if available."""
     if not isinstance(notes_str, str):
         return ""
-    match = re.search(r"Drive Link:\s*(https?://[^\s|]+)", notes_str)
+    match = re.search(r"(?:Drive Link|Attachment):\s*(https?://[^\s|]+)", notes_str)
     return match.group(1) if match else ""
 
 
 def extract_attachment_filename(notes_str: str) -> str:
-    """Extract local attachment filename from notes string if available."""
     if not isinstance(notes_str, str):
         return ""
     match = re.search(r"Attachment:\s*([^\s|]+)", notes_str)
-    return match.group(1) if match else ""
+    if match and not match.group(1).startswith("http"):
+        return match.group(1)
+    return ""
 
 
-def upload_csv_to_gdrive(csv_bytes: bytes, filename: str = "audit_log.csv") -> str | None:
-    """Helper function to upload CSV data directly to Google Drive using credentials in st.secrets."""
+def upload_csv_to_gdrive(csv_bytes: bytes, filename: str = "audit_log.csv"):
+    """Upload a CSV to Google Drive (uses same DB-less Drive path as stock_in)."""
     try:
-        token_info = st.secrets["gdrive_token"]
-        folder_id = st.secrets["google_drive"]["folder_id"]
-
-        creds = Credentials(
-            token=token_info.get("token"),
-            refresh_token=token_info.get("refresh_token"),
-            token_uri=token_info.get("token_uri"),
-            client_id=token_info.get("client_id"),
-            client_secret=token_info.get("client_secret"),
-            scopes=token_info.get("scopes"),
+        link = upload_file_to_gdrive(
+            file_bytes=csv_bytes,
+            file_name=filename,
+            mime_type="text/csv",
         )
-
-        service = build("drive", "v3", credentials=creds)
-
-        file_metadata = {
-            "name": filename,
-            "parents": [folder_id],
-        }
-
-        media = MediaIoBaseUpload(
-            io.BytesIO(csv_bytes),
-            mimetype="text/csv",
-            resumable=True
-        )
-
-        uploaded_file = (
-            service.files()
-            .create(body=file_metadata, media_body=media, fields="id, webViewLink")
-            .execute()
-        )
-
-        return uploaded_file.get("webViewLink")
-
+        return link
     except Exception as e:
         st.error(f"Failed to sync with Google Drive: {e}")
         return None
 
 
 def render_audit_log(user_name: str, user_role: str):
-    """Renders the comprehensive system audit log with unified queries, filters, downloads, and Drive sync."""
     st.title("📜 Complete Audit Log")
     st.caption("Track stock movement, deliveries, physical logs, user activity, and attachments.")
 
-    # Search & Filter Controls
+    # ---- Filters ----
     with st.expander("🔍 Search & Filter Controls", expanded=True):
         search_query = st.text_input(
-            "Search Item, Handler, or Notes", 
+            "Search Item, Handler, or Notes",
             placeholder="Type keyword...",
-            key="mobile_search"
+            key="mobile_search",
         )
-        
         type_filter = st.selectbox(
-            "Filter by Category / Log Type", 
+            "Filter by Category / Log Type",
             [
-                "All Activity", 
-                "STOCK IN", 
-                "STOCK OUT", 
-                "SCHEDULED DELIVERY", 
-                "PHYSICAL INVENTORY", 
-                "USER LOG"
+                "All Activity",
+                "STOCK IN",
+                "STOCK OUT",
+                "SCHEDULED DELIVERY",
+                "PHYSICAL INVENTORY",
+                "USER LOG",
             ],
-            key="mobile_type"
+            key="mobile_type",
         )
-
         st.button("🔄 Refresh Data", use_container_width=True)
 
+    # ---- Fetch each source table separately, then merge ----
+    frames = []
+
+    # 1. transactions
     try:
-        with get_db() as conn:
-            # Unified query aggregating stock transactions, scheduled deliveries, inventory checks, and user logs
-            unified_query = """
-                SELECT 
-                    id, 
-                    timestamp, 
-                    type, 
-                    item_name, 
-                    CAST(quantity AS TEXT) AS quantity, 
-                    unit, 
-                    handled_by, 
-                    notes 
-                FROM transactions
-
-                UNION ALL
-
-                SELECT 
-                    id, 
-                    created_at AS timestamp, 
-                    'SCHEDULED DELIVERY' AS type, 
-                    item_name, 
-                    CAST(quantity AS TEXT) AS quantity, 
-                    unit, 
-                    created_by AS handled_by, 
-                    COALESCE(status, '') || ' | ' || COALESCE(notes, '') AS notes 
-                FROM scheduled_deliveries
-
-                UNION ALL
-
-                SELECT 
-                    id, 
-                    timestamp, 
-                    'PHYSICAL INVENTORY' AS type, 
-                    item_name, 
-                    CAST(counted_qty AS TEXT) AS quantity, 
-                    unit, 
-                    counted_by AS handled_by, 
-                    'System Qty: ' || CAST(system_qty AS TEXT) || ' | Variance: ' || CAST(variance AS TEXT) || ' | ' || COALESCE(notes, '') AS notes 
-                FROM physical_inventory_logs
-
-                UNION ALL
-
-                SELECT 
-                    id, 
-                    timestamp, 
-                    'USER LOG' AS type, 
-                    '-' AS item_name, 
-                    '-' AS quantity, 
-                    '-' AS unit, 
-                    username AS handled_by, 
-                    action || ' | ' || COALESCE(details, '') AS notes 
-                FROM user_logs
-            """
-
-            # Build outer filtering query
-            final_query = f"SELECT * FROM ({unified_query}) WHERE 1=1"
-            params = []
-
-            # Filter by Log Type
-            if type_filter == "STOCK IN":
-                final_query += " AND type IN ('STOCK IN', 'IN')"
-            elif type_filter == "STOCK OUT":
-                final_query += " AND type IN ('STOCK OUT', 'OUT')"
-            elif type_filter != "All Activity":
-                final_query += " AND type = ?"
-                params.append(type_filter)
-
-            # Keyword Search Filter
-            if search_query.strip():
-                final_query += " AND (item_name LIKE ? OR handled_by LIKE ? OR notes LIKE ? OR type LIKE ?)"
-                wildcard = f"%{search_query.strip()}%"
-                params.extend([wildcard, wildcard, wildcard, wildcard])
-
-            final_query += " ORDER BY timestamp DESC, id DESC"
-
-            df = pd.read_sql_query(final_query, conn, params=params)
-
-        if not df.empty:
-            # Dynamic metrics overview
-            in_count = len(df[df["type"].isin(["STOCK IN", "IN"])])
-            out_count = len(df[df["type"].isin(["STOCK OUT", "OUT"])])
-            delivery_count = len(df[df["type"] == "SCHEDULED DELIVERY"])
-            physical_count = len(df[df["type"] == "PHYSICAL INVENTORY"])
-            user_count = len(df[df["type"] == "USER LOG"])
-
-            # Metric Columns Layout
-            m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("Total Logs", len(df))
-            m2.metric("Stock IN", in_count)
-            m3.metric("Stock OUT", out_count)
-            m4.metric("Deliveries", delivery_count)
-            m5.metric("User / Physical", user_count + physical_count)
-
-            # Display formatting
-            df_display = df.rename(
-                columns={
-                    "id": "Log ID",
-                    "timestamp": "Date & Time",
-                    "type": "Log Type",
-                    "item_name": "Item Name",
-                    "quantity": "Quantity",
-                    "unit": "Unit",
-                    "handled_by": "Handled / Executed By",
-                    "notes": "Notes / Details / Audit Ref",
-                }
+        res = (
+            sb()
+            .table("transactions")
+            .select("id, timestamp, type, item_name, quantity, unit, handled_by, notes")
+            .order("timestamp", desc=True)
+            .limit(500)
+            .execute()
+        )
+        if res.data:
+            df = pd.DataFrame(res.data)
+            df["type"] = df["type"].apply(
+                lambda t: "STOCK IN" if t == "IN"
+                else "STOCK OUT" if t == "OUT"
+                else t
             )
-
-            st.divider()
-            
-            # Datatable Output
-            st.dataframe(
-                df_display, 
-                use_container_width=True, 
-                hide_index=True,
-                column_config={
-                    "Log ID": st.column_config.NumberColumn(format="%d"),
-                }
-            )
-
-            # -------------------------------------------------------------
-            # ATTACHMENT & GOOGLE DRIVE LINK EXPANDER
-            # -------------------------------------------------------------
-            with st.expander("📎 Attachments & Drive Links"):
-                has_media = False
-                for _, row in df.iterrows():
-                    notes = str(row["notes"])
-                    drive_url = extract_drive_link(notes)
-                    local_file = extract_attachment_filename(notes)
-
-                    if drive_url:
-                        has_media = True
-                        st.markdown(
-                            f"🔗 **Log #{row['id']} ({row['type']} - {row['item_name']})**  \n"
-                            f"[Open Delivery Receipt / Document]({drive_url})"
-                        )
-                        st.divider()
-                    elif local_file:
-                        has_media = True
-                        file_path = Path(UPLOAD_DIR) / local_file
-                        if file_path.exists():
-                            with open(file_path, "rb") as f:
-                                st.download_button(
-                                    label=f"📄 Download #{row['id']}: {local_file}",
-                                    data=f.read(),
-                                    file_name=local_file,
-                                    key=f"audit_dl_{row['id']}",
-                                    use_container_width=True,
-                                )
-                        else:
-                            st.caption(
-                                f"⚠️ Log #{row['id']} local file `{local_file}` not found on disk."
-                            )
-
-                if not has_media:
-                    st.info("No external file links or attachments found in records.")
-
-            # -------------------------------------------------------------
-            # EXPORT & GOOGLE DRIVE SYNC
-            # -------------------------------------------------------------
-            st.divider()
-            csv_data = df_display.to_csv(index=False).encode("utf-8")
-
-            st.download_button(
-                label="📥 Export Audit Log (CSV)",
-                data=csv_data,
-                file_name="audit_log.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-
-            if st.button("☁️ Sync Audit Log to Google Drive", use_container_width=True):
-                with st.spinner("Uploading to Google Drive..."):
-                    file_link = upload_csv_to_gdrive(csv_data, filename="audit_log_backup.csv")
-                    if file_link:
-                        st.success("Successfully uploaded to Google Drive!")
-                        st.markdown(f"🔗 [Open Uploaded File in Drive]({file_link})")
-
-        else:
-            st.info("No audit logs found matching the selected filters.")
-
+            frames.append(df)
     except Exception as e:
-        st.error(f"Error loading audit log: {e}")
+        st.warning(f"Could not load transactions: {e}")
+
+    # 2. deliveries (as scheduled delivery)
+    try:
+        res = (
+            sb()
+            .table("deliveries")
+            .select("id, created_at, item_name, expected_quantity, unit, created_by, status, notes")
+            .order("created_at", desc=True)
+            .limit(500)
+            .execute()
+        )
+        if res.data:
+            df = pd.DataFrame(res.data)
+            df = df.rename(columns={
+                "created_at": "timestamp",
+                "expected_quantity": "quantity",
+                "created_by": "handled_by",
+            })
+            df["type"] = "SCHEDULED DELIVERY"
+            df["notes"] = df.apply(
+                lambda r: f"{r.get('status', '')} | {r.get('notes') or ''}", axis=1
+            )
+            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes"]])
+    except Exception as e:
+        st.warning(f"Could not load deliveries: {e}")
+
+    # 3. physical_inventory_logs
+    try:
+        res = (
+            sb()
+            .table("physical_inventory_logs")
+            .select("id, timestamp, item_name, system_qty, counted_qty, variance, unit, counted_by, notes")
+            .order("timestamp", desc=True)
+            .limit(500)
+            .execute()
+        )
+        if res.data:
+            df = pd.DataFrame(res.data)
+            df = df.rename(columns={
+                "counted_qty": "quantity",
+                "counted_by": "handled_by",
+            })
+            df["type"] = "PHYSICAL INVENTORY"
+            df["notes"] = df.apply(
+                lambda r: (
+                    f"System Qty: {r['system_qty']} | Variance: {r['variance']} | "
+                    f"{r.get('notes') or ''}"
+                ),
+                axis=1,
+            )
+            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes"]])
+    except Exception as e:
+        st.warning(f"Could not load physical inventory logs: {e}")
+
+    # 4. user_logs (currently empty, but supported)
+    try:
+        res = (
+            sb()
+            .table("user_logs")
+            .select("id, timestamp, username, action, details")
+            .order("timestamp", desc=True)
+            .limit(500)
+            .execute()
+        )
+        if res.data:
+            df = pd.DataFrame(res.data)
+            df = df.rename(columns={
+                "username": "handled_by",
+                "action": "item_name",
+            })
+            df["type"] = "USER LOG"
+            df["quantity"] = "-"
+            df["unit"] = "-"
+            df["notes"] = df["details"]
+            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes"]])
+    except Exception as e:
+        st.warning(f"Could not load user logs: {e}")
+
+    # ---- Merge ----
+    if not frames:
+        st.info("No audit logs found matching the selected filters.")
+        return
+
+    df = pd.concat(frames, ignore_index=True)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.sort_values("timestamp", ascending=False).reset_index(drop=True)
+
+    # ---- Apply filters ----
+    if type_filter == "STOCK IN":
+        df = df[df["type"].isin(["STOCK IN", "IN"])]
+    elif type_filter == "STOCK OUT":
+        df = df[df["type"].isin(["STOCK OUT", "OUT"])]
+    elif type_filter != "All Activity":
+        df = df[df["type"] == type_filter]
+
+    if search_query.strip():
+        q = search_query.strip().lower()
+        mask = (
+            df["item_name"].astype(str).str.lower().str.contains(q, na=False)
+            | df["handled_by"].astype(str).str.lower().str.contains(q, na=False)
+            | df["notes"].astype(str).str.lower().str.contains(q, na=False)
+            | df["type"].astype(str).str.lower().str.contains(q, na=False)
+        )
+        df = df[mask]
+
+    if df.empty:
+        st.info("No audit logs found matching the selected filters.")
+        return
+
+    # ---- KPI metrics ----
+    in_count = len(df[df["type"].isin(["STOCK IN", "IN"])])
+    out_count = len(df[df["type"].isin(["STOCK OUT", "OUT"])])
+    delivery_count = len(df[df["type"] == "SCHEDULED DELIVERY"])
+    physical_count = len(df[df["type"] == "PHYSICAL INVENTORY"])
+    user_count = len(df[df["type"] == "USER LOG"])
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Total Logs", len(df))
+    m2.metric("Stock IN", in_count)
+    m3.metric("Stock OUT", out_count)
+    m4.metric("Deliveries", delivery_count)
+    m5.metric("User / Physical", user_count + physical_count)
+
+    df_display = df.rename(columns={
+        "id": "Log ID",
+        "timestamp": "Date & Time",
+        "type": "Log Type",
+        "item_name": "Item Name",
+        "quantity": "Quantity",
+        "unit": "Unit",
+        "handled_by": "Handled / Executed By",
+        "notes": "Notes / Details / Audit Ref",
+    })
+
+    st.divider()
+    st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+    # ---- Attachments ----
+    with st.expander("📎 Attachments & Drive Links"):
+        has_media = False
+        for _, row in df.iterrows():
+            notes = str(row["notes"])
+            drive_url = extract_drive_link(notes)
+            local_file = extract_attachment_filename(notes)
+
+            if drive_url:
+                has_media = True
+                st.markdown(
+                    f"🔗 **Log #{str(row['id'])[:8]} ({row['type']} - {row['item_name']})**  \n"
+                    f"[Open Document]({drive_url})"
+                )
+                st.divider()
+            elif local_file:
+                has_media = True
+                file_path = Path(UPLOAD_DIR) / local_file
+                if file_path.exists():
+                    with open(file_path, "rb") as f:
+                        st.download_button(
+                            label=f"📄 Download #{str(row['id'])[:8]}: {local_file}",
+                            data=f.read(),
+                            file_name=local_file,
+                            key=f"audit_dl_{row['id']}",
+                            use_container_width=True,
+                        )
+                else:
+                    st.caption(f"⚠️ Log local file `{local_file}` not found on disk.")
+
+        if not has_media:
+            st.info("No external file links or attachments found in records.")
+
+    # ---- Export ----
+    st.divider()
+    csv_data = df_display.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="📥 Export Audit Log (CSV)",
+        data=csv_data,
+        file_name="audit_log.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+    if st.button("☁️ Sync Audit Log to Google Drive", use_container_width=True):
+        with st.spinner("Uploading to Google Drive..."):
+            link = upload_csv_to_gdrive(csv_data, filename="audit_log_backup.csv")
+            if link:
+                st.success("Successfully uploaded to Google Drive!")
+                st.markdown(f"🔗 [Open Uploaded File in Drive]({link})")
+            else:
+                st.error("Upload failed — check Drive credentials.")
