@@ -360,6 +360,90 @@ def add_stock_transaction(
 
 
 # -----------------------------------------------------------------------------
+# STOCK OUT REQUISITIONS (batch)
+# -----------------------------------------------------------------------------
+def issue_stock_batch(
+    requested_by: str,
+    destination: str,
+    project: str,
+    handled_by: str,
+    items: list[dict],
+) -> dict:
+    """Issue a batch of items to one destination/project atomically.
+
+    Each item in items must be a dict:
+        {"item_name": str, "unit": str, "quantity": float, "notes": str}
+
+    Raises ValueError on validation failures (insufficient stock, empty fields).
+    Raises NetworkError on infrastructure failures.
+    Returns dict with { req_id, project, line_count }.
+    """
+    if not items:
+        raise ValueError("No items in requisition.")
+
+    clean_req = (requested_by or "").strip()
+    clean_dest = (destination or "").strip()
+    clean_proj = (project or "").strip()
+
+    if not clean_req:
+        raise ValueError("Requested By is required.")
+    if not clean_dest:
+        raise ValueError("Destination is required.")
+    if not clean_proj:
+        raise ValueError("Project Code is required.")
+
+    # Sanitize the items payload
+    payload = []
+    for i, item in enumerate(items, start=1):
+        name = (item.get("item_name") or "").strip()
+        unit = (item.get("unit") or "pcs").strip()
+        try:
+            qty = float(item.get("quantity") or 0)
+        except (TypeError, ValueError):
+            raise ValueError(f"Line {i}: quantity must be a number.")
+        if not name:
+            raise ValueError(f"Line {i}: item name is empty.")
+        if qty <= 0:
+            raise ValueError(f"Line {i} ({name}): quantity must be positive.")
+        payload.append({
+            "item_name": name,
+            "unit": unit,
+            "quantity": qty,
+            "notes": (item.get("notes") or "").strip(),
+        })
+
+    try:
+        res = sb().rpc(
+            "issue_stock_batch_atomic",
+            {
+                "p_requested_by": clean_req,
+                "p_destination":  clean_dest,
+                "p_project":      clean_proj,
+                "p_handled_by":   (handled_by or "System").strip(),
+                "p_items":        payload,
+            },
+        ).execute()
+    except Exception as e:
+        msg = str(e)
+        low = msg.lower()
+        if "requisition blocked" in low or "insufficient stock" in low or "not found in catalog" in low:
+            raise ValueError(msg) from e
+        if "project code is required" in low:
+            raise ValueError("Project Code is required.") from e
+        if "no items in requisition" in low:
+            raise ValueError("No items in requisition.") from e
+        raise NetworkError(f"Failed to issue requisition: {e}") from e
+
+    data = res.data
+    if isinstance(data, list) and data:
+        data = data[0]
+    if not isinstance(data, dict) or not data.get("success"):
+        raise NetworkError("Requisition did not return a success response.")
+
+    return data
+
+
+# -----------------------------------------------------------------------------
 # DELIVERIES
 # -----------------------------------------------------------------------------
 def add_scheduled_delivery(
