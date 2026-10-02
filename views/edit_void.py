@@ -109,7 +109,7 @@ def render_edit_void(user_name: str, user_role: str):
             new_project = st.text_input("Project Site", value=existing_project)
             new_remarks = st.text_area("Remarks / Reason for Edit", value=existing_notes, height=100)
 
-            submit_edit = st.form_submit_button("💾 Save Changes", use_container_width=True)
+            submit_edit = st.form_submit_button("💾 Save Changes", width='stretch')
 
             if submit_edit:
                 old_qty = float(tx_detail["quantity"])
@@ -183,7 +183,7 @@ def render_edit_void(user_name: str, user_role: str):
             placeholder="e.g., Duplicate entry",
         )
 
-        if st.button("🔴 Confirm & Void Transaction", use_container_width=True):
+        if st.button("🔴 Confirm & Void Transaction", width='stretch'):
             if not void_reason.strip():
                 st.error("Please provide a reason for voiding this transaction.")
             else:

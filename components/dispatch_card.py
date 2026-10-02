@@ -341,12 +341,12 @@ def render_dispatch_card(dispatch_id, items_df, get_due_status_label_fn, add_ite
 
         btn_c1, btn_c2 = st.columns(2)
         with btn_c1:
-            if st.button("🔄 Update Status & Driver Notes", key=f"btn_status_{key_prefix}", type="primary", use_container_width=True):
+            if st.button("🔄 Update Status & Driver Notes", key=f"btn_status_{key_prefix}", type="primary", width='stretch'):
                 update_dispatch_status(dispatch_id, selected_status, input_driver, input_notes)
 
         with btn_c2:
             if str(new_scheduled_date) != str(curr_date):
-                if st.button("📅 Save Rescheduled Date", key=f"btn_date_{key_prefix}", use_container_width=True):
+                if st.button("📅 Save Rescheduled Date", key=f"btn_date_{key_prefix}", width='stretch'):
                     update_dispatch_schedule_date(dispatch_id, new_scheduled_date)
 
         st.divider()

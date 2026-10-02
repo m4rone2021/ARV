@@ -87,7 +87,7 @@ def render_physical_inventory(user_name, user_role):
 
             st.divider()
 
-            if st.button("💾 Submit Physical Audit", use_container_width=True):
+            if st.button("💾 Submit Physical Audit", width='stretch'):
                 if variance != 0 and not submission_notes.strip():
                     st.error("⚠️ Observation notes are required when submitting a stock discrepancy.")
                 else:
@@ -173,7 +173,7 @@ def render_physical_inventory(user_name, user_role):
                         col_a, col_b = st.columns(2)
 
                         with col_a:
-                            if st.button("✅ Approve & Apply Stock Change", key=f"app_{disc_id}", use_container_width=True):
+                            if st.button("✅ Approve & Apply Stock Change", key=f"app_{disc_id}", width='stretch'):
                                 if not resolution_reason.strip():
                                     st.error("⚠️ You must provide a resolution reason before approving.")
                                 else:
@@ -209,7 +209,7 @@ def render_physical_inventory(user_name, user_role):
                                         st.error(f"Error approving discrepancy: {e}")
 
                         with col_b:
-                            if st.button("❌ Reject (Keep System Stock)", key=f"rej_{disc_id}", use_container_width=True):
+                            if st.button("❌ Reject (Keep System Stock)", key=f"rej_{disc_id}", width='stretch'):
                                 if not resolution_reason.strip():
                                     st.error("⚠️ You must provide a resolution reason before rejecting.")
                                 else:
@@ -284,7 +284,7 @@ def render_physical_inventory(user_name, user_role):
             else:
                 st.dataframe(
                     df_display,
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     column_config={"Variance": st.column_config.NumberColumn(format="%.2f")},
                 )

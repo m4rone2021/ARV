@@ -104,7 +104,7 @@ def render_low_stock(user_name: str, user_role: str):
                     "Storage / Remarks",
                 ]
             ],
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             column_config={
                 "Physical Stock": st.column_config.NumberColumn(format="%.2f"),
@@ -138,7 +138,7 @@ def render_low_stock(user_name: str, user_role: str):
         expected_date = st.date_input("Expected Delivery Date*")
         schedule_notes = st.text_input("Delivery Notes", placeholder="e.g., Urgent site restock")
 
-        submit_schedule = st.form_submit_button("➕ Schedule Delivery", use_container_width=True)
+        submit_schedule = st.form_submit_button("➕ Schedule Delivery", width='stretch')
 
         if submit_schedule:
             try:

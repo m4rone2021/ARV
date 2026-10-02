@@ -201,7 +201,7 @@ def render_schedules(user_name, user_role):
             input_notes = st.text_input("Item Notes / Handling Instructions", placeholder="Optional")
 
             btn_add_to_cart = st.form_submit_button(
-                "➕ Add Item to Dispatch Batch", type="primary", use_container_width=True
+                "➕ Add Item to Dispatch Batch", type="primary", width='stretch'
             )
 
         if btn_add_to_cart:
@@ -245,9 +245,9 @@ def render_schedules(user_name, user_role):
             )
 
             cart_df = pd.DataFrame(st.session_state.delivery_cart)
-            st.dataframe(cart_df, use_container_width=True)
+            st.dataframe(cart_df, width='stretch')
 
-            if st.button("💾 Confirm & Create Dispatch Order", type="primary", use_container_width=True):
+            if st.button("💾 Confirm & Create Dispatch Order", type="primary", width='stretch'):
                 try:
                     rows = []
                     for item in st.session_state.delivery_cart:
@@ -287,7 +287,7 @@ def render_schedules(user_name, user_role):
                 except Exception as e:
                     st.error(f"Error creating dispatch order: {e}")
 
-            if st.button("🗑️ Clear Batch Staging", use_container_width=True):
+            if st.button("🗑️ Clear Batch Staging", width='stretch'):
                 st.session_state.delivery_cart = []
                 st.session_state.current_dispatch_header = None
                 st.rerun()

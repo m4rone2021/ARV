@@ -204,7 +204,7 @@ def render_stock_out(user_name, user_role):
 
                 if st.button(
                     "Add Item to Requisition",
-                    use_container_width=True,
+                    width='stretch',
                     type="primary",
                     disabled=not can_add,
                 ):
@@ -243,7 +243,7 @@ def render_stock_out(user_name, user_role):
             })
             st.dataframe(
                 cart_df,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "Quantity": st.column_config.NumberColumn(format="%.2f"),
@@ -273,7 +273,7 @@ def render_stock_out(user_name, user_role):
             ]
             st.dataframe(
                 pd.DataFrame(summary_rows),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "Total Quantity": st.column_config.NumberColumn(format="%.2f"),
@@ -283,11 +283,11 @@ def render_stock_out(user_name, user_role):
             st.divider()
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("Clear Cart Only", use_container_width=True):
+                if st.button("Clear Cart Only", width='stretch'):
                     _reset_cart()
                     st.rerun()
             with c2:
-                if st.button("Reset Header + Cart", use_container_width=True):
+                if st.button("Reset Header + Cart", width='stretch'):
                     _reset_all()
                     st.rerun()
 
@@ -295,7 +295,7 @@ def render_stock_out(user_name, user_role):
             if st.button(
                 "Submit Requisition",
                 type="primary",
-                use_container_width=True,
+                width='stretch',
             ):
                 if not header_ok:
                     st.error(
@@ -376,7 +376,7 @@ def render_stock_out(user_name, user_role):
         })
         st.dataframe(
             df_display,
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             column_config={
                 "Quantity Issued": st.column_config.NumberColumn(format="%.2f"),

@@ -99,7 +99,7 @@ def render_user_management(user_name, user_role):
                 "created_at": "Created",
                 "last_login_at": "Last Login",
             })
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            st.dataframe(df_display, width='stretch', hide_index=True)
 
             st.divider()
             st.subheader("🗑️ Delete User Account")
@@ -109,7 +109,7 @@ def render_user_management(user_name, user_role):
             if deletable_users:
                 with st.form("delete_user_form", clear_on_submit=True):
                     target_user = st.selectbox("Select Account to Delete", deletable_users)
-                    submit_delete = st.form_submit_button("🗑️ Delete Account", use_container_width=True)
+                    submit_delete = st.form_submit_button("🗑️ Delete Account", width='stretch')
 
                     if submit_delete:
                         try:
@@ -153,7 +153,7 @@ def render_user_management(user_name, user_role):
             new_password = st.text_input("Initial Password*", type="password")
             confirm_password = st.text_input("Confirm Password*", type="password")
 
-            submit_create = st.form_submit_button("💾 Create User Account", use_container_width=True)
+            submit_create = st.form_submit_button("💾 Create User Account", width='stretch')
 
             if submit_create:
                 clean_user = new_username.strip()
@@ -203,7 +203,7 @@ def render_user_management(user_name, user_role):
                 reset_pass = st.text_input("New Password*", type="password")
                 confirm_reset_pass = st.text_input("Confirm New Password*", type="password")
 
-                submit_reset = st.form_submit_button("🔑 Reset Password", use_container_width=True)
+                submit_reset = st.form_submit_button("🔑 Reset Password", width='stretch')
 
                 if submit_reset:
                     if not reset_pass:

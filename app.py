@@ -96,7 +96,7 @@ def render_login():
             password = st.text_input(
                 "Password", type="password", placeholder="Enter your password"
             )
-            submit = st.form_submit_button("Login", use_container_width=True)
+            submit = st.form_submit_button("Login", width='stretch')
 
             if submit:
                 if not username.strip() or not password.strip():
@@ -174,7 +174,7 @@ def render_force_password_change():
             )
 
             submit = st.form_submit_button(
-                "🔐 Set New Password", use_container_width=True
+                "🔐 Set New Password", width='stretch'
             )
 
             if submit:
@@ -217,7 +217,7 @@ def render_force_password_change():
                         )
 
         st.divider()
-        if st.button("🚪 Cancel and Logout", use_container_width=True):
+        if st.button("🚪 Cancel and Logout", width='stretch'):
             log_user_action(
                 st.session_state.user_name,
                 "LOGOUT",
@@ -257,7 +257,7 @@ def render_app():
 
     if st.session_state.user_role == "Admin":
         st.sidebar.subheader("🛠️ Admin Tools")
-        if st.sidebar.button("🧪 Test Drive Upload", use_container_width=True):
+        if st.sidebar.button("🧪 Test Drive Upload", width='stretch'):
             with st.spinner("Uploading test file to Google Drive..."):
                 try:
                     file_id = create_test_file_in_gdrive()
@@ -274,7 +274,7 @@ def render_app():
                     )
         st.sidebar.divider()
 
-    if st.sidebar.button("🚪 Logout", use_container_width=True):
+    if st.sidebar.button("🚪 Logout", width='stretch'):
         log_user_action(st.session_state.user_name, "LOGOUT", "User logged out")
         st.session_state.logged_in = False
         st.session_state.user_name = ""

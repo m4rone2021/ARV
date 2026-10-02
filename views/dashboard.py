@@ -113,7 +113,7 @@ def show_dispatch_modal(dispatch_key, deliveries_df):
         ["item_name", "quantity", "requestor", "status"]
     ]
     if not items.empty:
-        st.dataframe(items, use_container_width=True, hide_index=True)
+        st.dataframe(items, width='stretch', hide_index=True)
     else:
         st.info("No itemized details found for this dispatch.")
     if st.button("Close Details"):
@@ -342,7 +342,7 @@ def render_dashboard(user_name="Guest", user_role="User"):
                         "requestor": "Requestor",
                         "days_left_str": "Days Left",
                     }),
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                 )
         else:

@@ -177,7 +177,7 @@ def render_stock_in(user_name, user_role):
 
                 if st.button(
                     "Add Item to Receipt",
-                    use_container_width=True,
+                    width='stretch',
                     type="primary",
                     disabled=not can_add,
                 ):
@@ -214,7 +214,7 @@ def render_stock_in(user_name, user_role):
             })
             st.dataframe(
                 cart_df,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "Quantity": st.column_config.NumberColumn(format="%.2f"),
@@ -244,7 +244,7 @@ def render_stock_in(user_name, user_role):
             ]
             st.dataframe(
                 pd.DataFrame(summary_rows),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "Total Quantity": st.column_config.NumberColumn(format="%.2f"),
@@ -254,11 +254,11 @@ def render_stock_in(user_name, user_role):
             st.divider()
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("Clear Receipt Only", use_container_width=True):
+                if st.button("Clear Receipt Only", width='stretch'):
                     _reset_cart()
                     st.rerun()
             with c2:
-                if st.button("Reset Header + Receipt", use_container_width=True):
+                if st.button("Reset Header + Receipt", width='stretch'):
                     _reset_all()
                     st.rerun()
 
@@ -266,7 +266,7 @@ def render_stock_in(user_name, user_role):
             if st.button(
                 "Submit Receipt",
                 type="primary",
-                use_container_width=True,
+                width='stretch',
             ):
                 if not header_ok:
                     st.error("Supplier / Source is required.")
@@ -341,7 +341,7 @@ def render_stock_in(user_name, user_role):
                 "handled_by": "Received By",
                 "notes": "Receipt / Supplier / Notes",
             }),
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             column_config={
                 "Quantity": st.column_config.NumberColumn(format="%.2f"),

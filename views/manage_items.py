@@ -111,7 +111,7 @@ def render_manage_items(user_name, user_role):
         else:
             st.dataframe(
                 df_display,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "Stock In Shop (Total)": st.column_config.NumberColumn(format="%.2f"),
@@ -136,7 +136,7 @@ def render_manage_items(user_name, user_role):
                 min_threshold = st.number_input("Low Stock Threshold Alert*", min_value=0.0, step=1.0, value=0.0, format="%.2f")
                 remarks = st.text_input("Remarks / Notes (Optional)")
 
-                submit_add = st.form_submit_button("💾 Save Item to Catalog", use_container_width=True)
+                submit_add = st.form_submit_button("💾 Save Item to Catalog", width='stretch')
 
                 if submit_add:
                     final_category = new_category.strip() if new_category.strip() else category.strip()
@@ -231,7 +231,7 @@ def render_manage_items(user_name, user_role):
                     )
                     edit_remarks = st.text_input("Remarks", value=selected_row["remarks"] or "")
 
-                    submit_edit = st.form_submit_button("🔄 Update Master Item", use_container_width=True)
+                    submit_edit = st.form_submit_button("🔄 Update Master Item", width='stretch')
 
                     if submit_edit:
                         final_edit_cat = edit_new_category.strip() if edit_new_category.strip() else edit_category.strip()
@@ -280,7 +280,7 @@ def render_manage_items(user_name, user_role):
             else:
                 with st.form("delete_item_form"):
                     target_item = st.selectbox("Select Item to Delete", df_del["item_name"].tolist())
-                    submit_delete = st.form_submit_button("🗑️ Permanently Delete Item", use_container_width=True)
+                    submit_delete = st.form_submit_button("🗑️ Permanently Delete Item", width='stretch')
 
                     if submit_delete:
                         target_row = df_del[df_del["item_name"] == target_item].iloc[0]

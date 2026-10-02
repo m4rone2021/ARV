@@ -46,3 +46,6 @@ list_drive_backups.py
 *_v1.py
 *_before_rewrite.py
 *_backup.py
+
+# Width fix backups
+_backup_width_fix/

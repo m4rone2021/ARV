@@ -103,7 +103,7 @@ def render_reminders(user_name: str = "", user_role: str = ""):
                         "assigned_to": "Assigned To", "status": "Status",
                     }
                 )
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                st.dataframe(display_df, width='stretch', hide_index=True)
 
             st.markdown("---")
             st.markdown("#### 🔄 Update Task Status / Schedule")
@@ -127,7 +127,7 @@ def render_reminders(user_name: str = "", user_role: str = ""):
                 )
                 new_due_date = st.date_input("Select New Target Date (If Rescheduling)", value=date.today())
 
-                submit_update = st.form_submit_button("💾 Submit Update", use_container_width=True)
+                submit_update = st.form_submit_button("💾 Submit Update", width='stretch')
 
                 if submit_update and selected_label:
                     task_id = task_options[selected_label]
@@ -181,7 +181,7 @@ def render_reminders(user_name: str = "", user_role: str = ""):
                         "assigned_to": "Assigned To", "status": "Status",
                     }
                 )
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                st.dataframe(display_df, width='stretch', hide_index=True)
         else:
             st.info("No completed or cancelled tasks found.")
 
@@ -197,7 +197,7 @@ def render_reminders(user_name: str = "", user_role: str = ""):
             assigned_to = st.text_input("Assigned Personnel / Team", value=active_user, placeholder="e.g., Warehouse Team")
             is_high_priority = st.checkbox("🚨 Mark as High Priority", value=False)
 
-            submit_add = st.form_submit_button("💾 Save Task / Reminder", use_container_width=True)
+            submit_add = st.form_submit_button("💾 Save Task / Reminder", width='stretch')
 
             if submit_add:
                 if not task_desc.strip():

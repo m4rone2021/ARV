@@ -61,7 +61,7 @@ def render_audit_log(user_name: str, user_role: str):
             ],
             key="mobile_type",
         )
-        st.button("🔄 Refresh Data", use_container_width=True)
+        st.button("🔄 Refresh Data", width='stretch')
 
     # ---- Fetch each source table separately, then merge ----
     frames = []
@@ -221,7 +221,7 @@ def render_audit_log(user_name: str, user_role: str):
     })
 
     st.divider()
-    st.dataframe(df_display, use_container_width=True, hide_index=True)
+    st.dataframe(df_display, width='stretch', hide_index=True)
 
     # ---- Attachments ----
     with st.expander("📎 Attachments & Drive Links"):
@@ -248,7 +248,7 @@ def render_audit_log(user_name: str, user_role: str):
                             data=f.read(),
                             file_name=local_file,
                             key=f"audit_dl_{row['id']}",
-                            use_container_width=True,
+                            width='stretch',
                         )
                 else:
                     st.caption(f"⚠️ Log local file `{local_file}` not found on disk.")
@@ -264,10 +264,10 @@ def render_audit_log(user_name: str, user_role: str):
         data=csv_data,
         file_name="audit_log.csv",
         mime="text/csv",
-        use_container_width=True,
+        width='stretch',
     )
 
-    if st.button("☁️ Sync Audit Log to Google Drive", use_container_width=True):
+    if st.button("☁️ Sync Audit Log to Google Drive", width='stretch'):
         with st.spinner("Uploading to Google Drive..."):
             link = upload_csv_to_gdrive(csv_data, filename="audit_log_backup.csv")
             if link:
