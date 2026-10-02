@@ -395,8 +395,12 @@ def save_dispatch_batch(
 ) -> None:
     """Insert a batch of dispatch items and reserve stock.
 
-    NOTE: not atomic across deliveries + reserved_stock yet (Session 2 fix).
+    Uses an atomic Postgres RPC — deliveries insert and reserved_stock update
+    happen in a single transaction. If either fails, both roll back.
     """
+    if not delivery_cart:
+        raise ValueError("Delivery cart is empty.")
+
     creator = (
         created_by
         or dispatch_header.get("created_by")
@@ -404,49 +408,30 @@ def save_dispatch_batch(
         or "System"
     )
 
-    rows = []
+    items_payload = []
     for item in delivery_cart:
-        rows.append({
-            "dispatch_id": dispatch_header["dispatch_id"],
+        items_payload.append({
             "item_name": item["item_name"],
             "unit": item.get("unit", "pcs"),
-            "expected_quantity": float(item["quantity"]),
-            "expected_date": dispatch_header["scheduled_date"],
-            "scheduled_date": dispatch_header["scheduled_date"],
-            "destination": dispatch_header["destination"],
-            "requested_by": dispatch_header["requested_by"],
-            "created_by": creator,
-            "project": dispatch_header["project"],
-            "status": "Pending",
-            "is_priority": bool(dispatch_header.get("is_priority", 0)),
-            "driver_name": dispatch_header.get("driver_name", ""),
+            "quantity": float(item["quantity"]),
             "notes": item.get("notes", ""),
         })
 
     try:
-        if rows:
-            sb().table("deliveries").insert(rows).execute()
-
-        by_item: dict[str, float] = {}
-        for item in delivery_cart:
-            by_item[item["item_name"]] = (
-                by_item.get(item["item_name"], 0.0) + float(item["quantity"])
-            )
-
-        for item_name, qty in by_item.items():
-            cur = (
-                sb()
-                .table("master_items")
-                .select("reserved_stock")
-                .eq("item_name", item_name)
-                .limit(1)
-                .execute()
-            )
-            if cur.data:
-                new_reserved = float(cur.data[0].get("reserved_stock") or 0.0) + qty
-                sb().table("master_items").update(
-                    {"reserved_stock": new_reserved}
-                ).eq("item_name", item_name).execute()
+        sb().rpc(
+            "save_dispatch_batch_atomic",
+            {
+                "p_dispatch_id":    dispatch_header["dispatch_id"],
+                "p_scheduled_date": dispatch_header["scheduled_date"],
+                "p_destination":    dispatch_header["destination"],
+                "p_requested_by":   dispatch_header["requested_by"],
+                "p_project":        dispatch_header["project"],
+                "p_created_by":     creator,
+                "p_is_priority":    bool(dispatch_header.get("is_priority", 0)),
+                "p_driver_name":    dispatch_header.get("driver_name", ""),
+                "p_items":          items_payload,
+            },
+        ).execute()
     except Exception as e:
         raise NetworkError(f"Failed to save dispatch batch: {e}") from e
 
@@ -460,83 +445,28 @@ def update_dispatch_status(
 ) -> None:
     """Update the status of all rows in a dispatch batch.
 
-    NOTE: not atomic yet (Session 2 fix will move this to an RPC).
+    Uses an atomic Postgres RPC — stock deductions, transaction log inserts,
+    and status updates all happen in one transaction. No partial writes.
     """
     new_status_clean = new_status.strip()
     if new_status_clean not in ("Pending", "In Transit", "Completed", "Cancelled"):
         raise ValueError("Invalid status provided.")
 
     try:
-        rows = (
-            sb()
-            .table("deliveries")
-            .select("item_name, expected_quantity, unit, status")
-            .eq("dispatch_id", dispatch_id)
-            .execute()
-            .data
-            or []
-        )
-        if not rows:
-            raise ValueError(f"No dispatch records found for ID '{dispatch_id}'.")
-
-        current_status = rows[0]["status"]
-        if current_status in ("Completed", "Cancelled"):
-            raise ValueError(f"Dispatch '{dispatch_id}' is already {current_status}.")
-
-        for item in rows:
-            item_name = item["item_name"]
-            qty = float(item["expected_quantity"])
-            unit = item["unit"]
-
-            cur = (
-                sb()
-                .table("master_items")
-                .select("current_stock, reserved_stock")
-                .eq("item_name", item_name)
-                .limit(1)
-                .execute()
-            )
-            if not cur.data:
-                continue
-            stock = cur.data[0]
-            current_stock = float(stock.get("current_stock") or 0.0)
-            reserved_stock = float(stock.get("reserved_stock") or 0.0)
-
-            if new_status_clean == "Cancelled":
-                new_reserved = max(0.0, reserved_stock - qty)
-                sb().table("master_items").update(
-                    {"reserved_stock": new_reserved}
-                ).eq("item_name", item_name).execute()
-
-            elif new_status_clean == "Completed":
-                new_stock = max(0.0, current_stock - qty)
-                new_reserved = max(0.0, reserved_stock - qty)
-                sb().table("master_items").update({
-                    "current_stock": new_stock,
-                    "reserved_stock": new_reserved,
-                }).eq("item_name", item_name).execute()
-
-                sb().table("transactions").insert({
-                    "type": "OUT",
-                    "item_name": item_name,
-                    "quantity": qty,
-                    "unit": unit,
-                    "handled_by": handled_by,
-                    "notes": f"Completed Dispatch #{dispatch_id}",
-                }).execute()
-
-        update_payload = {"status": new_status_clean}
-        if driver_name is not None:
-            update_payload["driver_name"] = driver_name
-        if delivery_notes:
-            update_payload["notes"] = delivery_notes
-
-        sb().table("deliveries").update(update_payload).eq(
-            "dispatch_id", dispatch_id
+        sb().rpc(
+            "update_dispatch_status_atomic",
+            {
+                "p_dispatch_id":    dispatch_id,
+                "p_new_status":     new_status_clean,
+                "p_handled_by":     handled_by,
+                "p_driver_name":    driver_name,
+                "p_delivery_notes": delivery_notes,
+            },
         ).execute()
-    except ValueError:
-        raise
     except Exception as e:
+        msg = str(e)
+        if "already" in msg.lower() or "no dispatch" in msg.lower():
+            raise ValueError(msg) from e
         raise NetworkError(f"Failed to update dispatch status: {e}") from e
 
 
@@ -549,45 +479,25 @@ def resolve_discrepancy(
     resolution_notes: str,
     approve_adjustment: bool = True,
 ) -> None:
-    """Approve or reject a discrepancy. If approved, set master_items stock."""
+    """Approve or reject a discrepancy atomically.
+
+    Uses a Postgres RPC — discrepancy update, master_items stock adjustment,
+    and reconciliation transaction insert all happen in one transaction.
+    """
     try:
-        disc = (
-            sb()
-            .table("discrepancies")
-            .select("*")
-            .eq("id", discrepancy_id)
-            .limit(1)
-            .execute()
-            .data
-        )
-        if not disc:
-            raise ValueError(f"Discrepancy record {discrepancy_id} not found.")
-        d = disc[0]
-
-        status = "APPROVED" if approve_adjustment else "REJECTED"
-        sb().table("discrepancies").update({
-            "status": status,
-            "resolved_by": resolved_by,
-            "resolved_timestamp": _now_iso(),
-            "resolution_notes": resolution_notes,
-        }).eq("id", discrepancy_id).execute()
-
-        if approve_adjustment:
-            sb().table("master_items").update(
-                {"current_stock": float(d["physical_count"])}
-            ).eq("item_name", d["item_name"]).execute()
-
-            sb().table("transactions").insert({
-                "type": "RECONCILIATION",
-                "item_name": d["item_name"],
-                "quantity": float(d["physical_count"]),
-                "unit": d["unit"],
-                "handled_by": resolved_by,
-                "notes": f"Discrepancy Audit #{discrepancy_id}: {resolution_notes}",
-            }).execute()
-    except ValueError:
-        raise
+        sb().rpc(
+            "resolve_discrepancy_atomic",
+            {
+                "p_discrepancy_id":   discrepancy_id,
+                "p_resolved_by":      resolved_by,
+                "p_resolution_notes": resolution_notes,
+                "p_approve":          bool(approve_adjustment),
+            },
+        ).execute()
     except Exception as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise ValueError(msg) from e
         raise NetworkError(f"Failed to resolve discrepancy: {e}") from e
 
 

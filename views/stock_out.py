@@ -13,8 +13,9 @@ def render_stock_out(user_name, user_role):
         "Record outgoing materials, validate real-time stock balances, and track stock dispatches."
     )
 
-    if "flash_msg" in st.session_state:
-        msg_type, msg_text = st.session_state.pop("flash_msg")
+    flash = st.session_state.pop("flash_msg", None)
+    if flash and isinstance(flash, tuple) and len(flash) == 2:
+        msg_type, msg_text = flash
         if msg_type == "success":
             st.success(msg_text)
         elif msg_type == "warning":

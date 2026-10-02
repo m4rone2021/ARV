@@ -35,8 +35,8 @@ if "user_role" not in st.session_state:
     st.session_state.user_role = "User"
 if "must_change_password" not in st.session_state:
     st.session_state.must_change_password = False
-if "flash_msg" not in st.session_state:
-    st.session_state.flash_msg = None
+# Note: flash_msg is lazily created when needed; not initialized to None
+# (Stock OUT and other views check for truthiness, not just presence)
 
 
 def _show_flash():
