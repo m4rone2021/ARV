@@ -360,6 +360,82 @@ def add_stock_transaction(
 
 
 # -----------------------------------------------------------------------------
+# STOCK IN RECEIPTS (batch)
+# -----------------------------------------------------------------------------
+def receive_stock_batch(
+    supplier: str,
+    dr_number: str,
+    handled_by: str,
+    general_notes: str,
+    items: list[dict],
+) -> dict:
+    """Record a batch of received items atomically.
+
+    Each item in items must be a dict:
+        {"item_name": str, "unit": str, "quantity": float, "notes": str}
+
+    Raises ValueError on validation failures.
+    Raises NetworkError on infrastructure failures.
+    Returns dict with { rcv_id, supplier, line_count }.
+    """
+    if not items:
+        raise ValueError("No items in receipt.")
+
+    clean_supplier = (supplier or "").strip()
+    if not clean_supplier:
+        raise ValueError("Supplier / Source is required.")
+
+    payload = []
+    for i, item in enumerate(items, start=1):
+        name = (item.get("item_name") or "").strip()
+        unit = (item.get("unit") or "pcs").strip()
+        try:
+            qty = float(item.get("quantity") or 0)
+        except (TypeError, ValueError):
+            raise ValueError(f"Line {i}: quantity must be a number.")
+        if not name:
+            raise ValueError(f"Line {i}: item name is empty.")
+        if qty <= 0:
+            raise ValueError(f"Line {i} ({name}): quantity must be positive.")
+        payload.append({
+            "item_name": name,
+            "unit": unit,
+            "quantity": qty,
+            "notes": (item.get("notes") or "").strip(),
+        })
+
+    try:
+        res = sb().rpc(
+            "receive_stock_batch_atomic",
+            {
+                "p_supplier":      clean_supplier,
+                "p_dr_number":     (dr_number or "").strip(),
+                "p_handled_by":    (handled_by or "System").strip(),
+                "p_general_notes": (general_notes or "").strip(),
+                "p_items":         payload,
+            },
+        ).execute()
+    except Exception as e:
+        msg = str(e)
+        low = msg.lower()
+        if "receipt blocked" in low or "not found in catalog" in low:
+            raise ValueError(msg) from e
+        if "supplier / source is required" in low:
+            raise ValueError("Supplier / Source is required.") from e
+        if "no items in receipt" in low:
+            raise ValueError("No items in receipt.") from e
+        raise NetworkError(f"Failed to record receipt: {e}") from e
+
+    data = res.data
+    if isinstance(data, list) and data:
+        data = data[0]
+    if not isinstance(data, dict) or not data.get("success"):
+        raise NetworkError("Receipt did not return a success response.")
+
+    return data
+
+
+# -----------------------------------------------------------------------------
 # STOCK OUT REQUISITIONS (batch)
 # -----------------------------------------------------------------------------
 def issue_stock_batch(

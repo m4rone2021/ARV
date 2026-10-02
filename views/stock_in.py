@@ -1,144 +1,317 @@
-﻿import os
-import tempfile
-import uuid
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
-from database import UPLOAD_DIR, sb, upload_file_to_gdrive
+from database import (
+    NetworkError,
+    receive_stock_batch,
+    sb,
+)
 
 
-def sanitize_filename(filename: str) -> str:
-    clean_name = os.path.basename(filename)
-    return "".join(c for c in clean_name if c.isalnum() or c in "._- ")
+PLACEHOLDER = "-- Select an item --"
 
 
-def render_stock_in(user_name: str, user_role: str):
+def _fmt_qty(x):
+    return f"{x:,.2f}".rstrip("0").rstrip(".") if x % 1 else f"{int(x):,}"
+
+
+def _reset_cart():
+    st.session_state.si_cart = []
+
+
+def _reset_all():
+    _reset_cart()
+    for k in (
+        "si_supplier_input", "si_dr_input", "si_notes_input",
+        "si_add_item_version", "si_add_version",
+    ):
+        st.session_state.pop(k, None)
+
+
+def _bump_add_versions():
+    st.session_state["si_add_version"] = st.session_state.get("si_add_version", 0) + 1
+    st.session_state["si_add_item_version"] = st.session_state.get("si_add_item_version", 0) + 1
+
+
+def render_stock_in(user_name, user_role):
     st.title("Stock IN Receive Log")
-    st.caption("Record site material receipts, deliveries, and stock replenishment.")
+    st.caption(
+        "Record site material receipts, deliveries, and stock replenishment."
+    )
 
-    try:
-        res = (
-            sb()
-            .table("master_items")
-            .select("item_name, category, unit, current_stock")
-            .order("item_name")
-            .execute()
-        )
-        items_df = pd.DataFrame(res.data or [])
-    except Exception as e:
-        st.error(f"Failed to fetch master items: {e}")
-        return
+    if "si_cart" not in st.session_state:
+        st.session_state.si_cart = []
 
-    if items_df.empty:
-        st.warning("No master items found. Please add items in Manage Master Items first.")
-        return
+    flash = st.session_state.pop("flash_msg", None)
+    if flash and isinstance(flash, tuple) and len(flash) == 2:
+        msg_type, msg_text = flash
+        if msg_type == "success":
+            st.success(msg_text)
+        elif msg_type == "warning":
+            st.warning(msg_text)
 
     tab_receive, tab_history = st.tabs(
         ["Receive Stock", "Recent Stock IN History"]
     )
 
     with tab_receive:
-        selected_item = st.selectbox(
-            "Select Master Item*", items_df["item_name"].tolist()
-        )
+        st.subheader("New Stock Receipt")
 
-        item_info = items_df[items_df["item_name"] == selected_item].iloc[0]
-        current_stock = float(item_info["current_stock"] or 0)
-        unit = str(item_info["unit"])
-        category = str(item_info["category"])
-
-        st.info(
-            f"Category: **{category}** | Current Balance: **{current_stock:,.2f} {unit}**"
-        )
-
-        with st.form("stock_in_form", clear_on_submit=True):
-            quantity = st.number_input(
-                f"Received Quantity ({unit})*",
-                min_value=0.01,
-                value=1.00,
-                step=1.00,
-                format="%.2f",
+        try:
+            res = (
+                sb()
+                .table("master_items")
+                .select("item_name, category, unit, current_stock")
+                .order("item_name")
+                .execute()
             )
-            supplier_source = st.text_input(
-                "Supplier / Source / DR No.*",
-                placeholder="e.g., ABC Hardware, DR #10293",
+            items_df = pd.DataFrame(res.data or [])
+        except Exception as e:
+            st.error(f"Error loading items catalog: {e}")
+            return
+
+        if items_df.empty:
+            st.info("No items found. Add items first before receiving stock.")
+            return
+
+        items_df["current_stock"] = items_df["current_stock"].fillna(0)
+
+        with st.container(border=True):
+            st.markdown("##### Receipt Details")
+            c1, c2 = st.columns(2)
+            with c1:
+                input_supplier = st.text_input(
+                    "Supplier / Source / DR No.*",
+                    placeholder="e.g., ABC Hardware",
+                    key="si_supplier_input",
+                )
+            with c2:
+                input_dr = st.text_input(
+                    "DR Number (optional)",
+                    placeholder="e.g., DR-12345",
+                    key="si_dr_input",
+                )
+            input_notes = st.text_input(
+                "General Notes (optional)",
+                placeholder="e.g., delivered to warehouse bay A3",
+                key="si_notes_input",
             )
-            remarks = st.text_input(
-                "Remarks / Notes",
-                placeholder="e.g., Batch code, Storage bay A-3",
-            )
-            uploaded_file = st.file_uploader(
-                "Attach Delivery Receipt / Invoice (Optional)",
-                type=["png", "jpg", "jpeg", "pdf"],
+            st.caption(
+                "Receipt IDs will be generated per supplier, "
+                "e.g. ABC-HARDWARE-RCV-0001"
             )
 
-            submit_btn = st.form_submit_button(
-                "Log Stock IN Receipt", use_container_width=True
+        header_ok = bool(input_supplier.strip())
+
+        st.divider()
+
+        with st.container(border=True):
+            st.markdown("##### Add Item to Receipt")
+
+            v_item = st.session_state.get("si_add_item_version", 0)
+            item_options = [PLACEHOLDER] + items_df["item_name"].tolist()
+            selected_raw = st.selectbox(
+                "Select Item*",
+                item_options,
+                key=f"si_add_item_v{v_item}",
             )
 
-            if submit_btn:
-                supplier_clean = supplier_source.strip()
-                remarks_clean = remarks.strip()
+            has_item = selected_raw != PLACEHOLDER
 
-                if not supplier_clean:
-                    st.error("Supplier / Source / DR No. is required.")
-                elif quantity <= 0:
-                    st.error("Quantity must be greater than zero.")
-                else:
-                    attachment_filename = None
-                    drive_link = None
+            if not has_item:
+                st.info("Pick an item from the list to continue.")
+                if not header_ok:
+                    st.caption(
+                        "Fill in **Supplier / Source** in the header before adding items."
+                    )
+            else:
+                item_row = items_df[items_df["item_name"] == selected_raw].iloc[0]
+                unit = str(item_row["unit"])
+                current_on_hand = float(item_row["current_stock"])
 
-                    if uploaded_file is not None:
-                        clean_original = sanitize_filename(uploaded_file.name)
-                        attachment_filename = f"IN_{uuid.uuid4().hex[:8]}_{clean_original}"
-                        save_path = Path(UPLOAD_DIR) / attachment_filename
-                        file_bytes = uploaded_file.getvalue()
+                st.info(
+                    f"**Current on-hand:** {_fmt_qty(current_on_hand)} {unit}"
+                )
 
-                        try:
-                            with open(save_path, "wb") as f:
-                                f.write(file_bytes)
-                            drive_link = upload_file_to_gdrive(
-                                file_bytes=file_bytes,
-                                file_name=attachment_filename,
-                                mime_type=uploaded_file.type or "application/octet-stream",
-                            )
-                        except Exception as file_err:
-                            st.error(f"Failed to process attachment: {file_err}")
-                            attachment_filename = None
+                v_add = st.session_state.get("si_add_version", 0)
+                c1, c2 = st.columns([1, 2])
+                with c1:
+                    qty_text = st.text_input(
+                        f"Quantity received ({unit})*",
+                        placeholder="Enter quantity...",
+                        key=f"si_add_qty_v{v_add}",
+                    )
+                with c2:
+                    notes_text = st.text_input(
+                        "Line Notes (optional)",
+                        placeholder="e.g., batch A, storage bay 3",
+                        key=f"si_add_notes_v{v_add}",
+                    )
 
-                    notes_parts = [f"Supplier/DR: {supplier_clean}"]
-                    if remarks_clean:
-                        notes_parts.append(f"Remarks: {remarks_clean}")
-                    if drive_link:
-                        notes_parts.append(f"Drive Link: {drive_link}")
-                    elif attachment_filename:
-                        notes_parts.append(f"Attachment: {attachment_filename}")
-                    full_notes = " | ".join(notes_parts)
-
+                qty_val = None
+                qty_err = None
+                if qty_text.strip():
                     try:
-                        sb().rpc(
-                            "record_stock_transaction",
-                            {
-                                "p_type": "IN",
-                                "p_item_name": selected_item,
-                                "p_quantity": float(quantity),
-                                "p_unit": unit,
-                                "p_handled_by": user_name,
-                                "p_notes": full_notes,
-                                "p_project_name": None,
-                            },
-                        ).execute()
-                    except Exception as e:
-                        st.error(f"Error executing stock-in transaction: {e}")
-                        st.stop()
+                        qty_val = float(qty_text.strip())
+                        if qty_val <= 0:
+                            qty_err = "Quantity must be greater than zero."
+                    except ValueError:
+                        qty_err = "Quantity must be a number."
 
-                    st.toast(f"Received {quantity:,.2f} {unit} of {selected_item}.")
+                if qty_err:
+                    st.error(qty_err)
+                elif qty_val is None:
+                    st.caption("Enter a quantity to continue.")
+                else:
+                    new_total = current_on_hand + qty_val
+                    st.caption(
+                        f"New on-hand after receipt: {_fmt_qty(new_total)} {unit}"
+                    )
+
+                can_add = (
+                    qty_val is not None
+                    and qty_err is None
+                    and qty_val > 0
+                    and header_ok
+                )
+
+                if st.button(
+                    "Add Item to Receipt",
+                    use_container_width=True,
+                    type="primary",
+                    disabled=not can_add,
+                ):
+                    st.session_state.si_cart.append({
+                        "item_name": selected_raw,
+                        "unit": unit,
+                        "quantity": float(qty_val),
+                        "notes": (notes_text or "").strip(),
+                    })
+                    _bump_add_versions()
+                    st.toast(f"Added {selected_raw} to receipt")
                     st.rerun()
+
+                if not header_ok:
+                    st.caption(
+                        "Fill in **Supplier / Source** in the header before adding items."
+                    )
+
+        if st.session_state.si_cart:
+            st.divider()
+            st.markdown(f"### Staged Receipt ({len(st.session_state.si_cart)})")
+
+            st.caption(
+                f"**Supplier:** {input_supplier.strip() or chr(45)} | "
+                f"**DR No.:** {input_dr.strip() or chr(45)}"
+            )
+
+            st.markdown("##### Line Items")
+            cart_df = pd.DataFrame(st.session_state.si_cart).rename(columns={
+                "item_name": "Item",
+                "unit": "Unit",
+                "quantity": "Quantity",
+                "notes": "Notes",
+            })
+            st.dataframe(
+                cart_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Quantity": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
+
+            st.markdown("##### Summary by Item")
+            summary = {}
+            for line in st.session_state.si_cart:
+                key = (line["item_name"], line["unit"])
+                if key not in summary:
+                    summary[key] = {"total": 0.0, "lines": 0, "notes": []}
+                summary[key]["total"] += float(line["quantity"])
+                summary[key]["lines"] += 1
+                if line["notes"]:
+                    summary[key]["notes"].append(line["notes"])
+
+            summary_rows = [
+                {
+                    "Item": name,
+                    "Total Quantity": data["total"],
+                    "Unit": unit_,
+                    "Lines": data["lines"],
+                    "Combined Notes": "; ".join(data["notes"]),
+                }
+                for (name, unit_), data in summary.items()
+            ]
+            st.dataframe(
+                pd.DataFrame(summary_rows),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Total Quantity": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
+
+            st.divider()
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Clear Receipt Only", use_container_width=True):
+                    _reset_cart()
+                    st.rerun()
+            with c2:
+                if st.button("Reset Header + Receipt", use_container_width=True):
+                    _reset_all()
+                    st.rerun()
+
+            st.divider()
+            if st.button(
+                "Submit Receipt",
+                type="primary",
+                use_container_width=True,
+            ):
+                if not header_ok:
+                    st.error("Supplier / Source is required.")
+                else:
+                    try:
+                        with st.spinner("Recording receipt..."):
+                            result = receive_stock_batch(
+                                supplier=input_supplier.strip(),
+                                dr_number=input_dr.strip(),
+                                handled_by=user_name,
+                                general_notes=input_notes.strip(),
+                                items=st.session_state.si_cart,
+                            )
+
+                        rcv_id = result.get("rcv_id", "?")
+                        lines = result.get("line_count", 0)
+                        total_qty = sum(
+                            float(l["quantity"]) for l in st.session_state.si_cart
+                        )
+
+                        _reset_cart()
+                        _bump_add_versions()
+
+                        st.session_state.flash_msg = (
+                            "success",
+                            f"Receipt {rcv_id} recorded successfully "
+                            f"({lines} line(s), "
+                            f"{_fmt_qty(total_qty)} total units). "
+                            f"Header retained for next receipt.",
+                        )
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(f"{e}")
+                    except NetworkError as e:
+                        st.error(f"{e}")
+                    except Exception as e:
+                        print(f"[submit receipt] Unexpected: {e}")
+                        st.error(
+                            "Unexpected error while recording receipt. "
+                            "Please try again or contact an administrator."
+                        )
 
     with tab_history:
         st.subheader("Recent Stock IN Entries")
+
         try:
             res = (
                 sb()
@@ -151,59 +324,26 @@ def render_stock_in(user_name: str, user_role: str):
             )
             history_df = pd.DataFrame(res.data or [])
         except Exception as e:
-            st.error(f"Error loading stock-in history: {e}")
+            st.error(f"Error loading Stock IN history: {e}")
             return
 
         if history_df.empty:
             st.info("No recent Stock IN transactions recorded yet.")
             return
 
-        def extract_drive_link(notes: str):
-            if "Drive Link: " in str(notes):
-                return notes.split("Drive Link: ")[-1].split(" | ")[0].strip()
-            return None
-
-        history_df["Drive Receipt"] = history_df["notes"].apply(extract_drive_link)
-
         st.dataframe(
-            history_df.rename(
-                columns={
-                    "id": "ID",
-                    "timestamp": "Timestamp",
-                    "item_name": "Item Name",
-                    "quantity": "Quantity",
-                    "unit": "Unit",
-                    "handled_by": "Received By",
-                    "notes": "Details & Attachment Ref",
-                }
-            ),
-            column_config={
-                "Drive Receipt": st.column_config.LinkColumn(
-                    "Drive Link", display_text="View Receipt"
-                )
-            },
+            history_df.rename(columns={
+                "id": "ID",
+                "timestamp": "Timestamp",
+                "item_name": "Item Name",
+                "quantity": "Quantity",
+                "unit": "Unit",
+                "handled_by": "Received By",
+                "notes": "Receipt / Supplier / Notes",
+            }),
             use_container_width=True,
             hide_index=True,
+            column_config={
+                "Quantity": st.column_config.NumberColumn(format="%.2f"),
+            },
         )
-
-        with st.expander("Download Local Fallback Attachments"):
-            has_local = False
-            for _, row in history_df.iterrows():
-                notes_str = str(row["notes"])
-                if "Attachment: " in notes_str and "Drive Link: " not in notes_str:
-                    has_local = True
-                    att_file = notes_str.split("Attachment: ")[-1].split(" | ")[0].strip()
-                    file_path = Path(UPLOAD_DIR) / att_file
-                    if file_path.exists():
-                        with open(file_path, "rb") as f:
-                            st.download_button(
-                                label=f"Download {att_file} (Log #{row['id']} - {row['item_name']})",
-                                data=f.read(),
-                                file_name=att_file,
-                                key=f"dl_btn_{row['id']}",
-                                use_container_width=True,
-                            )
-                    else:
-                        st.caption(f"Attachment {att_file} not found locally.")
-            if not has_local:
-                st.info("No local fallback attachments in recent history.")
