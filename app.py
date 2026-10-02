@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 from pathlib import Path
 
 import streamlit as st
@@ -8,14 +8,14 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-# Supabase data layer
 from database import (
+    change_password,
+    create_test_file_in_gdrive,
+    log_user_action,
     login_user,
     sb,
-    create_test_file_in_gdrive,
 )
 
-# Page Configuration
 st.set_page_config(
     page_title="ARV Site Inventory System",
     page_icon="🏗️",
@@ -23,30 +23,17 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Initialize Session States
+# Session state
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_name" not in st.session_state:
     st.session_state.user_name = ""
 if "user_role" not in st.session_state:
     st.session_state.user_role = "User"
-
-# Global Site Categories (in case a view reads this)
-if "categories" not in st.session_state:
-    st.session_state.categories = [
-        "Fuel & Oils",
-        "Construction Materials",
-        "Steel / Rebar",
-        "Nails & Fasteners",
-        "Cutting & Grinding Consumables",
-        "Welding Supplies & PPE",
-        "General Site Supplies",
-    ]
+if "must_change_password" not in st.session_state:
+    st.session_state.must_change_password = False
 
 
-# -----------------------------------------------------------------------------
-# LOGIN VIEW
-# -----------------------------------------------------------------------------
 def render_login():
     st.markdown(
         "<h1 style='text-align: center;'>🏗️ ARV Construction Site Inventory</h1>",
@@ -59,7 +46,6 @@ def render_login():
     st.write("---")
 
     col1, col2, col3 = st.columns([1, 2, 1])
-
     with col2:
         st.subheader("🔑 Sign In")
         with st.form("login_form", clear_on_submit=False):
@@ -76,28 +62,75 @@ def render_login():
                         st.session_state.logged_in = True
                         st.session_state.user_name = user_data["username"]
                         st.session_state.user_role = user_data["role"]
+                        st.session_state.must_change_password = user_data.get("must_change_password", False)
+
+                        log_user_action(user_data["username"], "LOGIN", "Successful login")
 
                         st.toast(f"Welcome back, {user_data['username']}!", icon="👋")
                         st.rerun()
                     else:
+                        log_user_action(username.strip(), "LOGIN_FAILED", "Invalid credentials")
                         st.error("❌ Invalid Username or Password.")
 
-        st.caption(
-            "Migrated users have temporary password `ARV-TempPass-2026!` — "
-            "please reset via User Management after first login."
-        )
+
+def render_force_password_change():
+    st.markdown(
+        "<h1 style='text-align: center;'>🔐 Password Change Required</h1>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='text-align: center; color: gray;'>Your account is using a temporary password. "
+        "Please set a new password to continue.</p>",
+        unsafe_allow_html=True,
+    )
+    st.write("---")
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.info(f"👤 Signed in as: **{st.session_state.user_name}**")
+
+        with st.form("change_pw_form", clear_on_submit=False):
+            new_pw = st.text_input("New Password*", type="password")
+            confirm_pw = st.text_input("Confirm New Password*", type="password")
+            submit = st.form_submit_button("🔐 Set New Password", use_container_width=True)
+
+            if submit:
+                if not new_pw:
+                    st.error("⚠️ Please enter a new password.")
+                elif len(new_pw) < 6:
+                    st.error("⚠️ Password must be at least 6 characters long.")
+                elif new_pw != confirm_pw:
+                    st.error("⚠️ Passwords do not match.")
+                else:
+                    try:
+                        change_password(st.session_state.user_name, new_pw)
+                        log_user_action(
+                            st.session_state.user_name,
+                            "PASSWORD_CHANGED",
+                            "User set a new password after forced change",
+                        )
+                        st.session_state.must_change_password = False
+                        st.success("✅ Password changed successfully!")
+                        st.toast("Welcome to ARV!", icon="🎉")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to change password: {e}")
+
+        st.divider()
+        if st.button("🚪 Cancel and Logout", use_container_width=True):
+            log_user_action(st.session_state.user_name, "LOGOUT", "Cancelled forced password change")
+            st.session_state.logged_in = False
+            st.session_state.user_name = ""
+            st.session_state.user_role = "User"
+            st.session_state.must_change_password = False
+            st.rerun()
 
 
-# -----------------------------------------------------------------------------
-# MAIN APPLICATION & NAVIGATION
-# -----------------------------------------------------------------------------
 def render_app():
-    # Sidebar Header
     st.sidebar.markdown(f"### 👤 Logged in: **{st.session_state.user_name}**")
     st.sidebar.caption(f"Role: **{st.session_state.user_role}**")
     st.sidebar.divider()
 
-    # NAVIGATION OPTIONS WITH ICONS
     menu_map = {
         "📊 Dashboard": "Dashboard",
         "📋 Physical Inventory": "Physical Inventory",
@@ -110,7 +143,6 @@ def render_app():
         "📜 Transaction Ledger": "Transaction Ledger",
         "📝 Edit / Void Transactions": "Edit / Void Transactions",
     }
-
     if st.session_state.user_role == "Admin":
         menu_map["👥 User Management"] = "User Management"
 
@@ -119,7 +151,6 @@ def render_app():
 
     st.sidebar.divider()
 
-    # Admin Utilities (kept minimal — Drive backup removed)
     if st.session_state.user_role == "Admin":
         st.sidebar.subheader("🛠️ Admin Tools")
         if st.sidebar.button("🧪 Test Drive Upload", use_container_width=True):
@@ -135,12 +166,13 @@ def render_app():
         st.sidebar.divider()
 
     if st.sidebar.button("🚪 Logout", use_container_width=True):
+        log_user_action(st.session_state.user_name, "LOGOUT", "User logged out")
         st.session_state.logged_in = False
         st.session_state.user_name = ""
         st.session_state.user_role = "User"
+        st.session_state.must_change_password = False
         st.rerun()
 
-    # Router
     try:
         if choice == "Dashboard":
             from views.dashboard import render_dashboard
@@ -176,17 +208,15 @@ def render_app():
             from views.user_management import render_user_management
             render_user_management(st.session_state.user_name, st.session_state.user_role)
     except ModuleNotFoundError as e:
-        st.error(
-            f"⚠️ Navigation error: Missing view module ({e.name}). "
-            f"Please ensure all view files exist in the `/views` folder."
-        )
+        st.error(f"⚠️ Navigation error: Missing view module ({e.name}).")
     except Exception as e:
         st.error(f"An unexpected error occurred while loading view '{choice}': {e}")
 
 
-# Entry Point
 if __name__ == "__main__":
     if not st.session_state.logged_in:
         render_login()
+    elif st.session_state.must_change_password:
+        render_force_password_change()
     else:
         render_app()

@@ -115,7 +115,7 @@ def login_user(username: str, password: str):
         res = (
             sb()
             .table("users")
-            .select("username, role, password_hash, is_active")
+            .select("username, role, password_hash, is_active, must_change_password")
             .eq("username", username.strip())
             .limit(1)
             .execute()
@@ -143,12 +143,38 @@ def login_user(username: str, password: str):
     except Exception:
         pass
 
-    return {"username": user["username"], "role": user["role"]}
+    return {
+        "username": user["username"],
+        "role": user["role"],
+        "must_change_password": bool(user.get("must_change_password", False)),
+    }
 
 
 # -----------------------------------------------------------------------------
 # LEGACY SHIMS
 # -----------------------------------------------------------------------------
+def log_user_action(username: str, action: str, details: str = ""):
+    """Insert a user activity entry into user_logs (best-effort, never raises)."""
+    try:
+        sb().table("user_logs").insert({
+            "username": username,
+            "action": action,
+            "details": details or None,
+        }).execute()
+    except Exception as e:
+        # Never break the app because logging failed
+        print(f"[user_logs] Failed to log {action} for {username}: {e}")
+
+
+def change_password(username: str, new_password: str):
+    """Change a user's password and clear must_change_password flag."""
+    new_hash = hash_password(new_password)
+    sb().table("users").update({
+        "password_hash": new_hash,
+        "must_change_password": False,
+    }).eq("username", username).execute()
+
+
 def init_db():
     """No-op: schema already lives in Supabase."""
     return None
