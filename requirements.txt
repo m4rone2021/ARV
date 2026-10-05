@@ -11,6 +11,7 @@ bcrypt>=4.1,<6
 
 # Charts
 plotly>=5.22,<7
+matplotlib>=3.8,<4
 
 # Exports
 reportlab>=4.0,<5
@@ -21,3 +22,6 @@ google-api-python-client>=2.130,<3
 google-auth>=2.30,<3
 google-auth-httplib2>=0.2,<1
 google-auth-oauthlib>=1.2,<2
+
+# PDF rasterization
+pymupdf>=1.24,<2

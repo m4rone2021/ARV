@@ -49,3 +49,12 @@ list_drive_backups.py
 
 # Width fix backups
 _backup_width_fix/
+
+# Reports development versions
+*_v2.py
+*_v3.py
+*_v4.py
+*_v5.py
+*_v6.py
+*_v7.py
+views/reports_v2.py

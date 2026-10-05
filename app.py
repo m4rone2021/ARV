@@ -246,6 +246,7 @@ def render_app():
         "📝 Reminders & Tasks": "Reminders & Tasks",
         "📜 Transaction Ledger": "Transaction Ledger",
         "📝 Edit / Void Transactions": "Edit / Void Transactions",
+        "📊 Reports": "Reports",
     }
     if st.session_state.user_role == "Admin":
         menu_map["👥 User Management"] = "User Management"
@@ -316,6 +317,9 @@ def render_app():
         elif choice == "Edit / Void Transactions":
             from views.edit_void import render_edit_void
             render_edit_void(st.session_state.user_name, st.session_state.user_role)
+        elif choice == "Reports":
+            from views.reports import render_reports
+            render_reports(st.session_state.user_name, st.session_state.user_role)
         elif choice == "User Management" and st.session_state.user_role == "Admin":
             from views.user_management import render_user_management
             render_user_management(st.session_state.user_name, st.session_state.user_role)
