@@ -53,6 +53,45 @@ def _fetch_master_items():
         return pd.DataFrame()
 
 
+def _stock_as_of(target_date) -> dict:
+    """Forward-replay ACTIVE transactions up to end of target_date."""
+    if target_date is None:
+        return {}
+    try:
+        cutoff = f"{target_date.isoformat()}T23:59:59+00:00"
+    except AttributeError:
+        cutoff = f"{target_date}T23:59:59+00:00"
+    try:
+        res = (
+            sb().table("transactions")
+            .select("item_name, type, quantity")
+            .lte("timestamp", cutoff)
+            .eq("edit_status", "ACTIVE")
+            .order("timestamp")
+            .execute()
+        )
+    except Exception as e:
+        st.warning(f"Could not compute historical stock: {e}")
+        return {}
+    stock = {}
+    for r in res.data or []:
+        name = r.get("item_name")
+        if not name:
+            continue
+        typ = (r.get("type") or "").upper()
+        try:
+            qty = float(r.get("quantity") or 0)
+        except (TypeError, ValueError):
+            continue
+        if typ == "IN":
+            stock[name] = stock.get(name, 0.0) + qty
+        elif typ == "OUT":
+            stock[name] = stock.get(name, 0.0) - qty
+        elif typ == "ADJUSTMENT":
+            stock[name] = qty
+    return stock
+
+
 def _fetch_deliveries(start, end):
     try:
         res = (
@@ -249,12 +288,16 @@ def render_reports(user_name, user_role):
                 .sum()
                 .reset_index()
             )
+            _stock_col = f"Stock (as of {end.isoformat()})"
+            _hist_stock = _stock_as_of(end)
+
             by_item = [
                 {
                     "Item": r["item_name"],
                     "Unit": r["unit"],
                     "Type": r["type"],
                     "Total Qty": round(float(r["quantity"]), 2),
+                    _stock_col: round(float(_hist_stock.get(r["item_name"], 0.0)), 2),
                 }
                 for _, r in grouped.iterrows()
             ]

@@ -777,22 +777,44 @@ def _build_summary_by_item_snapshot(story, snapshot_items):
 
 
 def _build_summary_by_item_tx(story, by_item):
-    """For transaction-based reports: Item / Unit / Type / Total Qty"""
+    """For transaction-based reports: Item / Unit / Type / Total Qty [+ Stock (as of ...)]"""
     story.append(Spacer(1, 8 * mm))
     story.append(_section_bar("Summary by Item"))
     story.append(Spacer(1, 5 * mm))
 
+    stock_col = None
+    if by_item:
+        for key in by_item[0].keys():
+            if isinstance(key, str) and key.startswith("Stock (as of "):
+                stock_col = key
+                break
+
     headers = ["Item", "Unit", "Type", "Total Qty"]
-    rows = [[
-        r.get("Item", ""),
-        r.get("Unit", ""),
-        r.get("Type", ""),
-        _fmt_qty(r.get("Total Qty", 0)),
-    ] for r in by_item]
+    if stock_col:
+        headers.append(stock_col)
+
+    rows = []
+    for r in by_item:
+        row = [
+            r.get("Item", ""),
+            r.get("Unit", ""),
+            r.get("Type", ""),
+            _fmt_qty(r.get("Total Qty", 0)),
+        ]
+        if stock_col:
+            row.append(_fmt_qty(r.get(stock_col, 0)))
+        rows.append(row)
+
+    if stock_col:
+        widths = [200, 50, 70, 80, 90]
+        numeric = {3, 4}
+    else:
+        widths = [230, 60, 90, 90]
+        numeric = {3}
 
     _append_chunked_table(story, headers, rows,
-        col_widths=[230, 60, 90, 90],
-        font_size=8, numeric_cols={3})
+        col_widths=widths,
+        font_size=8, numeric_cols=numeric)
 
 
 def _build_low_stock_detail(story, snapshot_items):
