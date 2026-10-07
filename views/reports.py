@@ -243,7 +243,7 @@ def render_reports(user_name, user_role):
             summary["Stock IN Qty"] = round(float(in_df["quantity"].fillna(0).sum()), 2) if not in_df.empty else 0
             summary["Stock OUT Qty"] = round(float(out_df["quantity"].fillna(0).sum()), 2) if not out_df.empty else 0
 
-            # Summary by item â€” grouped transaction view
+            # Summary by item — grouped transaction view
             grouped = (
                 tx_df.groupby(["item_name", "unit", "type"])["quantity"]
                 .sum()
@@ -320,7 +320,7 @@ def render_reports(user_name, user_role):
 
     # Admin-only: editable PDF
     if user_role == "Admin":
-        with st.expander("Advanced (admin only) â€” editable PDF"):
+        with st.expander("Advanced (admin only) — editable PDF"):
             st.caption(
                 "This version has selectable text and editable tables. "
                 "For internal use only. Do not distribute externally."
