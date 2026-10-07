@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -26,7 +26,7 @@ def _adjust_stock(item_name: str, delta: float):
 
 
 def render_edit_void(user_name: str, user_role: str):
-    st.title("📝 Edit / Void Transactions")
+    st.title("Ã°Å¸â€œÂ Edit / Void Transactions")
     st.caption(
         "Correct entry errors or void transactions with automatic inventory updates."
     )
@@ -36,10 +36,10 @@ def render_edit_void(user_name: str, user_role: str):
         res = (
             sb()
             .table("transactions")
-            .select("id, timestamp, type, item_name, quantity, unit, handled_by, "
+            .select("id, timestamp, created_at, type, item_name, quantity, unit, handled_by, "
                     "notes, project_name, edit_status")
             .eq("edit_status", "ACTIVE")
-            .order("timestamp", desc=True)
+            .order("created_at", desc=True).order("timestamp", desc=True)
             .limit(50)
             .execute()
         )
@@ -53,7 +53,7 @@ def render_edit_void(user_name: str, user_role: str):
         return
 
     # ---- 2. Select transaction ----
-    st.subheader("🔍 Select Record")
+    st.subheader("Ã°Å¸â€Â Select Record")
 
     tx_options = {}
     for _, row in df_tx.iterrows():
@@ -80,15 +80,16 @@ def render_edit_void(user_name: str, user_role: str):
         st.markdown(f"**Item:** `{tx_detail['item_name']}`")
         st.markdown(f"**Current Quantity:** `{tx_detail['quantity']} {tx_detail['unit']}`")
 
-        with st.expander("📄 View Extended Details"):
+        with st.expander("Ã°Å¸â€œâ€ž View Extended Details"):
             st.markdown(f"* **Handled By:** {tx_detail.get('handled_by', 'N/A')}")
             st.markdown(f"* **Date/Time:** {tx_detail.get('timestamp', 'N/A')}")
+            st.markdown(f"* **Logged At:** {tx_detail.get('created_at', 'N/A')}")
             st.markdown(f"* **Project Site:** {tx_detail.get('project_name') or 'N/A'}")
             st.markdown(f"* **Notes:** {tx_detail.get('notes') or 'N/A'}")
 
     st.divider()
 
-    tab_edit, tab_void = st.tabs(["✏️ Edit Record", "🚫 Void Record"])
+    tab_edit, tab_void = st.tabs(["Ã¢Å“ÂÃ¯Â¸Â Edit Record", "Ã°Å¸Å¡Â« Void Record"])
 
     # ================================================================
     # TAB 1: EDIT
@@ -109,7 +110,7 @@ def render_edit_void(user_name: str, user_role: str):
             new_project = st.text_input("Project Site", value=existing_project)
             new_remarks = st.text_area("Remarks / Reason for Edit", value=existing_notes, height=100)
 
-            submit_edit = st.form_submit_button("💾 Save Changes", width='stretch')
+            submit_edit = st.form_submit_button("Ã°Å¸â€™Â¾ Save Changes", width='stretch')
 
             if submit_edit:
                 old_qty = float(tx_detail["quantity"])
@@ -145,7 +146,7 @@ def render_edit_void(user_name: str, user_role: str):
                                 st.stop()
                         _adjust_stock(item_name, -qty_diff)
                     elif tx_type == "ADJUSTMENT":
-                        # ADJUSTMENT means "set stock to this value" — so re-set
+                        # ADJUSTMENT means "set stock to this value" Ã¢â‚¬â€ so re-set
                         sb().table("master_items").update(
                             {"current_stock": float(new_qty)}
                         ).eq("item_name", item_name).execute()
@@ -164,7 +165,7 @@ def render_edit_void(user_name: str, user_role: str):
                         "edited_at": datetime.utcnow().isoformat(),
                     }).eq("id", selected_tx_id).execute()
 
-                    st.toast("✅ Transaction updated!", icon="✏️")
+                    st.toast("Ã¢Å“â€¦ Transaction updated!", icon="Ã¢Å“ÂÃ¯Â¸Â")
                     st.success("Changes saved.")
                     st.rerun()
 
@@ -176,14 +177,14 @@ def render_edit_void(user_name: str, user_role: str):
     # ================================================================
     with tab_void:
         st.subheader("Void Transaction")
-        st.warning("⚠️ Voiding reverses the stock balance and marks entry as VOIDED.")
+        st.warning("Ã¢Å¡Â Ã¯Â¸Â Voiding reverses the stock balance and marks entry as VOIDED.")
 
         void_reason = st.text_input(
             "Reason for Voiding",
             placeholder="e.g., Duplicate entry",
         )
 
-        if st.button("🔴 Confirm & Void Transaction", width='stretch'):
+        if st.button("Ã°Å¸â€Â´ Confirm & Void Transaction", width='stretch'):
             if not void_reason.strip():
                 st.error("Please provide a reason for voiding this transaction.")
             else:
@@ -194,7 +195,7 @@ def render_edit_void(user_name: str, user_role: str):
 
                     # Reverse stock impact
                     if tx_type == "IN":
-                        # IN added stock — check we have enough to remove
+                        # IN added stock Ã¢â‚¬â€ check we have enough to remove
                         cur = (
                             sb()
                             .table("master_items")
@@ -212,9 +213,9 @@ def render_edit_void(user_name: str, user_role: str):
                             st.stop()
                         _adjust_stock(item_name, -qty)
                     elif tx_type == "OUT":
-                        # OUT removed stock — add it back
+                        # OUT removed stock Ã¢â‚¬â€ add it back
                         _adjust_stock(item_name, qty)
-                    # ADJUSTMENT: no reliable reversal — leave stock alone, just mark VOIDED
+                    # ADJUSTMENT: no reliable reversal Ã¢â‚¬â€ leave stock alone, just mark VOIDED
 
                     # Mark record
                     void_msg = (
@@ -229,9 +230,12 @@ def render_edit_void(user_name: str, user_role: str):
                         "edited_at": datetime.utcnow().isoformat(),
                     }).eq("id", selected_tx_id).execute()
 
-                    st.toast("🚫 Transaction voided successfully!", icon="🗑️")
+                    st.toast("Ã°Å¸Å¡Â« Transaction voided successfully!", icon="Ã°Å¸â€”â€˜Ã¯Â¸Â")
                     st.success("Transaction voided and stock balance reversed.")
                     st.rerun()
 
                 except Exception as e:
                     st.error(f"Void failed: {e}")
+
+
+

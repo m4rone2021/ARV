@@ -357,9 +357,9 @@ def render_stock_out(user_name, user_role):
             res = (
                 sb()
                 .table("transactions")
-                .select("id, timestamp, item_name, quantity, unit, handled_by, notes, project_name")
+                .select("id, timestamp, created_at, item_name, quantity, unit, handled_by, notes, project_name")
                 .eq("type", "OUT")
-                .order("timestamp", desc=True)
+                .order("created_at", desc=True).order("timestamp", desc=True)
                 .limit(100)
                 .execute()
             )
@@ -374,7 +374,8 @@ def render_stock_out(user_name, user_role):
 
         df_display = history_df.rename(columns={
             "id": "Log ID",
-            "timestamp": "Date and Time",
+            "timestamp": "Transaction Date",
+            "created_at": "Logged At",
             "item_name": "Item Name",
             "quantity": "Quantity Issued",
             "unit": "Unit",
@@ -390,3 +391,5 @@ def render_stock_out(user_name, user_role):
                 "Quantity Issued": st.column_config.NumberColumn(format="%.2f"),
             },
         )
+
+

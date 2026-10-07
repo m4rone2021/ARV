@@ -29,7 +29,7 @@ def _fetch_transactions(start, end):
             .select("id, timestamp, type, item_name, quantity, unit, handled_by, notes, project_name")
             .gte("timestamp", start.isoformat())
             .lte("timestamp", end.isoformat() + "T23:59:59")
-            .order("timestamp", desc=True)
+            .order("timestamp", desc=True).order("created_at", desc=True)
             .execute()
         )
         return pd.DataFrame(res.data or [])
@@ -109,7 +109,7 @@ def _fetch_discrepancies():
             .table("discrepancies")
             .select("id, timestamp, item_name, system_stock, physical_count, "
                     "variance, unit, submitted_by, status")
-            .order("timestamp", desc=True)
+            .order("timestamp", desc=True).order("created_at", desc=True)
             .limit(200)
             .execute()
         )
@@ -243,7 +243,7 @@ def render_reports(user_name, user_role):
             summary["Stock IN Qty"] = round(float(in_df["quantity"].fillna(0).sum()), 2) if not in_df.empty else 0
             summary["Stock OUT Qty"] = round(float(out_df["quantity"].fillna(0).sum()), 2) if not out_df.empty else 0
 
-            # Summary by item — grouped transaction view
+            # Summary by item â€” grouped transaction view
             grouped = (
                 tx_df.groupby(["item_name", "unit", "type"])["quantity"]
                 .sum()
@@ -320,7 +320,7 @@ def render_reports(user_name, user_role):
 
     # Admin-only: editable PDF
     if user_role == "Admin":
-        with st.expander("Advanced (admin only) — editable PDF"):
+        with st.expander("Advanced (admin only) â€” editable PDF"):
             st.caption(
                 "This version has selectable text and editable tables. "
                 "For internal use only. Do not distribute externally."
@@ -354,3 +354,4 @@ def render_reports(user_name, user_role):
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width='stretch',
             )
+

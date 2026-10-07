@@ -66,8 +66,8 @@ def render_audit_log(user_name, user_role):
         res = (
             sb()
             .table("transactions")
-            .select("id, timestamp, type, item_name, quantity, unit, handled_by, notes, project_name")
-            .order("timestamp", desc=True)
+            .select("id, timestamp, created_at, type, item_name, quantity, unit, handled_by, notes, project_name")
+            .order("created_at", desc=True).order("timestamp", desc=True)
             .limit(500)
             .execute()
         )
@@ -96,9 +96,10 @@ def render_audit_log(user_name, user_role):
                 "created_by": "handled_by",
                 "project": "project_name",
             })
+            df["created_at"] = df["timestamp"]
             df["type"] = "SCHEDULED DELIVERY"
             df["notes"] = df.apply(_build_delivery_notes, axis=1)
-            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes", "project_name"]])
+            frames.append(df[["id", "timestamp", "created_at", "type", "item_name", "quantity", "unit", "handled_by", "notes", "project_name"]])
     except Exception as e:
         st.warning("Could not load deliveries: " + str(e))
 
@@ -107,8 +108,8 @@ def render_audit_log(user_name, user_role):
         res = (
             sb()
             .table("physical_inventory_logs")
-            .select("id, timestamp, item_name, system_qty, counted_qty, variance, unit, counted_by, notes")
-            .order("timestamp", desc=True)
+            .select("id, timestamp, created_at, item_name, system_qty, counted_qty, variance, unit, counted_by, notes")
+            .order("created_at", desc=True).order("timestamp", desc=True)
             .limit(500)
             .execute()
         )
@@ -121,7 +122,7 @@ def render_audit_log(user_name, user_role):
             df["type"] = "PHYSICAL INVENTORY"
             df["project_name"] = None
             df["notes"] = df.apply(_build_phys_notes, axis=1)
-            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes", "project_name"]])
+            frames.append(df[["id", "timestamp", "created_at", "type", "item_name", "quantity", "unit", "handled_by", "notes", "project_name"]])
     except Exception as e:
         st.warning("Could not load physical inventory logs: " + str(e))
 
@@ -130,8 +131,8 @@ def render_audit_log(user_name, user_role):
         res = (
             sb()
             .table("user_logs")
-            .select("id, timestamp, username, action, details")
-            .order("timestamp", desc=True)
+            .select("id, timestamp, created_at, username, action, details")
+            .order("created_at", desc=True).order("timestamp", desc=True)
             .limit(500)
             .execute()
         )
@@ -146,7 +147,7 @@ def render_audit_log(user_name, user_role):
             df["unit"] = "-"
             df["notes"] = df["details"]
             df["project_name"] = None
-            frames.append(df[["id", "timestamp", "type", "item_name", "quantity", "unit", "handled_by", "notes", "project_name"]])
+            frames.append(df[["id", "timestamp", "created_at", "type", "item_name", "quantity", "unit", "handled_by", "notes", "project_name"]])
     except Exception as e:
         st.warning("Could not load user logs: " + str(e))
 
@@ -257,6 +258,7 @@ def render_audit_log(user_name, user_role):
     ]
     display_df = filtered[display_cols].rename(columns={
         "timestamp": "Date and Time",
+          "created_at": "Logged At",
         "type": "Log Type",
         "project_name": "Project",
         "item_name": "Item",
@@ -350,3 +352,5 @@ def _extract_requested_by(notes):
 
 def _extract_supplier(notes):
     return _extract_field(notes, "Supplier")
+
+

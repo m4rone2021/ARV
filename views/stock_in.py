@@ -324,9 +324,9 @@ def render_stock_in(user_name, user_role):
             res = (
                 sb()
                 .table("transactions")
-                .select("id, timestamp, item_name, quantity, unit, handled_by, notes")
+                .select("id, timestamp, created_at, item_name, quantity, unit, handled_by, notes")
                 .eq("type", "IN")
-                .order("timestamp", desc=True)
+                .order("created_at", desc=True).order("timestamp", desc=True)
                 .limit(50)
                 .execute()
             )
@@ -342,7 +342,8 @@ def render_stock_in(user_name, user_role):
         st.dataframe(
             history_df.rename(columns={
                 "id": "ID",
-                "timestamp": "Timestamp",
+                "timestamp": "Transaction Date",
+            "created_at": "Logged At",
                 "item_name": "Item Name",
                 "quantity": "Quantity",
                 "unit": "Unit",
@@ -355,3 +356,5 @@ def render_stock_in(user_name, user_role):
                 "Quantity": st.column_config.NumberColumn(format="%.2f"),
             },
         )
+
+
