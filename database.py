@@ -1,5 +1,5 @@
 """
-ARV database.py — Supabase (Postgres) data layer.
+ARV database.py â€” Supabase (Postgres) data layer.
 
 Public API preserved so views keep working. Critical stock movements call
 Postgres RPC functions for atomicity. Google Drive is kept ONLY for file
@@ -16,7 +16,7 @@ Session 1 changes:
 
 import io
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 import bcrypt
@@ -84,6 +84,23 @@ def sb():
 def _now_iso() -> str:
     """Return current UTC time as ISO string (timezone-aware)."""
     return datetime.now(timezone.utc).isoformat()
+
+def _to_iso_timestamp(d: "date | None") -> "str | None":
+    """Convert a date (or None) to an ISO-8601 UTC timestamp string.
+
+    None  -> None          (SQL RPC falls back to now())
+    date  -> 23:59:59 UTC of that calendar day
+    datetime -> passed through (tz-naive assumed UTC)
+    """
+    if d is None:
+        return None
+    if isinstance(d, datetime):
+        dt = d
+    else:
+        dt = datetime.combine(d, time(23, 59, 59))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
 
 
 # -----------------------------------------------------------------------------
@@ -309,6 +326,7 @@ def add_stock_transaction(
     handled_by: str,
     notes: str = "",
     project_name: str | None = None,
+    transaction_date: "date | None" = None,
 ) -> str:
     """Execute a stock transaction via the atomic RPC. Returns transaction ID.
 
@@ -342,11 +360,12 @@ def add_stock_transaction(
                 "p_handled_by": (handled_by or "System").strip(),
                 "p_notes": (notes or "").strip() or None,
                 "p_project_name": project_name,
+                "p_transaction_date": _to_iso_timestamp(transaction_date),
             },
         ).execute()
     except Exception as e:
         msg = str(e)
-        # RPC raises with "Insufficient stock..." — surface that cleanly
+        # RPC raises with "Insufficient stock..." â€” surface that cleanly
         if "insufficient stock" in msg.lower():
             raise ValueError(msg) from e
         raise NetworkError(f"Stock transaction failed: {e}") from e
@@ -354,7 +373,7 @@ def add_stock_transaction(
     tx_id = res.data
     if not tx_id:
         raise UpdateFailedError(
-            "Stock transaction did not return an ID — the write may have failed."
+            "Stock transaction did not return an ID â€” the write may have failed."
         )
     return tx_id
 
@@ -368,6 +387,7 @@ def receive_stock_batch(
     handled_by: str,
     general_notes: str,
     items: list[dict],
+    transaction_date: "date | None" = None,
 ) -> dict:
     """Record a batch of received items atomically.
 
@@ -413,6 +433,7 @@ def receive_stock_batch(
                 "p_handled_by":    (handled_by or "System").strip(),
                 "p_general_notes": (general_notes or "").strip(),
                 "p_items":         payload,
+                "p_transaction_date": _to_iso_timestamp(transaction_date),
             },
         ).execute()
     except Exception as e:
@@ -444,6 +465,7 @@ def issue_stock_batch(
     project: str,
     handled_by: str,
     items: list[dict],
+    transaction_date: "date | None" = None,
 ) -> dict:
     """Issue a batch of items to one destination/project atomically.
 
@@ -497,6 +519,7 @@ def issue_stock_batch(
                 "p_project":      clean_proj,
                 "p_handled_by":   (handled_by or "System").strip(),
                 "p_items":        payload,
+                "p_transaction_date": _to_iso_timestamp(transaction_date),
             },
         ).execute()
     except Exception as e:
@@ -555,7 +578,7 @@ def save_dispatch_batch(
 ) -> None:
     """Insert a batch of dispatch items and reserve stock.
 
-    Uses an atomic Postgres RPC — deliveries insert and reserved_stock update
+    Uses an atomic Postgres RPC â€” deliveries insert and reserved_stock update
     happen in a single transaction. If either fails, both roll back.
     """
     if not delivery_cart:
@@ -605,7 +628,7 @@ def update_dispatch_status(
 ) -> None:
     """Update the status of all rows in a dispatch batch.
 
-    Uses an atomic Postgres RPC — stock deductions, transaction log inserts,
+    Uses an atomic Postgres RPC â€” stock deductions, transaction log inserts,
     and status updates all happen in one transaction. No partial writes.
     """
     new_status_clean = new_status.strip()
@@ -641,7 +664,7 @@ def resolve_discrepancy(
 ) -> None:
     """Approve or reject a discrepancy atomically.
 
-    Uses a Postgres RPC — discrepancy update, master_items stock adjustment,
+    Uses a Postgres RPC â€” discrepancy update, master_items stock adjustment,
     and reconciliation transaction insert all happen in one transaction.
     """
     try:

@@ -1,4 +1,5 @@
 import pandas as pd
+from datetime import date
 import streamlit as st
 
 from database import (
@@ -24,7 +25,7 @@ def _reset_cart():
 def _reset_all():
     _reset_cart()
     for k in (
-        "so_req_by_input", "so_dest_input", "so_proj_input",
+        "so_req_by_input", "so_dest_input", "so_proj_input", "so_tx_date_input",
         "so_add_item_version", "so_add_version",
     ):
         st.session_state.pop(k, None)
@@ -100,6 +101,12 @@ def render_stock_out(user_name, user_role):
                 "Project Name / Code*",
                 placeholder="e.g., PRJ-2026-A",
                 key="so_proj_input",
+            )
+            input_tx_date = st.date_input(
+                "Transaction Date*",
+                value=date.today(),
+                key="so_tx_date_input",
+                help="Date the transaction actually occurred. Backdating is allowed.",
             )
             st.caption(
                 "Requisition IDs will be generated per project, "
@@ -311,6 +318,7 @@ def render_stock_out(user_name, user_role):
                                 project=input_project.strip(),
                                 handled_by=user_name,
                                 items=st.session_state.so_cart,
+                                transaction_date=input_tx_date,
                             )
 
                         req_id = result.get("req_id", "?")

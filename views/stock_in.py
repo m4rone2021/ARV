@@ -1,4 +1,5 @@
 import pandas as pd
+from datetime import date
 import streamlit as st
 
 from database import (
@@ -22,7 +23,7 @@ def _reset_cart():
 def _reset_all():
     _reset_cart()
     for k in (
-        "si_supplier_input", "si_dr_input", "si_notes_input",
+        "si_supplier_input", "si_dr_input", "si_notes_input", "si_tx_date_input",
         "si_add_item_version", "si_add_version",
     ):
         st.session_state.pop(k, None)
@@ -95,6 +96,12 @@ def render_stock_in(user_name, user_role):
                 "General Notes (optional)",
                 placeholder="e.g., delivered to warehouse bay A3",
                 key="si_notes_input",
+            )
+            input_tx_date = st.date_input(
+                "Transaction Date*",
+                value=date.today(),
+                key="si_tx_date_input",
+                help="Date the transaction actually occurred. Backdating is allowed.",
             )
             st.caption(
                 "Receipt IDs will be generated per supplier, "
@@ -279,6 +286,7 @@ def render_stock_in(user_name, user_role):
                                 handled_by=user_name,
                                 general_notes=input_notes.strip(),
                                 items=st.session_state.si_cart,
+                                transaction_date=input_tx_date,
                             )
 
                         rcv_id = result.get("rcv_id", "?")
