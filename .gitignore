@@ -58,3 +58,6 @@ _backup_width_fix/
 *_v6.py
 *_v7.py
 views/reports_v2.py
+
+# Supabase backups
+_supabase_backup_*.json

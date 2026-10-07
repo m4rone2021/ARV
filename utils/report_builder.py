@@ -17,8 +17,8 @@ from reportlab.lib.pagesizes import letter, legal, portrait
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (
-    BaseDocTemplate, Frame, Image as RLImage, PageBreak,
-    PageTemplate, Paragraph, Spacer, Table, TableStyle,
+    BaseDocTemplate, Frame, Image as RLImage, KeepTogether,
+    PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle,
 )
 
 
@@ -324,7 +324,7 @@ def _style_label():
 # ============================================================================
 def _section_bar(text, color=NAVY):
     tbl = Table([[Paragraph(text, _style_section())]],
-                colWidths=[515], rowHeights=[22])
+                colWidths=[505], rowHeights=[22])
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), color),
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
@@ -387,7 +387,7 @@ def _info_grid(rows, label_w=200, value_w=315):
 
 def _data_table(headers, rows, col_widths=None, font_size=7.5, header_size=8, numeric_cols=None):
     """Single Table. Callers chunk manually to control pagination."""
-    FULL_WIDTH = 515
+    FULL_WIDTH = 505
 
     def _trunc(v, n=120):
         s = _clean(v)
@@ -651,7 +651,7 @@ def _build_recommendations(story, summary, snapshot_items):
 
 
 def _build_summary_by_category(story, snapshot_items):
-    story.append(PageBreak())
+    story.append(Spacer(1, 8 * mm))
     story.append(_section_bar("Summary by Category"))
     story.append(Spacer(1, 5 * mm))
 
@@ -677,15 +677,17 @@ def _build_summary_by_category(story, snapshot_items):
         rows.append([cat, str(d["items"]), _fmt_qty(d["onhand"]),
                      str(d["low"]), str(d["out"])])
 
-    _append_chunked_table(story,
+    # Small table — keep together on one page
+    t = _data_table(
         ["Category", "Items", "Total On-Hand", "Low", "Out"],
         rows, col_widths=[240, 60, 100, 55, 60],
         font_size=8, numeric_cols={1, 2, 3, 4})
+    story.append(KeepTogether(t))
 
 
 def _build_summary_by_item_snapshot(story, snapshot_items):
     """Single clean table. ReportLab splits naturally with header repeated."""
-    story.append(PageBreak())
+    story.append(Spacer(1, 8 * mm))
     story.append(_section_bar("Summary by Item"))
     story.append(Spacer(1, 5 * mm))
 
@@ -776,7 +778,7 @@ def _build_summary_by_item_snapshot(story, snapshot_items):
 
 def _build_summary_by_item_tx(story, by_item):
     """For transaction-based reports: Item / Unit / Type / Total Qty"""
-    story.append(PageBreak())
+    story.append(Spacer(1, 8 * mm))
     story.append(_section_bar("Summary by Item"))
     story.append(Spacer(1, 5 * mm))
 
@@ -797,7 +799,7 @@ def _build_low_stock_detail(story, snapshot_items):
     low_items = [r for r in snapshot_items if str(r.get("Status", "")).upper() == "LOW"]
     if not low_items:
         return
-    story.append(PageBreak())
+    story.append(Spacer(1, 8 * mm))
     story.append(_section_bar("Low Stock Detail", color=AMBER))
     story.append(Spacer(1, 5 * mm))
     rows = []
@@ -819,35 +821,37 @@ def _build_out_of_stock_detail(story, snapshot_items):
     out_items = [r for r in snapshot_items if str(r.get("Status", "")).upper() == "OUT"]
     if not out_items:
         return
-    story.append(PageBreak())
+    story.append(Spacer(1, 8 * mm))
     story.append(_section_bar("Out-of-Stock Detail", color=RED))
     story.append(Spacer(1, 5 * mm))
     rows = [[r.get("Item", ""), r.get("Category", ""), r.get("Unit", "")]
             for r in out_items]
-    _append_chunked_table(story,
+    t = _data_table(
         ["Item", "Category", "Unit"], rows,
         col_widths=[230, 200, 85], font_size=8.5)
+    story.append(KeepTogether(t))
 
 
 def _build_deliveries_log(story, deliveries):
+    """Deliveries log — grouped by dispatch_id with item breakdown."""
     today = date.today()
     week_ago = today - timedelta(days=7)
 
     logged_today, completed_today, pending_due, upcoming = [], [], [], []
 
     for d in deliveries:
-        st = str(d.get("status", "")).strip()
+        st_val = str(d.get("status", "")).strip()
         exp = _parse_date(d.get("expected_date"))
         comp = _parse_date(d.get("completed_at") or d.get("updated_at"))
         created = _parse_date(d.get("created_at"))
 
         if created == today:
             logged_today.append(d)
-        if st == "Completed" and comp == today:
+        if st_val == "Completed" and comp == today:
             completed_today.append(d)
-        if st == "Pending" and exp and exp <= today:
+        if st_val == "Pending" and exp and exp <= today:
             pending_due.append(d)
-        if st in ("Pending", "In Transit") and exp and exp > today:
+        if st_val in ("Pending", "In Transit") and exp and exp > today:
             upcoming.append(d)
 
     if not logged_today:
@@ -860,49 +864,170 @@ def _build_deliveries_log(story, deliveries):
                            and _parse_date(d.get("completed_at") or d.get("updated_at"))
                            and _parse_date(d.get("completed_at") or d.get("updated_at")) >= week_ago][:25]
 
-    def _rows(items):
-        return [[
-            r.get("dispatch_id", "") or "-",
-            r.get("item_name", ""),
-            _fmt_qty(r.get("expected_quantity", 0)),
-            r.get("unit", ""),
-            r.get("destination", "") or "-",
-            r.get("project", "") or "-",
-            str(r.get("expected_date", "") or "-")[:10],
-            r.get("driver_name", "") or "-",
-        ] for r in items]
+    # Styles
+    dispatch_style = ParagraphStyle(
+        "dh", fontName="Helvetica-Bold", fontSize=10,
+        textColor=colors.white, leading=12,
+    )
+    meta_label_style = ParagraphStyle(
+        "ml", fontName="Helvetica-Bold", fontSize=8.5,
+        textColor=NAVY, leading=11,
+    )
+    meta_value_style = ParagraphStyle(
+        "mv", fontName="Helvetica", fontSize=8.5,
+        textColor=INK, leading=11,
+    )
+    item_header_style = ParagraphStyle(
+        "ih", fontName="Helvetica-Bold", fontSize=8,
+        textColor=NAVY, leading=10,
+    )
+    item_cell_style = ParagraphStyle(
+        "ic", fontName="Helvetica", fontSize=8,
+        textColor=INK, leading=10,
+    )
+    item_cell_right = ParagraphStyle("icr", parent=item_cell_style, alignment=2)
+    total_style = ParagraphStyle(
+        "tt", fontName="Helvetica-Bold", fontSize=9,
+        textColor=colors.white, leading=11,
+    )
 
-    headers = ["Dispatch", "Item", "Qty", "Unit", "Destination", "Project", "Date", "Driver"]
-    widths = [70, 110, 45, 40, 100, 75, 55, 60]
+    def render_dispatch_group(dispatch_id, items):
+        """Render one dispatch batch: header + meta + item breakdown + subtotal."""
+        first = items[0]
+        destination = first.get("destination") or "-"
+        project = first.get("project") or "-"
+        scheduled = str(first.get("expected_date") or "-")[:10]
+        driver = first.get("driver_name") or "-"
+        status_val = first.get("status") or "-"
 
-    story.append(PageBreak())
+        # ---------- DISPATCH HEADER (navy bar) ----------
+        header_tbl = Table(
+            [[Paragraph(
+                f"🚛 {dispatch_id}  &nbsp;|&nbsp;  {destination}  &nbsp;|&nbsp;  "
+                f"Status: {status_val}",
+                dispatch_style,
+            )]],
+            colWidths=[505],
+        )
+        header_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), NAVY),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]))
+
+        # ---------- META ROW ----------
+        meta_tbl = Table(
+            [[
+                Paragraph("Destination:", meta_label_style),
+                Paragraph(destination, meta_value_style),
+                Paragraph("Project:", meta_label_style),
+                Paragraph(project, meta_value_style),
+                Paragraph("Scheduled:", meta_label_style),
+                Paragraph(scheduled, meta_value_style),
+                Paragraph("Driver:", meta_label_style),
+                Paragraph(driver, meta_value_style),
+            ]],
+            colWidths=[62, 90, 42, 90, 60, 62, 38, 61],
+        )
+        meta_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), LIGHT_BLUE),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.3, GREY_MED),
+        ]))
+
+        # ---------- ITEM BREAKDOWN ----------
+        item_data = [[
+            Paragraph("Item", item_header_style),
+            Paragraph("Qty", item_header_style),
+            Paragraph("Unit", item_header_style),
+        ]]
+        total_qty = 0.0
+        for it in items:
+            try:
+                q = float(it.get("expected_quantity") or 0)
+            except (TypeError, ValueError):
+                q = 0.0
+            total_qty += q
+            item_data.append([
+                Paragraph(str(it.get("item_name", "")), item_cell_style),
+                Paragraph(_fmt_qty(q), item_cell_right),
+                Paragraph(str(it.get("unit", "")), item_cell_style),
+            ])
+
+        items_tbl = Table(item_data, colWidths=[345, 80, 80])
+        items_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F8FAFC")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.2, GREY_MED),
+        ]))
+
+        # ---------- TOTAL BAR ----------
+        n_lines = len(items)
+        total_tbl = Table(
+            [[
+                Paragraph(f"TOTAL", total_style),
+                Paragraph(f"{n_lines} line{'s' if n_lines != 1 else ''}", total_style),
+                Paragraph(f"{_fmt_qty(total_qty)} units", total_style),
+            ]],
+            colWidths=[200, 150, 155],
+        )
+        total_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#2A9D8F")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+
+        # Bundle with KeepTogether — keeps the whole dispatch on one page
+        story.append(KeepTogether([header_tbl, meta_tbl, items_tbl, total_tbl]))
+        story.append(Spacer(1, 6 * mm))
+
+    # ---------- SECTIONS ----------
+    story.append(Spacer(1, 8 * mm))
     story.append(_section_bar("Deliveries Log"))
     story.append(Spacer(1, 5 * mm))
 
-    for title_, items_ in [
+    for section_title, section_items in [
         ("Logged Today", logged_today),
         ("Completed Today", completed_today),
         ("Pending and Due (Overdue)", pending_due),
         ("Upcoming Deliveries", upcoming),
     ]:
         story.append(Paragraph(
-            "<b>" + title_ + "</b> — " + str(len(items_)) + " item(s)",
+            "<b>" + section_title + "</b> — " + str(len(section_items)) + " item(s)",
             ParagraphStyle("sub", fontName="Helvetica-Bold", fontSize=10,
                            textColor=NAVY, spaceBefore=4, spaceAfter=3),
         ))
-        if items_:
-            _append_chunked_table(story, headers, _rows(items_),
-                col_widths=widths, font_size=6.5, header_size=7,
-                numeric_cols={2}, chunk_size=15)
-        else:
+        if not section_items:
             story.append(Paragraph("None.", _style_small()))
-        story.append(Spacer(1, 5 * mm))
+            story.append(Spacer(1, 4 * mm))
+            continue
+
+        # Group by dispatch_id
+        groups = {}
+        for d in section_items:
+            did = d.get("dispatch_id") or "LEGACY"
+            groups.setdefault(did, []).append(d)
+
+        for dispatch_id, items in groups.items():
+            render_dispatch_group(dispatch_id, items)
 
 
 def _build_discrepancies(story, discrepancies):
     if not discrepancies:
         return
-    story.append(PageBreak())
+    story.append(Spacer(1, 8 * mm))
     story.append(_section_bar("Physical Count Discrepancies"))
     story.append(Spacer(1, 5 * mm))
 

@@ -243,13 +243,15 @@ def render_dispatch_card(dispatch_id, items_df, get_due_status_label_fn, add_ite
             sb()
             .table("deliveries")
             .select("id, dispatch_id, item_name, unit, expected_quantity, notes, status, "
-                    "destination, expected_date, scheduled_date, requested_by, project, "
+                    "destination, expected_date, requested_by, project, "
                     "is_priority, driver_name, created_by, created_at")
             .eq("dispatch_id", d_id)
             .execute()
         )
         df = pd.DataFrame(res.data or [])
         if not df.empty:
+            # Only ONE date column selected. Rename it to the canonical name
+            # the rest of the card expects.
             df = df.rename(columns={
                 "expected_quantity": "quantity",
                 "expected_date": "scheduled_date",
@@ -345,9 +347,14 @@ def render_dispatch_card(dispatch_id, items_df, get_due_status_label_fn, add_ite
                 update_dispatch_status(dispatch_id, selected_status, input_driver, input_notes)
 
         with btn_c2:
-            if str(new_scheduled_date) != str(curr_date):
-                if st.button("📅 Save Rescheduled Date", key=f"btn_date_{key_prefix}", width='stretch'):
-                    update_dispatch_schedule_date(dispatch_id, new_scheduled_date)
+            date_changed = str(new_scheduled_date) != str(curr_date)
+            if st.button(
+                "📅 Save Rescheduled Date",
+                key=f"btn_date_{key_prefix}",
+                width="stretch",
+                disabled=not date_changed,
+            ):
+                update_dispatch_schedule_date(dispatch_id, new_scheduled_date)
 
         st.divider()
 
@@ -373,5 +380,7 @@ def render_dispatch_card(dispatch_id, items_df, get_due_status_label_fn, add_ite
             item_col1.markdown(f"**{row['item_name']}**")
             item_col2.markdown(f"`{float(row['quantity']):.2f} {row['unit']}`")
             item_col3.markdown(f"_{row.get('notes') or 'No notes'}_")
-            if item_col4.button("🗑️", key=f"del_{dispatch_id}_{row['item_name']}"):
+            # Unique key per row — idx2 changes even if item_name repeats
+            del_key = f"del_{dispatch_id}_{idx2}_{row['item_name']}"
+            if item_col4.button("🗑️", key=del_key):
                 remove_item_from_dispatch(dispatch_id, row["item_name"], float(row["quantity"]))

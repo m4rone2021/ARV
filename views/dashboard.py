@@ -221,23 +221,98 @@ def render_dashboard(user_name="Guest", user_role="User"):
     total_units_stocked = float(df["current_stock"].sum()) if not df.empty else 0.0
     pending_dispatches_count = deliveries_df["dispatch_key"].nunique() if not deliveries_df.empty else 0
 
-    m_col1, m_col2 = st.columns(2)
-    m_col1.metric(label="📦 Unique Items", value=f"{total_items:,}")
-    m_col2.metric(label="📊 Physical Stock", value=f"{total_units_stocked:,.1f}")
+    # =========================================================
+    # STOCK BY CATEGORY — paired two-column layout
+    # =========================================================
+    st.subheader("📦 Stock by Category")
 
-    m_col3, m_col4 = st.columns(2)
-    m_col3.metric(
-        label="⚠️ Low Stock",
-        value=f"{low_stock_count}",
-        delta=f"-{low_stock_count}" if low_stock_count > 0 else "Optimal",
-        delta_color="inverse" if low_stock_count > 0 else "normal",
-    )
-    m_col4.metric(
-        label="🚚 Pending",
-        value=f"{pending_dispatches_count}",
-        delta="Required" if pending_dispatches_count > 0 else "None",
-        delta_color="off",
-    )
+    if not df.empty:
+        categories_present = sorted(df["category"].dropna().unique().tolist())
+
+        def render_category(cat):
+            """Navy header + HTML items table for one category."""
+            cat_df = df[df["category"] == cat].sort_values("item_name")
+            if cat_df.empty:
+                return
+
+            # ---------- Table rows ----------
+            row_html = ""
+            for _, it in cat_df.iterrows():
+                oh = float(it.get("current_stock") or 0)
+                rs = float(it.get("reserved_stock") or 0)
+                av = oh - rs
+
+                item_name = str(it.get("item_name", ""))
+                unit = str(it.get("unit", ""))
+
+                # Reserved: red bold if > 0, else normal
+                if rs > 0:
+                    reserved_html = (
+                        '<td style="padding:6px 10px; text-align:right; '
+                        'color:#E63946; font-weight:700;">'
+                        + f"{rs:,.2f}" + '</td>'
+                    )
+                else:
+                    reserved_html = (
+                        '<td style="padding:6px 10px; text-align:right; '
+                        'color:#5A6472;">'
+                        + f"{rs:,.2f}" + '</td>'
+                    )
+
+                row_html += (
+                    '<tr style="border-bottom:1px solid #EEF2F7;">'
+                    '<td style="padding:6px 10px; font-weight:600; color:#1F2937;">'
+                    + item_name + '</td>'
+                    '<td style="padding:6px 10px; color:#5A6472;">'
+                    + unit + '</td>'
+                    '<td style="padding:6px 10px; text-align:right; color:#1F2937;">'
+                    + f"{oh:,.2f}" + '</td>'
+                    + reserved_html +
+                    '<td style="padding:6px 10px; text-align:right; color:#1F2937; font-weight:600;">'
+                    + f"{av:,.2f}" + '</td>'
+                    '</tr>'
+                )
+
+            # ---------- Full table with header row ----------
+            table_html = (
+                '<div style="background-color:#0D3B66; color:white; '
+                'padding:12px 16px; border-radius:6px 6px 0 0; '
+                'font-weight:bold; font-size:15px; letter-spacing:0.7px;">'
+                + str(cat).upper() + '</div>'
+                '<table style="width:100%; border-collapse:collapse; '
+                'font-family:Helvetica, Arial, sans-serif; font-size:13px; '
+                'background:white; box-shadow:0 1px 3px rgba(0,0,0,0.05);">'
+                '<thead>'
+                '<tr style="background:#F8FAFC; border-bottom:1px solid #DCE2EC;">'
+                '<th style="padding:8px 10px; text-align:left; color:#0D3B66; font-weight:700;">Item</th>'
+                '<th style="padding:8px 10px; text-align:left; color:#0D3B66; font-weight:700;">Unit</th>'
+                '<th style="padding:8px 10px; text-align:right; color:#0D3B66; font-weight:700;">On-Hand</th>'
+                '<th style="padding:8px 10px; text-align:right; color:#0D3B66; font-weight:700;">Reserved</th>'
+                '<th style="padding:8px 10px; text-align:right; color:#0D3B66; font-weight:700;">Available</th>'
+                '</tr>'
+                '</thead>'
+                '<tbody>' + row_html + '</tbody>'
+                '</table>'
+            )
+
+            st.markdown(table_html, unsafe_allow_html=True)
+
+        # Pair categories into rows of 2 so left/right stay aligned
+        for i in range(0, len(categories_present), 2):
+            left_cat = categories_present[i]
+            right_cat = categories_present[i + 1] if i + 1 < len(categories_present) else None
+
+            left_col, right_col = st.columns(2, gap="medium")
+            with left_col:
+                render_category(left_cat)
+            with right_col:
+                if right_cat:
+                    render_category(right_cat)
+
+            # Small vertical breathing room between row pairs
+            st.markdown("<div style=\"height:14px;\"></div>", unsafe_allow_html=True)
+    else:
+        st.info("No items in master catalog yet.")
 
     st.divider()
 
