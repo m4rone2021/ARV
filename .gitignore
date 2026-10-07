@@ -61,3 +61,7 @@ views/reports_v2.py
 
 # Supabase backups
 _supabase_backup_*.json
+*.bak_*
+*.bak
+*.bak2_*
+*.bak3_*
