@@ -1,7 +1,7 @@
 ﻿import pandas as pd
 import streamlit as st
 
-from database import hash_password, sb
+from database import hash_password, sb, verify_password
 
 
 def apply_orange_theme():
@@ -84,7 +84,10 @@ def render_user_management(user_name, user_role):
         st.subheader("System Accounts")
 
         try:
-            res = sb().table("users").select("id, username, role, is_active, created_at, last_login_at").order("username").execute()
+            res = sb().table("users").select(
+                "id, username, role, is_active, created_at, last_login_at, "
+                "access_general, access_watersystem, is_admin"
+            ).order("username").execute()
             df = pd.DataFrame(res.data or [])
         except Exception as e:
             st.error(f"Error fetching users: {e}")
@@ -94,11 +97,20 @@ def render_user_management(user_name, user_role):
             df_display = df.rename(columns={
                 "id": "User ID",
                 "username": "Username",
-                "role": "Role / Access Level",
                 "is_active": "Active",
                 "created_at": "Created",
                 "last_login_at": "Last Login",
+                "access_general": "General",
+                "access_watersystem": "Water",
+                "is_admin": "Admin",
             })
+            # Render the three flag columns as check/cross glyphs
+            for col in ["General", "Water", "Admin"]:
+                if col in df_display.columns:
+                    df_display[col] = df_display[col].apply(
+                        lambda v: "\u2705" if bool(v) else "\u274c"
+                    )
+            df_display = df_display.drop(columns=["role"], errors="ignore")
             st.dataframe(df_display, width='stretch', hide_index=True)
 
             st.divider()
@@ -107,35 +119,99 @@ def render_user_management(user_name, user_role):
             deletable_users = df[df["username"] != user_name]["username"].tolist()
 
             if deletable_users:
-                with st.form("delete_user_form", clear_on_submit=True):
-                    target_user = st.selectbox("Select Account to Delete", deletable_users)
-                    submit_delete = st.form_submit_button("🗑️ Delete Account", width='stretch')
+                # Stage 1: pick a user and request deletion
+                target_user = st.selectbox(
+                    "Select Account to Delete",
+                    deletable_users,
+                    key="_delete_target_select",
+                )
 
-                    if submit_delete:
-                        try:
-                            # Get target's role
-                            t_res = sb().table("users").select("id, role").eq("username", target_user).limit(1).execute()
-                            if not t_res.data:
-                                st.error(f"User {target_user} not found.")
-                                st.stop()
-                            target = t_res.data[0]
-                            target_role = target["role"]
+                if st.button("🗑️ Request Delete", width='stretch', key="_delete_request_btn"):
+                    st.session_state["_pending_delete_user"] = target_user
+                    st.rerun()
 
-                            if target_role == "Admin":
-                                a_res = sb().table("users").select("id", count="exact").eq("role", "Admin").execute()
-                                if (a_res.count or 0) <= 1:
-                                    st.error("⚠️ Action Blocked: Cannot delete the last remaining Administrator account.")
-                                    st.stop()
-
-                            sb().table("users").delete().eq("id", target["id"]).execute()
-
-                            st.session_state["user_mgmt_flash"] = (
-                                "success",
-                                f"✅ Account **{target_user}** successfully removed.",
+                # Stage 2: password confirmation
+                pending = st.session_state.get("_pending_delete_user")
+                if pending:
+                    st.warning(
+                        f"⚠️ You are about to delete account **{pending}**. "
+                        "This action cannot be undone."
+                    )
+                    with st.form("_confirm_delete_form", clear_on_submit=True):
+                        admin_pw = st.text_input(
+                            f"Enter YOUR admin password to confirm deletion of **{pending}**",
+                            type="password",
+                            key="_delete_confirm_pw",
+                        )
+                        col_confirm, col_cancel = st.columns(2)
+                        with col_confirm:
+                            confirm_btn = st.form_submit_button(
+                                "🗑️ Confirm Delete", width='stretch'
                             )
+                        with col_cancel:
+                            cancel_btn = st.form_submit_button(
+                                "↩️ Cancel", width='stretch'
+                            )
+
+                        if confirm_btn:
+                            if not admin_pw:
+                                st.error("⚠️ Password is required to confirm deletion.")
+                            else:
+                                try:
+                                    # Verify against the logged-in admin's own password
+                                    me_res = (
+                                        sb()
+                                        .table("users")
+                                        .select("password_hash")
+                                        .eq("username", user_name)
+                                        .limit(1)
+                                        .execute()
+                                    )
+                                    if not me_res.data:
+                                        st.error("⚠️ Could not verify your account. Aborting.")
+                                    elif not verify_password(admin_pw, me_res.data[0]["password_hash"]):
+                                        st.error("❌ Incorrect password. Deletion cancelled.")
+                                    else:
+                                        # Re-fetch target (state may have changed)
+                                        t_res = (
+                                            sb()
+                                            .table("users")
+                                            .select("id, is_admin")
+                                            .eq("username", pending)
+                                            .limit(1)
+                                            .execute()
+                                        )
+                                        if not t_res.data:
+                                            st.error(f"User {pending} not found.")
+                                            st.session_state.pop("_pending_delete_user", None)
+                                            st.stop()
+                                        target = t_res.data[0]
+
+                                        if target.get("is_admin"):
+                                            a_res = (
+                                                sb()
+                                                .table("users")
+                                                .select("id", count="exact")
+                                                .eq("is_admin", True)
+                                                .execute()
+                                            )
+                                            if (a_res.count or 0) <= 1:
+                                                st.error("⚠️ Action Blocked: Cannot delete the last remaining Administrator account.")
+                                                st.stop()
+
+                                        sb().table("users").delete().eq("id", target["id"]).execute()
+                                        st.session_state.pop("_pending_delete_user", None)
+                                        st.session_state["user_mgmt_flash"] = (
+                                            "success",
+                                            f"✅ Account **{pending}** successfully removed.",
+                                        )
+                                        st.rerun()
+                                except Exception as e:
+                                    st.error(f"Failed to delete account: {e}")
+
+                        if cancel_btn:
+                            st.session_state.pop("_pending_delete_user", None)
                             st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to delete account: {e}")
             else:
                 st.info("No other user accounts available for deletion.")
         else:
@@ -149,7 +225,14 @@ def render_user_management(user_name, user_role):
 
         with st.form("create_user_form", clear_on_submit=True):
             new_username = st.text_input("Username*")
-            new_role = st.selectbox("Role / Access Level*", ["User", "Admin"])
+            st.markdown("**Access Permissions***")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                new_access_general = st.checkbox("General Warehouse", key="new_access_general")
+            with c2:
+                new_access_watersystem = st.checkbox("Water System", key="new_access_watersystem")
+            with c3:
+                new_is_admin = st.checkbox("Administrator", key="new_is_admin")
             new_password = st.text_input("Initial Password*", type="password")
             confirm_password = st.text_input("Confirm Password*", type="password")
 
@@ -157,25 +240,43 @@ def render_user_management(user_name, user_role):
 
             if submit_create:
                 clean_user = new_username.strip()
+
+                # Auto-grant both domains if admin is checked
+                eff_general = new_access_general or new_is_admin
+                eff_watersystem = new_access_watersystem or new_is_admin
+
                 if not clean_user or not new_password:
                     st.error("⚠️ Username and password are required.")
                 elif len(new_password) < 6:
                     st.error("⚠️ Password must be at least 6 characters long.")
                 elif new_password != confirm_password:
                     st.error("⚠️ Passwords do not match.")
+                elif not (eff_general or eff_watersystem):
+                    st.error("⚠️ Please assign at least one access permission (General, Water, or Admin).")
                 else:
                     try:
                         hashed = hash_password(new_password)
+                        # Write-through role column for backwards compatibility
+                        write_role = "Admin" if new_is_admin else "User"
                         sb().table("users").insert({
                             "username": clean_user,
                             "password_hash": hashed,
-                            "role": new_role,
+                            "role": write_role,
                             "is_active": True,
+                            "access_general": eff_general,
+                            "access_watersystem": eff_watersystem,
+                            "is_admin": new_is_admin,
                         }).execute()
+
+                        labels = []
+                        if eff_general: labels.append("General")
+                        if eff_watersystem: labels.append("Water")
+                        if new_is_admin: labels.append("Admin")
+                        label_str = " / ".join(labels) if labels else "None"
 
                         st.session_state["user_mgmt_flash"] = (
                             "success",
-                            f"✅ User account **{clean_user}** ({new_role}) created successfully.",
+                            f"✅ User account **{clean_user}** ({label_str}) created successfully.",
                         )
                         st.rerun()
                     except Exception as e:
