@@ -359,6 +359,7 @@ def render_stock_out(user_name, user_role):
                 .table("transactions")
                 .select("id, timestamp, created_at, item_name, quantity, unit, handled_by, notes, project_name")
                 .eq("type", "OUT")
+                .eq("warehouse", "construction")
                 .order("created_at", desc=True).order("timestamp", desc=True)
                 .limit(100)
                 .execute()

@@ -394,6 +394,7 @@ def receive_stock_batch(
     general_notes: str,
     items: list[dict],
     transaction_date: "date | None" = None,
+    warehouse: str = "construction",
 ) -> dict:
     """Record a batch of received items atomically.
 
@@ -440,6 +441,7 @@ def receive_stock_batch(
                 "p_general_notes": (general_notes or "").strip(),
                 "p_items":         payload,
                 "p_transaction_date": _to_iso_timestamp(transaction_date),
+                "p_warehouse":     warehouse,
             },
         ).execute()
     except Exception as e:
@@ -472,6 +474,7 @@ def issue_stock_batch(
     handled_by: str,
     items: list[dict],
     transaction_date: "date | None" = None,
+    warehouse: str = "construction",
 ) -> dict:
     """Issue a batch of items to one destination/project atomically.
 
@@ -526,6 +529,7 @@ def issue_stock_batch(
                 "p_handled_by":   (handled_by or "System").strip(),
                 "p_items":        payload,
                 "p_transaction_date": _to_iso_timestamp(transaction_date),
+                "p_warehouse":    warehouse,
             },
         ).execute()
     except Exception as e:

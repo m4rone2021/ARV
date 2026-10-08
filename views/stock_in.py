@@ -326,6 +326,7 @@ def render_stock_in(user_name, user_role):
                 .table("transactions")
                 .select("id, timestamp, created_at, item_name, quantity, unit, handled_by, notes")
                 .eq("type", "IN")
+                .eq("warehouse", "construction")
                 .order("created_at", desc=True).order("timestamp", desc=True)
                 .limit(50)
                 .execute()
