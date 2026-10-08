@@ -164,7 +164,10 @@ def login_user(username: str, password: str) -> dict:
         res = (
             sb()
             .table("users")
-            .select("username, role, password_hash, is_active, must_change_password")
+            .select(
+                "username, role, password_hash, is_active, must_change_password, "
+                "access_general, access_watersystem, is_admin"
+            )
             .eq("username", username)
             .limit(1)
             .execute()
@@ -198,8 +201,11 @@ def login_user(username: str, password: str) -> dict:
 
     return {
         "username": user["username"],
-        "role": user["role"],
+        "role": user.get("role") or "User",
         "must_change_password": bool(user.get("must_change_password", False)),
+        "access_general": bool(user.get("access_general", False)),
+        "access_watersystem": bool(user.get("access_watersystem", False)),
+        "is_admin": bool(user.get("is_admin", False)),
     }
 
 
