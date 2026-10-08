@@ -819,6 +819,11 @@ def upload_file_to_gdrive(
             )
             .execute()
         )
+        # Return a direct-view URL that renders as an image in st.image()
+        # (requires the file/folder to be shared as "Anyone with the link")
+        file_id = file.get("id")
+        if file_id:
+            return f"https://lh3.googleusercontent.com/d/{file_id}"
         return file.get("webViewLink")
     except Exception as e:
         print(f"[Drive Upload Error] Failed to upload '{file_name}': {e}")

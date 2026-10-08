@@ -54,7 +54,10 @@ def render(user_name: str, is_admin: bool):
         try:
             res = (
                 sb().table("master_items")
-                .select("item_name, category, unit, current_stock, reserved_stock, min_threshold")
+                .select(
+                    "item_name, category, unit, current_stock, reserved_stock, min_threshold, "
+                    "image_url, cost_php, shipping_php, total_cost_php, selling_price_php"
+                )
                 .eq("warehouse", cfg.WAREHOUSE)
                 .order("item_name").execute()
             )
@@ -131,6 +134,35 @@ def render(user_name: str, is_admin: bool):
                     f"**Available:** {_fmt_qty(effective_available)} {unit}  "
                     f"(on-hand {_fmt_qty(available_now)}, staged {_fmt_qty(staged_qty_for_item)})"
                 )
+
+                _raw_url = item_row.get("image_url") if "image_url" in item_row else None
+                _photo_url = None
+                if _raw_url:
+                    _photo_url = _raw_url
+                    if "/file/d/" in _raw_url:
+                        try:
+                            _fid = _raw_url.split("/file/d/")[1].split("/")[0]
+                            _photo_url = f"https://lh3.googleusercontent.com/d/{_fid}"
+                        except Exception:
+                            pass
+
+                _total_cost = float(item_row.get("total_cost_php") or 0)
+                _sell_price = float(item_row.get("selling_price_php") or 0)
+
+                _c_photo, _c_info = st.columns([1, 3])
+                with _c_photo:
+                    if _photo_url:
+                        try:
+                            st.image(_photo_url, width=140)
+                        except Exception:
+                            st.caption("(image unavailable)")
+                    else:
+                        st.caption("No photo on file.")
+                with _c_info:
+                    st.caption("Confirm this is the correct item before adding to the requisition.")
+                    _p1, _p2 = st.columns(2)
+                    _p1.metric("Unit Cost (PHP)", f"{_total_cost:,.2f}")
+                    _p2.metric("Selling Price (PHP)", f"{_sell_price:,.2f}")
 
                 v_add = st.session_state.get("wso_add_version", 0)
                 c1, c2 = st.columns([1, 2])
