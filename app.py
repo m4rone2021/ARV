@@ -35,6 +35,15 @@ if "user_role" not in st.session_state:
     st.session_state.user_role = "User"
 if "must_change_password" not in st.session_state:
     st.session_state.must_change_password = False
+# --- Domain access flags (populated at login, cleared at logout) ---
+if "user_access_general" not in st.session_state:
+    st.session_state.user_access_general = False
+if "user_access_watersystem" not in st.session_state:
+    st.session_state.user_access_watersystem = False
+if "user_is_admin" not in st.session_state:
+    st.session_state.user_is_admin = False
+if "active_domain" not in st.session_state:
+    st.session_state.active_domain = None
 # Note: flash_msg is lazily created when needed; not initialized to None
 # (Stock OUT and other views check for truthiness, not just presence)
 
@@ -137,6 +146,23 @@ def render_login():
                         st.session_state.must_change_password = user_data.get(
                             "must_change_password", False
                         )
+                        # --- Domain access flags ---
+                        st.session_state.user_access_general = bool(
+                            user_data.get("access_general", False)
+                        )
+                        st.session_state.user_access_watersystem = bool(
+                            user_data.get("access_watersystem", False)
+                        )
+                        st.session_state.user_is_admin = bool(
+                            user_data.get("is_admin", False)
+                        )
+                        # Initialize active domain: first accessible one
+                        if st.session_state.user_is_admin or st.session_state.user_access_general:
+                            st.session_state.active_domain = "general"
+                        elif st.session_state.user_access_watersystem:
+                            st.session_state.active_domain = "watersystem"
+                        else:
+                            st.session_state.active_domain = None
 
                         log_user_action(
                             user_data["username"], "LOGIN", "Successful login"
@@ -227,13 +253,92 @@ def render_force_password_change():
             st.session_state.user_name = ""
             st.session_state.user_role = "User"
             st.session_state.must_change_password = False
+            st.session_state.user_access_general = False
+            st.session_state.user_access_watersystem = False
+            st.session_state.user_is_admin = False
+            st.session_state.active_domain = None
             st.rerun()
 
 
 def render_app():
     st.sidebar.markdown(f"### 👤 Logged in: **{st.session_state.user_name}**")
     st.sidebar.caption(f"Role: **{st.session_state.user_role}**")
+
+    # --- Determine accessible domains ---
+    _domains = []
+    if st.session_state.user_is_admin or st.session_state.user_access_general:
+        _domains.append("General Warehouse")
+    if st.session_state.user_is_admin or st.session_state.user_access_watersystem:
+        _domains.append("Water System")
+
+    # No access at all -> hard stop with a clear message
+    if not _domains:
+        st.sidebar.divider()
+        st.error(
+            "🚫 No inventory access assigned to this account. "
+            "Please contact an administrator."
+        )
+        if st.sidebar.button("🚪 Logout", width='stretch'):
+            log_user_action(st.session_state.user_name, "LOGOUT", "No-access logout")
+            st.session_state.logged_in = False
+            st.session_state.user_name = ""
+            st.session_state.user_role = "User"
+            st.session_state.must_change_password = False
+            st.session_state.user_access_general = False
+            st.session_state.user_access_watersystem = False
+            st.session_state.user_is_admin = False
+            st.session_state.active_domain = None
+            st.rerun()
+        st.stop()
+
+    # --- Domain switcher (only shown when >1 domain available) ---
+    _label_to_key = {
+        "General Warehouse": "general",
+        "Water System": "watersystem",
+    }
+    _available_keys = [_label_to_key[d] for d in _domains]
+
+    if len(_domains) > 1:
+        _current = st.session_state.active_domain or _available_keys[0]
+        _default_idx = _available_keys.index(_current) if _current in _available_keys else 0
+
+        st.sidebar.markdown("### 🗂️ Domain")
+        _picked_label = st.sidebar.radio(
+            "Active domain",
+            _domains,
+            index=_default_idx,
+            label_visibility="collapsed",
+            key="_domain_switcher",
+        )
+        st.session_state.active_domain = _label_to_key[_picked_label]
+    else:
+        # Single domain — lock it in silently, no switcher shown
+        st.session_state.active_domain = _available_keys[0]
+
     st.sidebar.divider()
+
+    # --- Water domain: short-circuit before building the general menu ---
+    if st.session_state.active_domain == "watersystem":
+        st.title("💧 Water System Inventory")
+        st.info(
+            "This module is under construction. "
+            "Check back soon — fittings, pipes, valves, and water system "
+            "transactions will be available here."
+        )
+        # Logout still available so the user can switch accounts
+        st.sidebar.divider()
+        if st.sidebar.button("🚪 Logout", width='stretch'):
+            log_user_action(st.session_state.user_name, "LOGOUT", "Water-domain logout")
+            st.session_state.logged_in = False
+            st.session_state.user_name = ""
+            st.session_state.user_role = "User"
+            st.session_state.must_change_password = False
+            st.session_state.user_access_general = False
+            st.session_state.user_access_watersystem = False
+            st.session_state.user_is_admin = False
+            st.session_state.active_domain = None
+            st.rerun()
+        return
 
     menu_map = {
         "📊 Dashboard": "Dashboard",
@@ -281,11 +386,16 @@ def render_app():
         st.session_state.user_name = ""
         st.session_state.user_role = "User"
         st.session_state.must_change_password = False
+        st.session_state.user_access_general = False
+        st.session_state.user_access_watersystem = False
+        st.session_state.user_is_admin = False
+        st.session_state.active_domain = None
         st.rerun()
 
     # Flash message from previous rerun
     _show_flash()
 
+    # --- General warehouse (existing behavior, unchanged below) ---
     try:
         if choice == "Dashboard":
             from views.dashboard import render_dashboard
