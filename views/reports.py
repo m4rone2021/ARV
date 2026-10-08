@@ -302,6 +302,18 @@ def render_reports(user_name, user_role):
                 for _, r in grouped.iterrows()
             ]
 
+            # Populate details for the detailed transaction log
+            details = tx_df.sort_values(
+                "timestamp", ascending=True
+            ).to_dict(orient="records")
+
+            # Extract "Requested by: X" from notes into its own field
+            import re as _re
+            for _d in details:
+                _notes_v = _d.get("notes") or ""
+                _m = _re.search(r"Requested by:\s*([^|]+)", str(_notes_v))
+                _d["requested_by"] = _m.group(1).strip() if _m else ""
+
     # ---- PHYSICAL COUNT ----
     elif report_type == "Physical Count Report":
         # by_item stays empty; discrepancies are shown in extras

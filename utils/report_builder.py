@@ -1119,6 +1119,48 @@ def _build_appendix(story, title, report_type, period_label, prepared_by):
 # ============================================================================
 # MAIN PDF BUILDER — ONE CLEAN PATH
 # ============================================================================
+def _build_details_table(story, details):
+    """Detailed transaction log for transaction-type reports."""
+    if not details:
+        return
+
+    story.append(Spacer(1, 8 * mm))
+    story.append(_section_bar("Detailed Transaction Log"))
+    story.append(Spacer(1, 5 * mm))
+
+    cols = [
+        ("timestamp",    "Date",         80),
+        ("item_name",    "Item",         115),
+        ("type",         "Type",         35),
+        ("quantity",     "Qty",          50),
+        ("unit",         "Unit",         40),
+        ("project_name", "Project",      65),
+        ("requested_by", "Requested By", 75),
+        ("handled_by",   "By",           45),
+    ]
+    headers = [c[1] for c in cols]
+    rows = []
+    for d in details:
+        row = []
+        for key, _, _ in cols:
+            v = d.get(key, "")
+            if v is None:
+                v = ""
+            try:
+                if key == "timestamp":
+                    v = str(v)[:10]   # YYYY-MM-DD only
+                elif key == "quantity":
+                    v = _fmt_qty(v)
+            except Exception:
+                pass
+            row.append(_clean(v))
+        rows.append(row)
+
+    _append_chunked_table(story, headers, rows,
+        col_widths=[c[2] for c in cols],
+        font_size=7, numeric_cols={3})
+
+
 def build_pdf_report(report_type, period_label, filters, summary, details, by_item,
                      prepared_by, paper_size="letter", extras=None):
     """Build the PDF. `by_item` is either:
@@ -1182,6 +1224,7 @@ def build_pdf_report(report_type, period_label, filters, summary, details, by_it
             _build_summary_by_item_snapshot(story, by_item)
         else:
             _build_summary_by_item_tx(story, by_item)
+            _build_details_table(story, details)
 
     # 6. LOW STOCK DETAIL (snapshot only)
     if _is_snapshot(by_item):
