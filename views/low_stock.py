@@ -1,4 +1,4 @@
-﻿import pandas as pd
+import pandas as pd
 import streamlit as st
 
 from database import sb
@@ -16,6 +16,7 @@ def render_low_stock(user_name: str, user_role: str):
             sb()
             .table("master_items")
             .select("id, item_name, category, unit, current_stock, reserved_stock, min_threshold, remarks")
+            .eq("warehouse", "construction")
             .execute()
         )
         df = pd.DataFrame(res.data or [])
@@ -151,6 +152,7 @@ def render_low_stock(user_name: str, user_role: str):
                     "status": "Pending",
                     "notes": schedule_notes.strip() or None,
                     "created_by": user_name or "System",
+                    "warehouse": "construction",
                 }).execute()
 
                 st.toast(f"✅ Delivery scheduled for {selected_item}!", icon="📅")

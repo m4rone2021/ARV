@@ -2,7 +2,10 @@
 import streamlit as st
 
 from watersystem import config as cfg, lookups
-from watersystem.screens import manage_items, pending_lookups, stock_in, stock_out
+from watersystem.screens import (
+    manage_items, pending_lookups, stock_in, stock_out,
+    low_stock, physical_inventory,
+)
 
 
 def render(user_name: str, is_admin: bool):
@@ -13,6 +16,8 @@ def render(user_name: str, is_admin: bool):
         "📦 Manage Items": "items",
         "📥 Stock IN": "stock_in",
         "📤 Stock OUT": "stock_out",
+        "⚠️ Low Stock Alerts": "low_stock",
+        "📋 Physical Inventory": "physical_inventory",
     }
     if is_admin:
         pending_count = lookups.count_pending()
@@ -35,5 +40,9 @@ def render(user_name: str, is_admin: bool):
         stock_in.render(user_name, is_admin)
     elif choice == "stock_out":
         stock_out.render(user_name, is_admin)
+    elif choice == "low_stock":
+        low_stock.render(user_name, is_admin)
+    elif choice == "physical_inventory":
+        physical_inventory.render(user_name, is_admin)
     elif choice == "pending":
         pending_lookups.render(user_name)

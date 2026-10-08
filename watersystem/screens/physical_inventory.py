@@ -1,18 +1,16 @@
+"""Water system physical inventory — count, submit discrepancies, admin resolve."""
 from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
 from database import sb
+from watersystem import config as cfg
 
 
-def render_physical_inventory(user_name, user_role):
-    st.title("📋 Physical Inventory & Discrepancy Approval")
-    st.caption(
-        "Perform physical stock counts. Discrepancies are held for Admin review before stock is modified."
-    )
-
-    is_admin = user_role == "Admin"
+def render(user_name: str, is_admin: bool):
+    st.title("📋 Water System — Physical Inventory")
+    st.caption("Conduct physical counts. Discrepancies are held for Admin review.")
 
     if is_admin:
         tab_count, tab_pending, tab_history = st.tabs(
@@ -25,28 +23,24 @@ def render_physical_inventory(user_name, user_role):
 
     with tab_count:
         st.subheader("Physical Count Entry")
-
         try:
             res = (
-                sb()
-                .table("master_items")
+                sb().table("master_items")
                 .select("id, item_name, category, unit, current_stock")
-                .eq("warehouse", "construction")
-                .order("item_name")
-                .execute()
+                .eq("warehouse", cfg.WAREHOUSE)
+                .order("item_name").execute()
             )
             items_df = pd.DataFrame(res.data or [])
         except Exception as e:
-            st.error(f"Error loading catalog items: {e}")
+            st.error(f"Error loading water items: {e}")
             items_df = pd.DataFrame()
 
         if items_df.empty:
-            st.info("No items found in Master Catalog to audit.")
+            st.info("No water items found.")
         else:
             selected_item_name = st.selectbox(
-                "Select Item to Audit*",
-                items_df["item_name"].tolist(),
-                key="audit_item_selector",
+                "Select Item to Audit*", items_df["item_name"].tolist(),
+                key="_wspi_item",
             )
             item_row = items_df[items_df["item_name"] == selected_item_name].iloc[0]
             system_stock = float(item_row["current_stock"] or 0)
@@ -61,18 +55,14 @@ def render_physical_inventory(user_name, user_role):
             st.markdown("### **Physical Count**")
             physical_count = st.number_input(
                 f"Actual Counted Stock ({unit})*",
-                min_value=0.0,
-                value=system_stock,
-                step=1.0,
-                format="%.2f",
-                key=f"physical_input_{selected_item_name}",
+                min_value=0.0, value=system_stock, step=1.0, format="%.2f",
+                key=f"_wspi_count_{selected_item_name}",
             )
 
             variance = physical_count - system_stock
 
             st.divider()
             st.subheader("🔍 Variance Summary")
-
             if variance == 0:
                 st.success("✅ **Zero Variance**: Physical count matches system stock.")
             elif variance > 0:
@@ -82,15 +72,14 @@ def render_physical_inventory(user_name, user_role):
 
             submission_notes = st.text_input(
                 "Observation / Cause of Discrepancy*",
-                placeholder="e.g., Damaged materials found during count",
-                key=f"notes_{selected_item_name}",
+                placeholder="e.g., Damaged fittings found during count",
+                key=f"_wspi_notes_{selected_item_name}",
             )
 
             st.divider()
-
-            if st.button("💾 Submit Physical Audit", width='stretch'):
+            if st.button("💾 Submit Physical Audit", width="stretch", key="_wspi_submit"):
                 if variance != 0 and not submission_notes.strip():
-                    st.error("⚠️ Observation notes are required when submitting a stock discrepancy.")
+                    st.error("⚠️ Observation notes required when variance is non-zero.")
                 else:
                     try:
                         sb().table("physical_inventory_logs").insert({
@@ -101,7 +90,7 @@ def render_physical_inventory(user_name, user_role):
                             "unit": unit,
                             "counted_by": user_name,
                             "notes": submission_notes.strip() or None,
-                            "warehouse": "construction",
+                            "warehouse": cfg.WAREHOUSE,
                         }).execute()
 
                         if variance != 0:
@@ -114,12 +103,12 @@ def render_physical_inventory(user_name, user_role):
                                 "submitted_by": user_name,
                                 "submission_notes": submission_notes.strip(),
                                 "status": "PENDING",
-                                "warehouse": "construction",
+                                "warehouse": cfg.WAREHOUSE,
                             }).execute()
-                            st.toast(f"⚠️ Discrepancy logged for {selected_item_name}", icon="📌")
+                            st.toast(f"⚠️ Discrepancy logged for {selected_item_name}")
                             st.warning(f"Discrepancy logged for **{selected_item_name}**. Sent to Admin.")
                         else:
-                            st.toast(f"✅ Verified zero variance for {selected_item_name}", icon="✅")
+                            st.toast(f"✅ Verified zero variance for {selected_item_name}")
                             st.success(f"Physical count for **{selected_item_name}** verified.")
                         st.rerun()
                     except Exception as e:
@@ -127,17 +116,15 @@ def render_physical_inventory(user_name, user_role):
 
     if is_admin:
         with tab_pending:
-            st.subheader("⚠️ Pending Inventory Discrepancies")
+            st.subheader("⚠️ Pending Water Discrepancies")
             try:
                 res = (
-                    sb()
-                    .table("discrepancies")
+                    sb().table("discrepancies")
                     .select("id, timestamp, created_at, item_name, system_stock, physical_count, variance, "
                             "unit, submitted_by, submission_notes")
                     .eq("status", "PENDING")
-                    .eq("warehouse", "construction")
-                    .order("created_at", desc=True).order("timestamp", desc=True)
-                    .execute()
+                    .eq("warehouse", cfg.WAREHOUSE)
+                    .order("created_at", desc=True).order("timestamp", desc=True).execute()
                 )
                 pending_df = pd.DataFrame(res.data or [])
             except Exception as e:
@@ -145,9 +132,9 @@ def render_physical_inventory(user_name, user_role):
                 pending_df = pd.DataFrame()
 
             if pending_df.empty:
-                st.success("🎉 No pending inventory discrepancies requiring review.")
+                st.success("🎉 No pending water discrepancies.")
             else:
-                st.info(f"🔔 You have **{len(pending_df)}** discrepancy request(s) awaiting resolution.")
+                st.info(f"🔔 **{len(pending_df)}** water discrepancy request(s) awaiting resolution.")
 
                 for _, row in pending_df.iterrows():
                     disc_id = row["id"]
@@ -170,21 +157,20 @@ def render_physical_inventory(user_name, user_role):
 
                         resolution_reason = st.text_input(
                             f"Resolution Reason (Req #{str(disc_id)[:8]})*",
-                            key=f"res_note_{disc_id}",
-                            placeholder="e.g., Investigation confirmed leakage.",
+                            key=f"_wspi_res_{disc_id}",
+                            placeholder="e.g., Leakage confirmed during site inspection.",
                         )
 
                         col_a, col_b = st.columns(2)
-
                         with col_a:
-                            if st.button("✅ Approve & Apply Stock Change", key=f"app_{disc_id}", width='stretch'):
+                            if st.button("✅ Approve & Apply Stock Change", key=f"_wspi_app_{disc_id}", width="stretch"):
                                 if not resolution_reason.strip():
-                                    st.error("⚠️ You must provide a resolution reason before approving.")
+                                    st.error("⚠️ Resolution reason required.")
                                 else:
                                     try:
                                         sb().table("master_items").update(
                                             {"current_stock": float(row["physical_count"])}
-                                        ).eq("item_name", row["item_name"]).eq("warehouse", "construction").execute()
+                                        ).eq("item_name", row["item_name"]).eq("warehouse", cfg.WAREHOUSE).execute()
 
                                         sb().table("discrepancies").update({
                                             "status": "APPROVED",
@@ -204,19 +190,19 @@ def render_physical_inventory(user_name, user_role):
                                             "unit": row["unit"],
                                             "handled_by": user_name,
                                             "notes": audit_note,
-                                            "warehouse": "construction",
+                                            "warehouse": cfg.WAREHOUSE,
                                         }).execute()
 
-                                        st.toast("✅ Approved Request", icon="✅")
-                                        st.success(f"Request approved. Stock updated to {row['physical_count']} {row['unit']}.")
+                                        st.toast("✅ Approved Request")
+                                        st.success(f"Stock updated to {row['physical_count']} {row['unit']}.")
                                         st.rerun()
                                     except Exception as e:
                                         st.error(f"Error approving discrepancy: {e}")
 
                         with col_b:
-                            if st.button("❌ Reject (Keep System Stock)", key=f"rej_{disc_id}", width='stretch'):
+                            if st.button("❌ Reject (Keep System Stock)", key=f"_wspi_rej_{disc_id}", width="stretch"):
                                 if not resolution_reason.strip():
-                                    st.error("⚠️ You must provide a resolution reason before rejecting.")
+                                    st.error("⚠️ Resolution reason required.")
                                 else:
                                     try:
                                         sb().table("discrepancies").update({
@@ -226,24 +212,21 @@ def render_physical_inventory(user_name, user_role):
                                             "resolution_notes": resolution_reason.strip(),
                                         }).eq("id", disc_id).execute()
 
-                                        st.toast("❌ Rejected Request", icon="❌")
+                                        st.toast("❌ Rejected Request")
                                         st.warning("Request rejected. System stock preserved.")
                                         st.rerun()
                                     except Exception as e:
                                         st.error(f"Error rejecting discrepancy: {e}")
 
     with tab_history:
-        st.subheader("📜 Physical Audit & Resolution History")
-
+        st.subheader("📜 Water Physical Audit History")
         try:
             res = (
-                sb()
-                .table("discrepancies")
+                sb().table("discrepancies")
                 .select("id, timestamp, created_at, item_name, variance, unit, submitted_by, "
                         "submission_notes, status, resolved_by, resolved_timestamp, resolution_notes")
-                .eq("warehouse", "construction")
-                .order("created_at", desc=True).order("timestamp", desc=True)
-                .execute()
+                .eq("warehouse", cfg.WAREHOUSE)
+                .order("created_at", desc=True).order("timestamp", desc=True).execute()
             )
             history_df = pd.DataFrame(res.data or [])
         except Exception as e:
@@ -251,22 +234,20 @@ def render_physical_inventory(user_name, user_role):
             history_df = pd.DataFrame()
 
         if history_df.empty:
-            st.info("No audit history recorded yet.")
+            st.info("No water audit history recorded yet.")
         else:
             df_display = history_df.rename(columns={
-                "id": "Req ID", "timestamp": "Submitted Date", "created_at": "Logged At", "item_name": "Item Name",
-                "variance": "Variance", "unit": "Unit", "submitted_by": "Audited By",
-                "submission_notes": "Audit Notes", "status": "Status",
-                "resolved_by": "Resolved By", "resolved_timestamp": "Resolution Date",
+                "id": "Req ID", "timestamp": "Submitted Date", "created_at": "Logged At",
+                "item_name": "Item Name", "variance": "Variance", "unit": "Unit",
+                "submitted_by": "Audited By", "submission_notes": "Audit Notes",
+                "status": "Status", "resolved_by": "Resolved By",
+                "resolved_timestamp": "Resolution Date",
                 "resolution_notes": "Admin Resolution Reason",
             })
 
             view_mode = st.radio(
-                "Display Mode",
-                ["Cards (Mobile)", "Full Table"],
-                horizontal=True,
-                label_visibility="collapsed",
-                key="history_display_mode",
+                "Display Mode", ["Cards (Mobile)", "Full Table"],
+                horizontal=True, label_visibility="collapsed", key="_wspi_hist_mode",
             )
 
             if view_mode == "Cards (Mobile)":
@@ -289,8 +270,6 @@ def render_physical_inventory(user_name, user_role):
                                 st.caption(f"Reason: {row['Admin Resolution Reason']}")
             else:
                 st.dataframe(
-                    df_display,
-                    width='stretch',
-                    hide_index=True,
+                    df_display, width="stretch", hide_index=True,
                     column_config={"Variance": st.column_config.NumberColumn(format="%.2f")},
                 )
