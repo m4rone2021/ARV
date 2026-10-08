@@ -55,7 +55,7 @@ def render(user_name: str, is_admin: bool):
             res = (
                 sb().table("master_items")
                 .select(
-                    "item_name, category, unit, current_stock, reserved_stock, min_threshold, "
+                    "item_name, category, unit, current_stock, reserved_stock, min_threshold, size, "
                     "image_url, cost_php, shipping_php, total_cost_php, selling_price_php"
                 )
                 .eq("warehouse", cfg.WAREHOUSE)
@@ -111,22 +111,33 @@ def render(user_name: str, is_admin: bool):
         with st.container(border=True):
             st.markdown("##### Add Item to Requisition")
             v_item = st.session_state.get("wso_add_item_version", 0)
-            item_options = [PLACEHOLDER] + items_df["item_name"].tolist()
-            selected_raw = st.selectbox(
-                "Select Item*", item_options, key=f"wso_add_item_v{v_item}",
+            names = sorted(items_df["item_name"].unique().tolist())
+            selected_name = st.selectbox(
+                "Select Item*", [PLACEHOLDER] + names, key=f"wso_add_item_v{v_item}",
             )
-            has_item = selected_raw != PLACEHOLDER
+            has_item = selected_name != PLACEHOLDER
 
             if not has_item:
                 st.info("Pick an item from the list to continue.")
             else:
-                item_row = items_df[items_df["item_name"] == selected_raw].iloc[0]
+                subset = items_df[items_df["item_name"] == selected_name]
+                size_options = subset["size"].fillna("").tolist()
+                if len(size_options) == 1:
+                    picked_size = size_options[0]
+                    if picked_size:
+                        st.caption(f"Size: {picked_size}")
+                else:
+                    picked_size = st.radio(
+                        "Size", size_options, horizontal=True,
+                        key=f"wso_add_size_v{v_item}",
+                    )
+                item_row = subset[subset["size"].fillna("") == picked_size].iloc[0]
                 unit = str(item_row["unit"])
                 available_now = float(item_row["available"])
 
                 staged_qty_for_item = sum(
                     float(l["quantity"]) for l in st.session_state.wso_cart
-                    if l["item_name"] == selected_raw
+                    if l["item_name"] == item_row["item_name"]
                 )
                 effective_available = available_now - staged_qty_for_item
 

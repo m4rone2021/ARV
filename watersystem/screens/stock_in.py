@@ -53,7 +53,7 @@ def render(user_name: str, is_admin: bool):
             res = (
                 sb().table("master_items")
                 .select(
-                    "item_name, category, unit, current_stock, image_url, "
+                    "item_name, category, unit, current_stock, size, image_url, "
                     "cost_php, shipping_php, total_cost_php, selling_price_php"
                 )
                 .eq("warehouse", cfg.WAREHOUSE)
@@ -104,16 +104,30 @@ def render(user_name: str, is_admin: bool):
         with st.container(border=True):
             st.markdown("##### Add Item to Receipt")
             v_item = st.session_state.get("wsi_add_item_version", 0)
-            item_options = [PLACEHOLDER] + items_df["item_name"].tolist()
-            selected_raw = st.selectbox(
-                "Select Item*", item_options, key=f"wsi_add_item_v{v_item}",
+            names = sorted(items_df["item_name"].unique().tolist())
+            selected_name = st.selectbox(
+                "Select Item*", [PLACEHOLDER] + names, key=f"wsi_add_item_v{v_item}",
             )
-            has_item = selected_raw != PLACEHOLDER
+            has_item = selected_name != PLACEHOLDER
 
+            item_row = None
             if not has_item:
                 st.info("Pick an item from the list to continue.")
             else:
-                item_row = items_df[items_df["item_name"] == selected_raw].iloc[0]
+                subset = items_df[items_df["item_name"] == selected_name]
+                size_options = subset["size"].fillna("").tolist()
+                if len(size_options) == 1:
+                    picked_size = size_options[0]
+                    if picked_size:
+                        st.caption(f"Size: {picked_size}")
+                else:
+                    picked_size = st.radio(
+                        "Size", size_options, horizontal=True,
+                        key=f"wsi_add_size_v{v_item}",
+                    )
+                item_row = subset[subset["size"].fillna("") == picked_size].iloc[0]
+
+            if has_item and item_row is not None:
                 unit = str(item_row["unit"])
                 current_on_hand = float(item_row["current_stock"])
                 st.info(f"**Current on-hand:** {_fmt_qty(current_on_hand)} {unit}")

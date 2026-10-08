@@ -26,7 +26,7 @@ def render(user_name: str, is_admin: bool):
         try:
             res = (
                 sb().table("master_items")
-                .select("id, item_name, category, unit, current_stock")
+                .select("id, item_name, category, unit, current_stock, size")
                 .eq("warehouse", cfg.WAREHOUSE)
                 .order("item_name").execute()
             )
@@ -38,11 +38,22 @@ def render(user_name: str, is_admin: bool):
         if items_df.empty:
             st.info("No water items found.")
         else:
-            selected_item_name = st.selectbox(
-                "Select Item to Audit*", items_df["item_name"].tolist(),
-                key="_wspi_item",
+            names = sorted(items_df["item_name"].unique().tolist())
+            picked_name = st.selectbox(
+                "Select Item to Audit*", names, key="_wspi_item",
             )
-            item_row = items_df[items_df["item_name"] == selected_item_name].iloc[0]
+            subset = items_df[items_df["item_name"] == picked_name]
+            size_options = subset["size"].fillna("").tolist()
+            if len(size_options) == 1:
+                picked_size = size_options[0]
+                if picked_size:
+                    st.caption(f"Size: {picked_size}")
+            else:
+                picked_size = st.radio(
+                    "Size", size_options, horizontal=True, key="_wspi_size",
+                )
+            item_row = subset[subset["size"].fillna("") == picked_size].iloc[0]
+            selected_item_name = item_row["item_name"]
             system_stock = float(item_row["current_stock"] or 0)
             unit = str(item_row["unit"])
 

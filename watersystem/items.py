@@ -116,13 +116,15 @@ def create_item(data: dict) -> int:
             sb().table("master_items").select("id")
             .eq("item_name", clean["item_name"])
             .eq("warehouse", cfg.WAREHOUSE)
+            .eq("size", clean["size"] or "")
             .limit(1).execute()
         )
     except Exception as e:
         raise NetworkError(f"Failed to check existing items: {e}") from e
     if existing.data:
+        _s = clean["size"] or "no size"
         raise ItemExistsError(
-            f"A water item named '{clean['item_name']}' already exists."
+            f"A water item named '{clean['item_name']}' ({_s}) already exists."
         )
 
     row = {
@@ -142,8 +144,9 @@ def create_item(data: dict) -> int:
         res = sb().table("master_items").insert(row).execute()
     except Exception as e:
         if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+            _s = clean["size"] or "no size"
             raise ItemExistsError(
-                f"A water item named '{clean['item_name']}' already exists."
+                f"A water item named '{clean['item_name']}' ({_s}) already exists."
             )
         raise NetworkError(f"Failed to create item: {e}") from e
 

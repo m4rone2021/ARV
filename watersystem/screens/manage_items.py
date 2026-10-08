@@ -7,7 +7,7 @@ from watersystem import config as cfg, lookups, items
 from watersystem.screens import drive_upload
 
 
-def _resolve_option(kind: str, widget_key: str, user_name: str) -> str:
+def _resolve_option(kind: str, widget_key: str, user_name: str, default: str = "") -> str:
     approved = lookups.list_approved(kind)
     if not approved:
         approved = getattr(cfg, f"DEFAULT_{kind.upper()}S", [])
@@ -15,10 +15,16 @@ def _resolve_option(kind: str, widget_key: str, user_name: str) -> str:
     label_map = {"category": "Category", "material": "Material", "size": "Size"}
     label = label_map[kind]
 
-    REQUEST_SENTINEL = "➕ Request new…"
+    if default and default not in approved:
+        approved = [default] + list(approved)
 
+    REQUEST_SENTINEL = "➕ Request new…"
     options = list(approved) + [REQUEST_SENTINEL]
-    selected = st.selectbox(label, options, key=f"{widget_key}_{kind}_sel")
+    default_index = approved.index(default) if default in approved else 0
+
+    selected = st.selectbox(
+        label, options, index=default_index, key=f"{widget_key}_{kind}_sel"
+    )
 
     if selected == REQUEST_SENTINEL:
         new_val = st.text_input(
@@ -55,8 +61,14 @@ def _render_form(existing: dict | None, user_name: str, is_admin: bool):
                 "Item name*",
                 value=existing["item_name"] if is_edit else "",
             )
-            category = _resolve_option("category", f"{prefix}_item", user_name)
-            material = _resolve_option("material", f"{prefix}_item", user_name)
+            category = _resolve_option(
+                "category", f"{prefix}_item", user_name,
+                default=existing["category"] if is_edit else "",
+            )
+            material = _resolve_option(
+                "material", f"{prefix}_item", user_name,
+                default=existing["material"] if is_edit else "",
+            )
             unit_options = cfg.DEFAULT_UNITS
             default_unit = (
                 existing["unit"]
@@ -68,7 +80,10 @@ def _render_form(existing: dict | None, user_name: str, is_admin: bool):
             )
 
         with c2:
-            size = _resolve_option("size", f"{prefix}_item", user_name)
+            size = _resolve_option(
+                "size", f"{prefix}_item", user_name,
+                default=existing["size"] if is_edit else "",
+            )
             cost = st.number_input(
                 "Cost (PHP)", min_value=0.0, step=0.01, format="%.2f",
                 value=float(existing["cost_php"] or 0) if is_edit else 0.0,
@@ -164,6 +179,9 @@ def _render_form(existing: dict | None, user_name: str, is_admin: bool):
             items.create_item(payload)
             st.success(f"✅ Added **{item_name}**.")
         st.session_state["ws_flash"] = "success"
+        for _k in list(st.session_state.keys()):
+            if _k.startswith(f"{prefix}_item_") or _k == f"{prefix}_img":
+                del st.session_state[_k]
         st.rerun()
     except ItemExistsError as e:
         st.error(f"⚠️ {e}")
@@ -230,6 +248,24 @@ def render(user_name: str, is_admin: bool):
         if not all_items:
             st.info("No items to edit yet.")
         else:
-            by_name = {it["item_name"]: it for it in all_items}
-            picked = st.selectbox("Select item to edit", sorted(by_name.keys()))
-            _render_form(by_name[picked], user_name, is_admin)
+            by_name = {}
+            for it in all_items:
+                by_name.setdefault(it["item_name"], []).append(it)
+
+            picked_name = st.selectbox("Select item to edit", sorted(by_name.keys()))
+            variants = by_name[picked_name]
+
+            if len(variants) == 1:
+                picked = variants[0]
+                _sz = picked.get("size")
+                if _sz:
+                    st.caption(f"Size: {_sz}")
+            else:
+                labels = [v.get("size") or "(no size)" for v in variants]
+                picked_label = st.radio(
+                    "Size", labels, horizontal=True, key="_mi_edit_size",
+                )
+                picked = next(
+                    v for v, lbl in zip(variants, labels) if lbl == picked_label
+                )
+            _render_form(picked, user_name, is_admin)
