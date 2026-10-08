@@ -317,17 +317,16 @@ def render_app():
 
     st.sidebar.divider()
 
-    # --- Water domain: short-circuit before building the general menu ---
+    # --- Water domain: dispatch to the water module ---
     if st.session_state.active_domain == "watersystem":
-        st.title("💧 Water System Inventory")
-        st.info(
-            "This module is under construction. "
-            "Check back soon — fittings, pipes, valves, and water system "
-            "transactions will be available here."
+        from watersystem import views as water_views
+        water_views.render(
+            st.session_state.user_name,
+            st.session_state.user_is_admin,
         )
-        # Logout still available so the user can switch accounts
+        # Sidebar: logout still available
         st.sidebar.divider()
-        if st.sidebar.button("🚪 Logout", width='stretch'):
+        if st.sidebar.button("🚪 Logout", width='stretch', key="_ws_logout"):
             log_user_action(st.session_state.user_name, "LOGOUT", "Water-domain logout")
             st.session_state.logged_in = False
             st.session_state.user_name = ""
